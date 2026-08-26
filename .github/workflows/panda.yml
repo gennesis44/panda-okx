@@ -1,0 +1,32 @@
+name: PANDA GSCSI Inspect
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: pip install requests pandas numpy python-dotenv
+
+      - name: Run PANDA inspect
+        env:
+          OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
+          OKX_API_SECRET: ${{ secrets.OKX_API_SECRET }}
+          OKX_PASSPHRASE: ${{ secrets.OKX_PASSPHRASE }}
+          OKX_FLAG: "1"
+          LIVE_TRADING: "false"
+          ACCOUNT_EQUITY_USDT: "100"
+          RISK_PER_TRADE_PCT: "1.0"
+          LEVERAGE: "3"
+        run: python panda_okx.py --mode inspect
