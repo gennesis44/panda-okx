@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+ #!/usr/bin/env python3
 """
 PANDA GSCSI — BTC-USDT-SWAP OKX futures engine
 Gran Script Carbono Silicio
@@ -128,7 +128,7 @@ def supertrend(df: pd.DataFrame, n: int = 10, mult: float = 3.0) -> pd.Series:
 
 
 # ---------------------------------------------------------------------------
-# OKX REST
+# OKX REST (public always; private if keys exist)
 # ---------------------------------------------------------------------------
 class OkxClient:
     def __init__(self) -> None:
@@ -257,6 +257,10 @@ class Signal:
         return self.side in ("LONG", "SHORT") and self.score >= MIN_SCORE and not self.vetoes
 
 
+def last_ok(df: pd.DataFrame) -> bool:
+    return df is not None and len(df) >= 60
+
+
 def enrich(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
     out["ema21"] = ema(out["close"], 21)
@@ -339,6 +343,7 @@ def score_market(
     long_pts = 0.0
     short_pts = 0.0
 
+    # --- hard vetoes (protector) ---
     if float(e["atr_pct"]) > ATR_PCT_HARD_CAP:
         vetoes.append(f"ATR% {e['atr_pct']:.3%} > {ATR_PCT_HARD_CAP:.2%} — 2% stop sits inside noise")
 
@@ -349,6 +354,7 @@ def score_market(
     if rng20 < CHOP_RANGE_ATR_MULT * float(e["atr"]):
         vetoes.append("Chop veto: 20-bar range compressed vs ATR")
 
+    # --- bias 4H ---
     bull_bias = b["close"] > b["ema200"] or (b["ema55"] > b["ema200"] and b["ema200"] >= bias_df["ema200"].iloc[-5])
     bear_bias = b["close"] < b["ema200"] or (b["ema55"] < b["ema200"] and b["ema200"] <= bias_df["ema200"].iloc[-5])
     if bull_bias:
@@ -368,6 +374,7 @@ def score_market(
         reasons_l.append(f"4H ADX {b['adx']:.1f} weak — size down")
         reasons_s.append(f"4H ADX {b['adx']:.1f} weak — size down")
 
+    # --- structure 1H supertrend ---
     if int(s["st_dir"]) == 1:
         long_pts += 1.0
         reasons_l.append("1H Supertrend long")
@@ -375,6 +382,7 @@ def score_market(
         short_pts += 1.0
         reasons_s.append("1H Supertrend short")
 
+    # --- execution pullback-in-trend ---
     near_ema = abs(e["close"] / e["ema21"] - 1) <= 0.004
     at_bb_lo = e["close"] <= e["bb_lo"] * 1.004
     at_bb_up = e["close"] >= e["bb_up"] * 0.996
@@ -401,6 +409,7 @@ def score_market(
         reasons_l.append("Volume ≥ SMA20")
         reasons_s.append("Volume ≥ SMA20")
 
+    # --- funding (futures tool) ---
     if fr >= FUNDING_EXTREME:
         short_pts += 1.5
         reasons_s.append(f"Crowded longs funding {fr:.4%}")
@@ -417,6 +426,7 @@ def score_market(
         reasons_l.append(f"Funding neutral {fr:.4%}")
         reasons_s.append(f"Funding neutral {fr:.4%}")
 
+    # decide
     side = "FLAT"
     score = 0.0
     reasons: List[str] = []
@@ -463,6 +473,7 @@ def score_market(
 
 
 def position_contracts(equity: float, risk_pct: float, price: float, ct_val: float) -> Tuple[float, int]:
+    """Size so that 2% price stop ≈ risk_pct of equity."""
     risk_usdt = equity * (risk_pct / 100.0)
     loss_per_contract = price * ct_val * STOP_PCT
     if loss_per_contract <= 0:
@@ -483,12 +494,14 @@ def print_banner() -> None:
 def run_inspect(ox: OkxClient) -> Dict[str, Any]:
     print_banner()
     print("Fetching OKX public market data...")
+    
     exec_df = enrich(ox.candles(OKX_BAR[BARS["exec"]], 200))
     struct_df = enrich(ox.candles(OKX_BAR[BARS["struct"]], 200))
     bias_df = enrich(ox.candles(OKX_BAR[BARS["bias"]], 200))
     ticker = ox.ticker()
     funding = ox.funding()
     oi = ox.open_interest()
+    
     inst = {}
     try:
         inst = ox.instrument()
@@ -498,11 +511,55 @@ def run_inspect(ox: OkxClient) -> Dict[str, Any]:
     inspection = inspect_indicators(exec_df, struct_df, bias_df)
     sig = score_market(exec_df, struct_df, bias_df, ticker, funding, oi)
 
-    equity = float(os.getenv("ACCOUNT_EQUITY_USDT", "1000"))
+    equity = float(os.getenv("ACCOUNT_EQUITY_USDT", "100"))
     risk_pct = float(os.getenv("RISK_PER_TRADE_PCT", "1.0"))
     ct_val = float(inst.get("ctVal", CONTRACT_CTVAL_FALLBACK) or CONTRACT_CTVAL_FALLBACK)
     raw, n = position_contracts(equity, risk_pct, sig.price, ct_val)
 
+    # ========== SALIDA CLARA Y LEGIBLE ==========
+    print("\n" + "=" * 72)
+    print("                    PANDA GSCSI — INSPECT RESULT")
+    print("=" * 72)
+    print(f"Time (UTC)     : {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"Instrument     : {INST_ID}")
+    print(f"Price (last)   : {sig.price:,.1f}")
+    print(f"Mark           : {sig.mark:,.1f}")
+    print(f"Funding        : {sig.funding:.4%}")
+    print(f"ATR% (15m)     : {sig.atr_pct:.3%}")
+    print("-" * 72)
+
+    # DECISIÓN PRINCIPAL
+    if sig.allowed:
+        decision = f">>> {sig.side}  |  Score: {sig.score}  |  ALLOWED <<<"
+    else:
+        decision = f">>> {sig.side}  |  Score: {sig.score}  |  BLOCKED <<<"
+    
+    print(f"\nDECISIÓN FINAL : {decision}")
+    
+    if sig.vetoes:
+        print("\n⛔ VETOES ACTIVOS:")
+        for v in sig.vetoes:
+            print(f"   • {v}")
+    else:
+        print("\n✅ Sin vetoes")
+
+    print("\nRazones principales:")
+    for r in sig.reasons[:6]:
+        print(f"   • {r}")
+
+    if sig.side in ("LONG", "SHORT"):
+        print(f"\nEntry          : {sig.price:,.1f}")
+        print(f"Stop Loss      : {sig.sl:,.1f}  ({STOP_PCT:.2%})")
+        print(f"Take Profit   : {sig.tp:,.1f}  ({TP_R:.1f}R)")
+    
+    print(f"\nSizing (paper):")
+    print(f"   Equity       : {equity:.0f} USDT")
+    print(f"   Risk/trade   : {risk_pct}%")
+    print(f"   Contratos    : {n}  (raw: {raw:.2f})")
+    
+    print("=" * 72)
+
+    # JSON completo al final (para debug)
     report = {
         "generated_utc": datetime.now(timezone.utc).isoformat(),
         "instrument": INST_ID,
@@ -539,18 +596,17 @@ def run_inspect(ox: OkxClient) -> Dict[str, Any]:
             "risk_pct_account": risk_pct,
             "raw_contracts": raw,
             "suggested_contracts": n,
-            "note": "Account risk is 1% default. The 2% figure is the PRICE stop, not account risk.",
         },
         "protector": {
             "max_leverage": MAX_LEVERAGE,
             "default_leverage": DEFAULT_LEVERAGE,
-            "sl_trigger": "mark",
             "live_default": False,
-            "warning": "Do not enable live until demo walk-forward is acceptable to the operator.",
         },
     }
 
+    print("\n--- FULL JSON REPORT ---")
     print(json.dumps(report, indent=2, default=str))
+    
     return report
 
 
@@ -572,7 +628,7 @@ def run_trade(ox: OkxClient, report: Optional[dict] = None) -> dict:
         return {"status": "blocked", "reason": "size_zero"}
 
     lever = min(int(os.getenv("LEVERAGE", str(DEFAULT_LEVERAGE))), MAX_LEVERAGE)
-    pos_mode = os.getenv("POS_MODE", "long_short")
+    pos_mode = os.getenv("POS_MODE", "long_short")  # long_short or net
     side = "buy" if sig["side"] == "LONG" else "sell"
     pos_side = "long" if sig["side"] == "LONG" else "short"
 
@@ -624,3 +680,7 @@ def main() -> None:
         run_inspect(ox)
     else:
         run_trade(ox)
+
+
+if __name__ == "__main__":
+    main()
