@@ -314,7 +314,17 @@ def score_market(exec_df: pd.DataFrame, struct_df: pd.DataFrame, bias_df: pd.Dat
         side, score, reasons = "SHORT", short_pts, reasons_s
     else:
         reasons = [f"L{long_pts:.1f}/S{short_pts:.1f} < {MIN_SCORE}"]
+    st_flip_long = int(s["st_dir"]) == 1 and int(s_prev["st_dir"]) != 1
+    st_flip_short = int(s["st_dir"]) == -1 and int(s_prev["st_dir"]) != -1
+    macd_turn_long = float(e["macd_hist"]) > 0 and float(prev["macd_hist"]) <= 0
+    macd_turn_short = float(e["macd_hist"]) < 0 and float(prev["macd_hist"]) >= 0
 
+    if side == "LONG" and not (st_flip_long or macd_turn_long):
+        side = "FLAT"
+        reasons.append("Sin disparo LONG")
+    elif side == "SHORT" and not (st_flip_short or macd_turn_short):
+        side = "FLAT"
+        reasons.append("Sin disparo SHORT")
     sl = tp = 0.0
     if side == "LONG":
         sl = last * (1 - STOP_PCT)
