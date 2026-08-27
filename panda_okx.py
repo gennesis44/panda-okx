@@ -1,17 +1,8 @@
-#!/usr/bin/env python3
+ #!/usr/bin/env python3
 """
 PANDA GSCSI LIVE — modo agresivo paper/demo
 Abre y cierra entradas en tiempo real.
 NO usa capital real por defecto.
-
-Modos:
-  PAPER  = simula fills localmente y muestra actividad
-  DEMO   = envía órdenes a OKX Simulated Trading (x-simulated-trading=1)
-  LIVE   = solo si LIVE_TRADING=true y OKX_FLAG=0  (no recomendado)
-
-Uso:
-  python panda_gscsi_live.py
-  python panda_gscsi_live.py --interval 60
 """
 
 from __future__ import annotations
@@ -22,7 +13,7 @@ import hmac
 import json
 import os
 import time
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlencode
@@ -38,18 +29,15 @@ except Exception:
     pass
 
 
-# ---------------------------------------------------------------------------
-# Parámetros AGRESIVOS (abrir y cerrar rápido)
-# ---------------------------------------------------------------------------
 INST_ID = "BTC-USDT-SWAP"
-STOP_PCT = 0.008          # 0.80%
-TP_R = 1.00               # 0.80% de objetivo
+STOP_PCT = 0.008
+TP_R = 1.00
 MIN_SCORE = 4.5
 MAX_HOLD_SECONDS = 60 * 60
 CHECK_INTERVAL = 60
 ATR_PCT_HARD_CAP = 0.020
 CHOP_RANGE_ATR_MULT = 1.5
-FEE_ROUNDTRIP = 0.0010    # 0.10% taker+taker estimado
+FEE_ROUNDTRIP = 0.0010
 DEFAULT_LEVERAGE = 3
 MAX_LEVERAGE = 5
 PAPER_EQUITY = float(os.getenv("ACCOUNT_EQUITY_USDT", "1000"))
@@ -58,9 +46,6 @@ STATE_FILE = "panda_live_state.json"
 TRADES_FILE = "panda_live_trades.csv"
 
 
-# ---------------------------------------------------------------------------
-# Indicadores
-# ---------------------------------------------------------------------------
 def ema(s: pd.Series, n: int) -> pd.Series:
     return s.ewm(span=n, adjust=False).mean()
 
@@ -142,15 +127,12 @@ def enrich(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-# ---------------------------------------------------------------------------
-# Cliente OKX
-# ---------------------------------------------------------------------------
 class OkxClient:
     def __init__(self) -> None:
         self.api_key = os.getenv("OKX_API_KEY", "")
         self.api_secret = os.getenv("OKX_API_SECRET", "")
         self.passphrase = os.getenv("OKX_PASSPHRASE", "")
-        self.flag = os.getenv("OKX_FLAG", "1")  # 1 = demo, 0 = live
+        self.flag = os.getenv("OKX_FLAG", "1")
         self.base = "https://www.okx.com"
 
     def has_keys(self) -> bool:
@@ -220,10 +202,6 @@ class OkxClient:
     def funding(self) -> dict:
         return self.public("/api/v5/public/funding-rate", {"instId": INST_ID})["data"][0]
 
-    def instrument(self) -> dict:
-        data = self.public("/api/v5/public/instruments", {"instType": "SWAP", "instId": INST_ID})["data"]
-        return data[0] if data else {}
-
     def set_leverage(self, lever: str, pos_side: str = "") -> dict:
         body = {"instId": INST_ID, "lever": lever, "mgnMode": "cross"}
         if pos_side:
@@ -247,9 +225,6 @@ class OkxClient:
         return self.private("POST", "/api/v5/trade/order", payload)
 
 
-# ---------------------------------------------------------------------------
-# Señal agresiva
-# ---------------------------------------------------------------------------
 @dataclass
 class Signal:
     side: str
@@ -355,9 +330,6 @@ def score_market(exec_df: pd.DataFrame, struct_df: pd.DataFrame, bias_df: pd.Dat
     )
 
 
-# ---------------------------------------------------------------------------
-# Estado paper
-# ---------------------------------------------------------------------------
 def load_state() -> Dict[str, Any]:
     if os.path.exists(STATE_FILE):
         with open(STATE_FILE, "r", encoding="utf-8") as f:
@@ -376,21 +348,14 @@ def save_state(state: Dict[str, Any]) -> None:
 
 def append_trade_csv(trade: Dict[str, Any]) -> None:
     header = not os.path.exists(TRADES_FILE)
-    df = pd.DataFrame([trade])
-    df.to_csv(TRADES_FILE, mode="a", header=header, index=False)
-
+    pd.DataFrame([trade]).to_csv(TRADES_FILE, mode="a", header=header, index=False)
 
 def now_utc() -> datetime:
     return datetime.now(timezone.utc)
 
-
 def fmt(ts: Optional[datetime] = None) -> str:
     return (ts or now_utc()).strftime("%Y-%m-%d %H:%M:%S")
 
-
-# ---------------------------------------------------------------------------
-# Motor vivo
-# ---------------------------------------------------------------------------
 def decide_exec_mode() -> str:
     live = os.getenv("LIVE_TRADING", "false").lower() in ("1", "true", "yes")
     flag = os.getenv("OKX_FLAG", "1")
@@ -400,17 +365,15 @@ def decide_exec_mode() -> str:
         return "DEMO"
     return "PAPER"
 
-
 def print_banner(mode: str, interval: int) -> None:
     print("=" * 74)
     print("PANDA GSCSI LIVE  |  modo agresivo  |  abrir y cerrar entradas")
     print(f"Instrumento : {INST_ID}")
-    print(f"Modo        : {mode}   (PAPER=simulado, DEMO=OKX demo, LIVE=real)")
+    print(f"Modo        : {mode}")
     print(f"Stop / TP   : {STOP_PCT:.2%} / {TP_R:.1f}R     Score min: {MIN_SCORE}")
     print(f"Max hold    : {MAX_HOLD_SECONDS//60} min     Intervalo: {interval}s")
     print("Capital real: NO se usa por defecto")
     print("=" * 74)
-
 
 def manage_exit(pos: dict, last: float, high: float, low: float) -> Optional[str]:
     held = (now_utc() - datetime.fromisoformat(pos["entry_time"])).total_seconds()
@@ -428,7 +391,6 @@ def manage_exit(pos: dict, last: float, high: float, low: float) -> Optional[str
         return "TIME"
     return None
 
-
 def close_paper(state: dict, last: float, reason: str) -> dict:
     pos = state["position"]
     if pos["side"] == "LONG":
@@ -436,8 +398,6 @@ def close_paper(state: dict, last: float, reason: str) -> dict:
     else:
         pnl_pct = (pos["entry"] - last) / pos["entry"]
     pnl_pct -= FEE_ROUNDTRIP
-    pnl_usdt = state["equity"] * (RISK_PCT / 100.0) * (pnl_pct / STOP_PCT)
-    # más estable: aplicar pnl sobre notional paper
     notional = pos.get("notional", state["equity"] * DEFAULT_LEVERAGE)
     pnl_usdt = notional * pnl_pct
     state["equity"] += pnl_usdt
@@ -464,9 +424,7 @@ def close_paper(state: dict, last: float, reason: str) -> dict:
     save_state(state)
     return trade
 
-
 def open_paper(state: dict, sig: Signal, last: float) -> dict:
-    notional = state["equity"] * DEFAULT_LEVERAGE
     pos = {
         "side": sig.side,
         "entry": last,
@@ -474,13 +432,12 @@ def open_paper(state: dict, sig: Signal, last: float) -> dict:
         "tp": sig.tp,
         "entry_time": now_utc().isoformat(),
         "score": sig.score,
-        "notional": notional,
+        "notional": state["equity"] * DEFAULT_LEVERAGE,
         "sz": "1",
     }
     state["position"] = pos
     save_state(state)
     return pos
-
 
 def cycle(ox: OkxClient, state: dict, mode: str) -> None:
     exec_df = enrich(ox.candles("15m", 200))
@@ -500,7 +457,6 @@ def cycle(ox: OkxClient, state: dict, mode: str) -> None:
         print("Vetoes:", "; ".join(sig.vetoes))
     print("Razones:", " | ".join(sig.reasons[:5]) if sig.reasons else "-")
 
-    # Gestionar posición abierta
     if state.get("position"):
         pos = state["position"]
         reason = manage_exit(pos, last, high, low)
@@ -513,14 +469,14 @@ def cycle(ox: OkxClient, state: dict, mode: str) -> None:
                     print(f"OKX {mode}: cierre enviado ({reason})")
                 except Exception as exc:
                     print(f"Aviso cierre OKX: {exc}")
-            trade = close_paper(state, last if reason == "TIME" else (pos["sl"] if reason == "SL" else pos["tp"]), reason)
+            exit_px = last if reason == "TIME" else (pos["sl"] if reason == "SL" else pos["tp"])
+            trade = close_paper(state, exit_px, reason)
             print(f">>> CIERRE {trade['side']} {reason} | exit {trade['exit']:.1f} | PnL {trade['pnl_usdt']:+.2f} USDT ({trade['pnl_pct']:+.2f}%)")
             print(f"Equity paper: {state['equity']:.2f} | W/L {state['wins']}/{state['losses']}")
         else:
             print("Mantiene posición. Sin cierre aún.")
         return
 
-    # Buscar entrada
     if not sig.allowed:
         print("Sin entrada. Esperando siguiente ciclo.")
         print(f"Equity paper: {state['equity']:.2f} | trades {len(state['trades'])} | W/L {state['wins']}/{state['losses']}")
@@ -563,24 +519,16 @@ def cycle(ox: OkxClient, state: dict, mode: str) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="PANDA GSCSI LIVE agresivo paper/demo")
     parser.add_argument("--interval", type=int, default=CHECK_INTERVAL)
+    parser.add_argument("--max-minutes", type=int, default=0)
     args = parser.parse_args()
 
     mode = decide_exec_mode()
     ox = OkxClient()
     state = load_state()
     print_banner(mode, args.interval)
-
-    if mode == "LIVE":
-        print("\nALERTA: LIVE_TRADING=true y OKX_FLAG=0 usaría capital real.")
-        print("Este script no lo activa solo. Revisa variables de entorno.\n")
-
-    if mode == "PAPER":
-        print("Modo PAPER activo: abre/cierra en local y verás toda la actividad.")
-        print("Para DEMO OKX crea claves de Simulated Trading y pon OKX_FLAG=1.\n")
-
     print(f"Estado inicial equity paper: {state['equity']:.2f} USDT")
-    print("Ctrl+C para detener.\n")
 
+    started = time.time()
     while True:
         try:
             cycle(ox, state, mode)
@@ -590,6 +538,12 @@ def main() -> None:
             break
         except Exception as exc:
             print(f"Error de ciclo: {exc}")
+
+        if args.max_minutes and (time.time() - started) >= args.max_minutes * 60:
+            print(f"Tiempo máximo alcanzado ({args.max_minutes} min).")
+            save_state(state)
+            break
+
         time.sleep(args.interval)
 
 
