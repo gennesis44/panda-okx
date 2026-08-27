@@ -1,0 +1,24 @@
+name: PANDA GSCSI Live
+
+on:
+  workflow_dispatch:
+
+jobs:
+  live:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pandas numpy requests python-dotenv
+      - run: python panda_gscsi_live.py --interval 30 --max-minutes 12
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: panda-live-results
+          path: |
+            panda_live_state.json
+            panda_live_trades.csv
+          if-no-files-found: warn
