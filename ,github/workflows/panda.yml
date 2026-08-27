@@ -1,4 +1,4 @@
-name: PANDA GSCSI Live
+name: python panda_gscsi_live.py --max-minutes 1
 
 on:
   workflow_dispatch:
@@ -13,7 +13,7 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install pandas numpy requests python-dotenv
-      - run: python panda_gscsi_live.py --interval 30 --max-minutes 12
+      - run: python panda_gscsi_live.py --interval 30 --max-minutes 1
       - if: always()
         uses: actions/upload-artifact@v4
         with:
