@@ -1,24 +1,33 @@
-name: python panda_gscsi_live.py --max-minutes 1
+name: PANDA GSCSI Inspect
 
 on:
+  schedule:
+    - cron: "*/3 * * * *"
   workflow_dispatch:
 
 jobs:
-  live:
+  inspect:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
-      - run: pip install pandas numpy requests python-dotenv
-      - run: python panda_gscsi_live.py --interval 30 --max-minutes 1
-      - if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: panda-live-results
-          path: |
-            panda_live_state.json
-            panda_live_trades.csv
-          if-no-files-found: warn
+          python-version: "3.11"
+
+      - name: Install deps
+        run: pip install requests pandas numpy python-dotenv
+
+      - name: Run PANDA inspect
+        env:
+          OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
+          OKX_API_SECRET: ${{ secrets.OKX_API_SECRET }}
+          OKX_PASSPHRASE: ${{ secrets.OKX_PASSPHRASE }}
+          OKX_FLAG: "1"
+          LIVE_TRADING: "false"
+          ACCOUNT_EQUITY_USDT: "100"
+          RISK_PER_TRADE_PCT: "1.0"
+          LEVERAGE: "3"
+        run: python panda_gscsi_live.py --interval 30 --max-minutes 2
