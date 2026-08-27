@@ -248,6 +248,7 @@ def score_market(exec_df: pd.DataFrame, struct_df: pd.DataFrame, bias_df: pd.Dat
     e = exec_df.iloc[-1]
     prev = exec_df.iloc[-2]
     s = struct_df.iloc[-1]
+    s_prev = struct_df.iloc[-2]
     b = bias_df.iloc[-1]
     last = float(ticker.get("last", e["close"]))
     fr = float(funding.get("fundingRate", 0.0) or 0.0)
