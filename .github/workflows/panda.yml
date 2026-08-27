@@ -29,4 +29,4 @@ jobs:
           ACCOUNT_EQUITY_USDT: "100"
           RISK_PER_TRADE_PCT: "1.0"
           LEVERAGE: "3"
-        run: run: python panda_gscsi_live.py --interval 30 --max-minutes 1
+        run: python panda_gscsi_live.py --interval 30 --max-minutes 1
