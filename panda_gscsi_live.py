@@ -30,7 +30,7 @@ except Exception:
 
 
 INST_ID = "BTC-USDT-SWAP"
-STOP_PCT = 0.008
+STOP_PCT = 0.01
 TP_R = 1.00
 MIN_SCORE = 4.5
 MAX_HOLD_SECONDS = 60 * 60
