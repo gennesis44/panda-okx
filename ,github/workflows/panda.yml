@@ -1,14 +1,18 @@
-name: PANDA GSCSI Inspect
+name: PANDA GSCSI Stats
 
 on:
   schedule:
-    - cron: "*/3 * * * *"
-  workflow_dispatch:
+    - cron: "0 * * * *"   # una vez por hora — es solo lectura, no hace falta más frecuencia
+  workflow_dispatch:        # también lo puedes lanzar a mano desde la pestaña Actions
+
+concurrency:
+  group: panda-gscsi-stats
+  cancel-in-progress: false
 
 jobs:
-  inspect:
+  stats:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
 
@@ -20,14 +24,10 @@ jobs:
       - name: Install deps
         run: pip install requests pandas numpy python-dotenv
 
-      - name: Run PANDA inspect
+      - name: Run PANDA stats (track record real de OKX)
         env:
           OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
           OKX_API_SECRET: ${{ secrets.OKX_API_SECRET }}
           OKX_PASSPHRASE: ${{ secrets.OKX_PASSPHRASE }}
-          OKX_FLAG: "1"
-          LIVE_TRADING: "false"
-          ACCOUNT_EQUITY_USDT: "100"
-          RISK_PER_TRADE_PCT: "1.0"
-          LEVERAGE: "3"
-        run: python panda_gscsi_live.py --interval 30 --max-minutes 2
+          OKX_FLAG: "1"   # 1 = demo/simulated trading, igual que el bot principal
+        run: python panda_gscsi_live.py --mode stats
