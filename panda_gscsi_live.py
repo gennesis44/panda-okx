@@ -1,23 +1,16 @@
 #!/usr/bin/env python3
 """
-PANDA GSCSI — BTC-USDT-SWAP OKX futures engine
+PANDA GSCSI â€” BTC-USDT-SWAP OKX futures engine
 Gran Script Carbono Silicio
 Collaborator and protector of the operator.
 
-Fixed price stop-loss: 2.00% long and short.
+Dual engine:
+  - SCALP SHORT: fast continuous probes while 1W is indecisive.
+  - REGIME LONG: only if weekly close sits above MA10 AND MA50 (Mar-2023 analog,
+    operator rule 2026-08-28). 15m/1H/4H cannot override that gate.
+
 Default: dry-run / demo. Live trading is an explicit opt-in.
-
 Not financial advice. No guaranteed hit-rate.
-
-CHANGELOG (respecto a la versión original):
-  - Fix: CLI ahora acepta --interval y --max-minutes (antes causaba crash
-    porque argparse solo conocía --mode).
-  - Add: chequeo de posición abierta antes de operar (evita apilar
-    posiciones cuando el cron corre cada pocos minutos).
-  - Add: tracking persistente de señales (signals_log.json) que registra
-    cada señal generada y, en ejecuciones posteriores, comprueba si tocó
-    TP (WIN), SL (LOSS) o sigue abierta (OPEN). Al final imprime winrate
-    real acumulado.
 """
 
 from __future__ import annotations
@@ -46,32 +39,41 @@ except Exception:
     pass
 
 
-# ---------------------------------------------------------------------------
-# Constants / protector defaults
-# ---------------------------------------------------------------------------
 INST_ID = "BTC-USDT-SWAP"
-BASE_URL = "https://www.okx.com"  # misma URL para live y demo; el header
-                                   # x-simulated-trading es lo que distingue
-STOP_PCT = 0.02
-TP_R = 1.5  # 3% target vs 2% stop
+BASE_URL = "https://www.okx.com"
+# Carbon 17:50: SL 1.00% both sides. TP 1.5R = 1.50% both sides.
+STOP_PCT = float(os.getenv("STOP_PCT", "0.01"))
+TP_R = float(os.getenv("TP_R", "1.5"))
+LONG_TP_PCT = float(os.getenv("LONG_TP_PCT", "0.015"))
+SHORT_STOP_PCT = float(os.getenv("SHORT_STOP_PCT", "0.01"))
+SHORT_TP_PCT = float(os.getenv("SHORT_TP_PCT", "0.015"))
 MAX_LEVERAGE = 5
 DEFAULT_LEVERAGE = 3
-MAX_DAILY_LOSS_PCT = 0.04
-MIN_SCORE = 6.0
+MAX_DAILY_LOSS_PCT = float(os.getenv("MAX_DAILY_LOSS_PCT", "0.04"))
+MIN_SCORE = float(os.getenv("MIN_SCORE", "6.0"))
+MIN_SCORE_SHORT = float(os.getenv("MIN_SCORE_SHORT", "5.5"))
 CHOP_RANGE_ATR_MULT = 1.2
 ATR_PCT_HARD_CAP = 0.022
-FUNDING_EXTREME = 0.0008  # 0.08% per interval
+FUNDING_EXTREME = 0.0008
 MARK_LAST_DIVERGENCE_CAP = 0.0015
-CONTRACT_CTVAL_FALLBACK = 0.01  # BTC per contract on BTC-USDT-SWAP
-BARS = {"exec": "15m", "struct": "1H", "bias": "4H"}
-OKX_BAR = {"15m": "15m", "1H": "1H", "4H": "4H", "5m": "5m", "1D": "1D"}
+CONTRACT_CTVAL_FALLBACK = 0.01
+BARS = {"exec": "15m", "struct": "1H", "bias": "4H", "macro": "1W"}
+OKX_BAR = {"15m": "15m", "1H": "1H", "4H": "4H", "5m": "5m", "1D": "1D", "1W": "1W"}
+
+WEEKLY_MA_PERIODS = (10, 50, 100, 200)
+# Axiom 3: full_pack is law. ma10_ma50 only if Carbon explicitly overrides.
+WEEKLY_LONG_MODE = os.getenv("WEEKLY_LONG_MODE", "full_pack").strip().lower()
+ENABLE_SCALP_SHORT = os.getenv("ENABLE_SCALP_SHORT", "true").lower() in ("1", "true", "yes")
+ENABLE_REGIME_LONG = os.getenv("ENABLE_REGIME_LONG", "true").lower() in ("1", "true", "yes")
+MAX_SCALP_SHORTS_PER_DAY = int(os.getenv("MAX_SCALP_SHORTS_PER_DAY", "4"))
+SHORT_COOLDOWN_MIN = int(os.getenv("SHORT_COOLDOWN_MIN", "45"))
+# Block squeeze-shorts when 4H is strongly trending up
+BLOCK_SHORT_IN_4H_SQUEEZE = os.getenv("BLOCK_SHORT_IN_4H_SQUEEZE", "true").lower() in ("1", "true", "yes")
 
 SIGNALS_LOG_PATH = Path(os.getenv("SIGNALS_LOG_PATH", "signals_log.json"))
+DAILY_STATE_PATH = Path(os.getenv("DAILY_STATE_PATH", "daily_state.json"))
 
 
-# ---------------------------------------------------------------------------
-# Indicators
-# ---------------------------------------------------------------------------
 def ema(s: pd.Series, n: int) -> pd.Series:
     return s.ewm(span=n, adjust=False).mean()
 
@@ -141,15 +143,12 @@ def supertrend(df: pd.DataFrame, n: int = 10, mult: float = 3.0) -> pd.Series:
     return pd.Series(direction, index=df.index)
 
 
-# ---------------------------------------------------------------------------
-# OKX REST (public always; private if keys exist)
-# ---------------------------------------------------------------------------
 class OkxClient:
     def __init__(self) -> None:
         self.api_key = os.getenv("OKX_API_KEY", "")
         self.api_secret = os.getenv("OKX_API_SECRET", "")
         self.passphrase = os.getenv("OKX_PASSPHRASE", "")
-        self.flag = os.getenv("OKX_FLAG", "1")  # 1 demo, 0 live
+        self.flag = os.getenv("OKX_FLAG", "1")
         self.base = BASE_URL
 
     def _ts(self) -> str:
@@ -238,17 +237,10 @@ class OkxClient:
         return data[0] if data else {}
 
     def positions(self) -> List[dict]:
-        """Consulta posiciones abiertas para el instrumento. Requiere keys."""
         data = self.private("GET", "/api/v5/account/positions", {"instId": INST_ID})
         return data.get("data", [])
 
     def positions_history(self, limit: int = 100) -> List[dict]:
-        """
-        Historial de posiciones YA CERRADAS, con PnL realizado exacto
-        (campo 'realizedPnl' / 'pnl'), calculado por el propio motor de OKX.
-        Requiere keys privadas. Esta es la fuente de verdad para medir
-        aciertos/fallos reales, mejor que el muestreo de signals_log.json.
-        """
         data = self.private(
             "GET",
             "/api/v5/account/positions-history",
@@ -267,16 +259,10 @@ class OkxClient:
 
 
 def has_open_position(ox: OkxClient) -> bool:
-    """
-    PROTECTOR: comprueba si ya hay una posición abierta en BTC-USDT-SWAP
-    antes de dejar entrar una orden nueva. Si las keys privadas no están
-    disponibles (p.ej. ejecución de solo-inspección) se asume que no se
-    puede verificar y se bloquea por precaución.
-    """
     try:
         pos = ox.positions()
     except Exception as exc:
-        print(f"PROTECTOR: no se pudo verificar posiciones abiertas ({exc}). Bloqueando por precaución.")
+        print(f"PROTECTOR: no se pudo verificar posiciones abiertas ({exc}). Bloqueando por precauciÃ³n.")
         return True
     for p in pos:
         try:
@@ -287,12 +273,9 @@ def has_open_position(ox: OkxClient) -> bool:
     return False
 
 
-# ---------------------------------------------------------------------------
-# Scoring
-# ---------------------------------------------------------------------------
 @dataclass
 class Signal:
-    side: str  # LONG / SHORT / FLAT
+    side: str
     score: float
     reasons: List[str] = field(default_factory=list)
     vetoes: List[str] = field(default_factory=list)
@@ -307,7 +290,13 @@ class Signal:
 
     @property
     def allowed(self) -> bool:
-        return self.side in ("LONG", "SHORT") and self.score >= MIN_SCORE and not self.vetoes
+        if self.vetoes:
+            return False
+        if self.side == "LONG":
+            return self.score >= MIN_SCORE
+        if self.side == "SHORT":
+            return self.score >= MIN_SCORE_SHORT
+        return False
 
 
 def enrich(df: pd.DataFrame) -> pd.DataFrame:
@@ -335,11 +324,118 @@ def enrich(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def inspect_indicators(exec_df: pd.DataFrame, struct_df: pd.DataFrame, bias_df: pd.DataFrame) -> Dict[str, Any]:
+def weekly_ma_pack(weekly_df: pd.DataFrame) -> Dict[str, Any]:
+    """
+    Carbon rule: same SMA pack the operator reads on 1W Binance.
+    Fail-closed: missing bars => stack incomplete => LONG veto.
+    """
+    close = weekly_df["close"]
+    last = float(close.iloc[-1])
+    mas: Dict[str, Optional[float]] = {}
+    above: Dict[str, Optional[bool]] = {}
+    missing: List[int] = []
+    for n in WEEKLY_MA_PERIODS:
+        key = f"MA{n}"
+        if len(close) < n:
+            mas[key] = None
+            above[key] = None
+            missing.append(n)
+            continue
+        val = float(sma(close, n).iloc[-1])
+        mas[key] = val
+        above[key] = last > val
+
+    complete = not missing and all(bool(v) for v in above.values())
+    below = [k for k, v in above.items() if v is False]
+    if WEEKLY_LONG_MODE == "full_pack":
+        gate_need = (10, 50, 100, 200)
+    else:
+        gate_need = (10, 50)
+    long_gate = all(n not in missing and bool(above.get(f"MA{n}")) for n in gate_need)
+    return {
+        "tf": "1W",
+        "close": last,
+        "bars": int(len(close)),
+        "mas": mas,
+        "above": above,
+        "missing_periods": missing,
+        "full_stack": complete,
+        "below": below,
+        "long_gate": long_gate,
+        "long_gate_mode": WEEKLY_LONG_MODE,
+        "long_gate_need": [f"MA{n}" for n in gate_need],
+    }
+
+
+def weekly_long_ok(pack: Optional[Dict[str, Any]]) -> Tuple[bool, str]:
+    """Mar-2023 analog / Axiom 3: full pack MA10+50+100+200 unless env overrides."""
+    if not pack:
+        return False, "1W pack unavailable â€” fail-closed LONG"
+    missing = pack.get("missing_periods") or []
+    if WEEKLY_LONG_MODE == "full_pack":
+        need = [10, 50, 100, 200]
+    else:
+        need = [10, 50]
+    still_missing = [n for n in need if n in missing]
+    if still_missing:
+        return False, f"1W missing MA{still_missing} â€” fail-closed LONG"
+    above = pack.get("above") or {}
+    failed = [f"MA{n}" for n in need if not above.get(f"MA{n}")]
+    if failed:
+        return False, f"1W LONG gate closed â€” close {pack['close']:.1f} not above {'+'.join(failed)}"
+    return True, f"1W LONG gate OPEN â€” close {pack['close']:.1f} above {'+'.join(f'MA{n}' for n in need)}"
+
+
+def load_daily_state() -> Dict[str, Any]:
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    blank = {
+        "utc_date": today,
+        "scalp_shorts": 0,
+        "last_short_ts": None,
+        "realized_pnl_pct": 0.0,
+    }
+    if DAILY_STATE_PATH.exists():
+        try:
+            st = json.loads(DAILY_STATE_PATH.read_text())
+            if st.get("utc_date") == today:
+                return st
+        except Exception:
+            pass
+    return blank
+
+
+def save_daily_state(st: Dict[str, Any]) -> None:
+    DAILY_STATE_PATH.write_text(json.dumps(st, indent=2, default=str))
+
+
+def short_budget_ok(st: Dict[str, Any]) -> Tuple[bool, str]:
+    if st.get("realized_pnl_pct", 0.0) <= -abs(MAX_DAILY_LOSS_PCT) * 100:
+        return False, f"daily loss circuit {st.get('realized_pnl_pct')}%"
+    if int(st.get("scalp_shorts", 0)) >= MAX_SCALP_SHORTS_PER_DAY:
+        return False, f"max scalp shorts/day {MAX_SCALP_SHORTS_PER_DAY} reached"
+    last = st.get("last_short_ts")
+    if last:
+        try:
+            ts = datetime.fromisoformat(str(last).replace("Z", "+00:00"))
+            age_min = (datetime.now(timezone.utc) - ts).total_seconds() / 60.0
+            if age_min < SHORT_COOLDOWN_MIN:
+                return False, f"short cooldown {SHORT_COOLDOWN_MIN - age_min:.0f}m left"
+        except Exception:
+            pass
+    return True, "short budget open"
+
+
+def inspect_indicators(
+    exec_df: pd.DataFrame,
+    struct_df: pd.DataFrame,
+    bias_df: pd.DataFrame,
+    weekly_pack: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     e, s, b = exec_df.iloc[-1], struct_df.iloc[-1], bias_df.iloc[-1]
     rank = [
+        {"rank": 0, "name": "1W full_pack gate", "value": None if not weekly_pack else weekly_pack.get("long_gate"), "use": "Regime LONG only if 1W close > MA10+50+100+200"},
         {"rank": 1, "name": "ATR regime", "value": float(e["atr_pct"]), "use": "Gate 2% SL validity"},
-        {"rank": 2, "name": "EMA200 bias 4H", "value": float(b["close"] / b["ema200"] - 1), "use": "Direction lock"},
+        {"rank": 2, "name": "EMA200 bias 4H", "value": float(b["close"] / b["ema200"] - 1), "use": "Direction lock (subordinate to 1W)"},
         {"rank": 3, "name": "ADX 4H", "value": float(b["adx"]), "use": "Trend-on switch"},
         {"rank": 4, "name": "Supertrend 1H", "value": int(s["st_dir"]), "use": "Structure bias"},
         {"rank": 5, "name": "EMA21 pullback 15m", "value": float(e["close"] / e["ema21"] - 1), "use": "Execution"},
@@ -362,6 +458,7 @@ def inspect_indicators(exec_df: pd.DataFrame, struct_df: pd.DataFrame, bias_df: 
             "ema55": float(b["ema55"]),
             "ema200": float(b["ema200"]),
         },
+        "weekly_ma_pack": weekly_pack,
         "ranked_tools": rank,
     }
 
@@ -373,6 +470,7 @@ def score_market(
     ticker: dict,
     funding: dict,
     oi: dict,
+    weekly_pack: Optional[Dict[str, Any]] = None,
 ) -> Signal:
     e = exec_df.iloc[-1]
     prev = exec_df.iloc[-2]
@@ -390,11 +488,17 @@ def score_market(
     long_pts = 0.0
     short_pts = 0.0
 
+    long_gate, long_gate_msg = weekly_long_ok(weekly_pack)
+    daily = load_daily_state()
+    short_ok, short_budget_msg = short_budget_ok(daily)
+    if not long_gate:
+        reasons_l.append(long_gate_msg)
+
     if float(e["atr_pct"]) > ATR_PCT_HARD_CAP:
-        vetoes.append(f"ATR% {e['atr_pct']:.3%} > {ATR_PCT_HARD_CAP:.2%} — 2% stop sits inside noise")
+        vetoes.append(f"ATR% {e['atr_pct']:.3%} > {ATR_PCT_HARD_CAP:.2%} â€” 2% stop sits inside noise")
 
     if last > 0 and abs(mark - last) / last > MARK_LAST_DIVERGENCE_CAP:
-        vetoes.append("Mark vs last divergence — possible wick / dislocation")
+        vetoes.append("Mark vs last divergence â€” possible wick / dislocation")
 
     rng20 = float(exec_df["high"].tail(20).max() - exec_df["low"].tail(20).min())
     if rng20 < CHOP_RANGE_ATR_MULT * float(e["atr"]):
@@ -417,9 +521,9 @@ def score_market(
             reasons_s.append(f"4H ADX {b['adx']:.1f} trend-on")
     else:
         if bull_bias:
-            reasons_l.append(f"4H ADX {b['adx']:.1f} weak — size down")
+            reasons_l.append(f"4H ADX {b['adx']:.1f} weak â€” size down")
         if bear_bias:
-            reasons_s.append(f"4H ADX {b['adx']:.1f} weak — size down")
+            reasons_s.append(f"4H ADX {b['adx']:.1f} weak â€” size down")
 
     if int(s["st_dir"]) == 1:
         long_pts += 1.0
@@ -451,8 +555,8 @@ def score_market(
     if e["vol_sma"] and e["volume"] >= e["vol_sma"]:
         long_pts += 0.5
         short_pts += 0.5
-        reasons_l.append("Volume ≥ SMA20")
-        reasons_s.append("Volume ≥ SMA20")
+        reasons_l.append("Volume â‰¥ SMA20")
+        reasons_s.append("Volume â‰¥ SMA20")
 
     if fr >= FUNDING_EXTREME:
         short_pts += 1.5
@@ -470,28 +574,72 @@ def score_market(
         reasons_l.append(f"Funding neutral {fr:.4%}")
         reasons_s.append(f"Funding neutral {fr:.4%}")
 
+    if BLOCK_SHORT_IN_4H_SQUEEZE and bull_bias and float(b["adx"]) >= 28:
+        reasons_s.append("4H squeeze guard â€” short size/score watched")
+        short_pts -= 1.5
+
     side = "FLAT"
     score = 0.0
     reasons: List[str] = []
-    if long_pts >= short_pts and long_pts >= MIN_SCORE:
-        side, score, reasons = "LONG", long_pts, reasons_l
-    elif short_pts > long_pts and short_pts >= MIN_SCORE:
-        side, score, reasons = "SHORT", short_pts, reasons_s
+    engine = "none"
+
+    can_long = (
+        ENABLE_REGIME_LONG
+        and long_gate
+        and long_pts >= MIN_SCORE
+        and long_pts >= short_pts
+    )
+    can_short = (
+        ENABLE_SCALP_SHORT
+        and short_ok
+        and short_pts >= MIN_SCORE_SHORT
+        and short_pts > long_pts
+    )
+
+    if can_long:
+        side, score, reasons, engine = "LONG", long_pts, reasons_l, "regime_long"
+        reasons = [long_gate_msg, *reasons]
+    elif can_short:
+        side, score, reasons, engine = "SHORT", short_pts, reasons_s, "scalp_short"
+        reasons = [short_budget_msg, *reasons]
     else:
         score = max(long_pts, short_pts)
         reasons = [
-            f"No fire — long {long_pts:.1f} / short {short_pts:.1f} (need ≥ {MIN_SCORE})",
-            *reasons_l[:3],
-            *reasons_s[:3],
+            f"No fire â€” long {long_pts:.1f}/{MIN_SCORE} short {short_pts:.1f}/{MIN_SCORE_SHORT}",
+            long_gate_msg,
+            short_budget_msg,
+            *reasons_l[:2],
+            *reasons_s[:2],
         ]
+        if not ENABLE_SCALP_SHORT:
+            reasons.insert(1, "scalp SHORT disabled by env")
+        if not ENABLE_REGIME_LONG:
+            reasons.insert(1, "regime LONG disabled by env")
 
     sl = tp = 0.0
     if side == "LONG":
         sl = last * (1 - STOP_PCT)
-        tp = last * (1 + STOP_PCT * TP_R)
+        tp = last * (1 + LONG_TP_PCT)
     elif side == "SHORT":
-        sl = last * (1 + STOP_PCT)
-        tp = last * (1 - STOP_PCT * TP_R)
+        sl = last * (1 + SHORT_STOP_PCT)
+        tp = last * (1 - SHORT_TP_PCT)
+
+    snap = {
+        "engine": engine,
+        "long_points": round(long_pts, 2),
+        "short_points": round(short_pts, 2),
+        "rsi_15m": float(e["rsi"]),
+        "adx_15m": float(e["adx"]),
+        "adx_4h": float(b["adx"]),
+        "st_1h": int(s["st_dir"]),
+        "weekly_full_stack": None if not weekly_pack else weekly_pack.get("full_stack"),
+        "weekly_long_gate": long_gate,
+        "weekly_below": None if not weekly_pack else weekly_pack.get("below"),
+        "long_tp_pct": LONG_TP_PCT,
+        "short_stop_pct": SHORT_STOP_PCT,
+        "short_tp_pct": SHORT_TP_PCT,
+        "short_budget": short_budget_msg,
+    }
 
     return Signal(
         side=side,
@@ -505,20 +653,13 @@ def score_market(
         atr_pct=float(e["atr_pct"]),
         funding=fr,
         oi=oi_val,
-        snapshot={
-            "long_points": round(long_pts, 2),
-            "short_points": round(short_pts, 2),
-            "rsi_15m": float(e["rsi"]),
-            "adx_15m": float(e["adx"]),
-            "adx_4h": float(b["adx"]),
-            "st_1h": int(s["st_dir"]),
-        },
+        snapshot=snap,
     )
 
 
-def position_contracts(equity: float, risk_pct: float, price: float, ct_val: float) -> Tuple[float, int]:
+def position_contracts(equity: float, risk_pct: float, price: float, ct_val: float, stop_pct: float = STOP_PCT) -> Tuple[float, int]:
     risk_usdt = equity * (risk_pct / 100.0)
-    loss_per_contract = price * ct_val * STOP_PCT
+    loss_per_contract = price * ct_val * stop_pct
     if loss_per_contract <= 0:
         return 0.0, 0
     raw = risk_usdt / loss_per_contract
@@ -526,9 +667,6 @@ def position_contracts(equity: float, risk_pct: float, price: float, ct_val: flo
     return raw, n
 
 
-# ---------------------------------------------------------------------------
-# Signals log: persistencia + resolución de aciertos/fallos
-# ---------------------------------------------------------------------------
 def load_signals_log() -> Dict[str, Any]:
     if SIGNALS_LOG_PATH.exists():
         try:
@@ -543,14 +681,6 @@ def save_signals_log(log: Dict[str, Any]) -> None:
 
 
 def resolve_open_signals(log: Dict[str, Any], current_price: float) -> None:
-    """
-    Revisa las señales OPEN previas contra el precio actual y las cierra
-    como WIN si tocó TP, LOSS si tocó SL. Esto es una aproximación por
-    muestreo (solo mira el precio en el momento de cada ejecución, no la
-    ruta intra-vela completa), suficiente para un primer winrate estimado
-    pero no perfecta — para máxima precisión habría que usar velas 1m
-    entre señales.
-    """
     for entry in log["signals"]:
         if entry["status"] != "OPEN":
             continue
@@ -574,14 +704,9 @@ def resolve_open_signals(log: Dict[str, Any], current_price: float) -> None:
 def record_signal(log: Dict[str, Any], sig: Signal) -> None:
     if sig.side not in ("LONG", "SHORT"):
         return
-
-    # PROTECTOR: si ya hay una señal OPEN del mismo lado, no duplicar.
-    # Evita que el muestreo cada 30s cuente la misma oportunidad de
-    # mercado como si fueran varias señales distintas.
     for entry in log["signals"]:
         if entry["status"] == "OPEN" and entry["side"] == sig.side:
             return
-
     log["signals"].append(
         {
             "id": len(log["signals"]) + 1,
@@ -617,17 +742,9 @@ def compute_stats(log: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def compute_okx_track_record(closed_positions: List[dict]) -> Dict[str, Any]:
-    """
-    Calcula winrate REAL a partir del historial de posiciones cerradas
-    que devuelve OKX (positions-history). A diferencia del tracking por
-    muestreo (signals_log.json), este usa el PnL realizado exacto que
-    calculó el propio motor de OKX — no hay margen de error por no haber
-    mirado el precio en el momento justo.
-    """
     trades = []
     wins = losses = breakeven = 0
     gross_win = gross_loss = 0.0
-
     for p in closed_positions:
         try:
             pnl = float(p.get("pnl", p.get("realizedPnl", 0)) or 0)
@@ -654,11 +771,9 @@ def compute_okx_track_record(closed_positions: List[dict]) -> Dict[str, Any]:
             gross_loss += pnl
         else:
             breakeven += 1
-
     resolved = wins + losses
     winrate = round(wins / resolved * 100.0, 2) if resolved else None
     profit_factor = round(gross_win / abs(gross_loss), 2) if gross_loss else None
-
     return {
         "source": "OKX positions-history (realizedPnl exacto)",
         "total_closed": len(trades),
@@ -675,40 +790,25 @@ def compute_okx_track_record(closed_positions: List[dict]) -> Dict[str, Any]:
 
 
 def run_stats(ox: OkxClient) -> Dict[str, Any]:
-    """
-    Modo --mode stats: no genera señales nuevas, solo consulta el
-    historial real de OKX y muestra el track record. Requiere que el bot
-    haya operado en modo LIVE_TRADING=true (aunque sea demo, OKX_FLAG=1)
-    en algún momento, ya que en dry-run puro no se envía nada a OKX.
-    """
     print_banner()
     print("Consultando historial real de posiciones cerradas en OKX...")
     try:
         closed = ox.positions_history()
     except Exception as exc:
         print(f"ERROR: no se pudo obtener positions-history ({exc}).")
-        print("Nota: si el bot solo ha corrido en dry-run (LIVE_TRADING=false),")
-        print("OKX no tiene ninguna orden registrada — no hay nada que consultar.")
         return {"status": "error", "reason": str(exc)}
-
     stats = compute_okx_track_record(closed)
-
     print("\n" + "=" * 72)
-    print("           PANDA GSCSI — TRACK RECORD REAL (fuente: OKX)")
+    print("           PANDA GSCSI â€” TRACK RECORD REAL (fuente: OKX)")
     print("=" * 72)
     print(f"Posiciones cerradas : {stats['total_closed']}")
     print(f"Wins / Losses       : {stats['wins']} / {stats['losses']}  (breakeven: {stats['breakeven']})")
     if stats["winrate_pct"] is not None:
         print(f"WIN RATE            : {stats['winrate_pct']}%")
     else:
-        print("WIN RATE            : sin operaciones resueltas todavía")
-    print(f"PnL bruto ganado    : {stats['gross_win_usdt']:.4f} USDT")
-    print(f"PnL bruto perdido   : {stats['gross_loss_usdt']:.4f} USDT")
+        print("WIN RATE            : sin operaciones resueltas todavÃ­a")
     print(f"PnL neto            : {stats['net_pnl_usdt']:.4f} USDT")
-    if stats["profit_factor"] is not None:
-        print(f"Profit factor       : {stats['profit_factor']}")
     print("=" * 72)
-
     print("\n--- FULL JSON ---")
     print(json.dumps(stats, indent=2, default=str))
     return stats
@@ -719,6 +819,8 @@ def print_banner() -> None:
     print("PANDA GSCSI  |  Gran Script Carbono Silicio")
     print("Collaborator and protector of the operator")
     print(f"Instrument: {INST_ID}   Hard SL: {STOP_PCT:.2%} both sides   TP: {TP_R:.1f}R")
+    print(f"LONG gate: 1W {WEEKLY_LONG_MODE}  SL {STOP_PCT:.2%} TP {LONG_TP_PCT:.2%} ({LONG_TP_PCT/STOP_PCT:.1f}R)")
+    print(f"SHORT scalp: {'ON' if ENABLE_SCALP_SHORT else 'OFF'}  SL {SHORT_STOP_PCT:.2%} TP {SHORT_TP_PCT:.2%}  max/day {MAX_SCALP_SHORTS_PER_DAY}")
     print("=" * 72)
 
 
@@ -729,6 +831,9 @@ def run_inspect(ox: OkxClient) -> Dict[str, Any]:
     exec_df = enrich(ox.candles(OKX_BAR[BARS["exec"]], 200))
     struct_df = enrich(ox.candles(OKX_BAR[BARS["struct"]], 200))
     bias_df = enrich(ox.candles(OKX_BAR[BARS["bias"]], 200))
+    weekly_df = ox.candles(OKX_BAR[BARS["macro"]], 300)
+    weekly_pack = weekly_ma_pack(weekly_df)
+
     ticker = ox.ticker()
     funding = ox.funding()
     oi = ox.open_interest()
@@ -739,15 +844,15 @@ def run_inspect(ox: OkxClient) -> Dict[str, Any]:
     except Exception as exc:
         print(f"Instrument metadata warning: {exc}")
 
-    inspection = inspect_indicators(exec_df, struct_df, bias_df)
-    sig = score_market(exec_df, struct_df, bias_df, ticker, funding, oi)
+    inspection = inspect_indicators(exec_df, struct_df, bias_df, weekly_pack)
+    sig = score_market(exec_df, struct_df, bias_df, ticker, funding, oi, weekly_pack)
 
     equity = float(os.getenv("ACCOUNT_EQUITY_USDT", "100"))
     risk_pct = float(os.getenv("RISK_PER_TRADE_PCT", "1.0"))
     ct_val = float(inst.get("ctVal", CONTRACT_CTVAL_FALLBACK) or CONTRACT_CTVAL_FALLBACK)
-    raw, n = position_contracts(equity, risk_pct, sig.price, ct_val)
+    stop_for_size = STOP_PCT if sig.side != "SHORT" else SHORT_STOP_PCT
+    raw, n = position_contracts(equity, risk_pct, sig.price, ct_val, stop_pct=stop_for_size)
 
-    # --- tracking: resolver señales anteriores + registrar la nueva ---
     log = load_signals_log()
     resolve_open_signals(log, sig.price)
     record_signal(log, sig)
@@ -755,7 +860,7 @@ def run_inspect(ox: OkxClient) -> Dict[str, Any]:
     stats = compute_stats(log)
 
     print("\n" + "=" * 72)
-    print("                    PANDA GSCSI — INSPECT RESULT")
+    print("                    PANDA GSCSI â€” INSPECT RESULT")
     print("=" * 72)
     print(f"Time (UTC)     : {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"Instrument     : {INST_ID}")
@@ -764,40 +869,56 @@ def run_inspect(ox: OkxClient) -> Dict[str, Any]:
     print(f"Funding        : {sig.funding:.4%}")
     print(f"ATR% (15m)     : {sig.atr_pct:.3%}")
     print("-" * 72)
+    print("1W CARBON PACK:")
+    print(f"   close       : {weekly_pack['close']:,.1f}   bars={weekly_pack['bars']}")
+    for period in WEEKLY_MA_PERIODS:
+        key = f"MA{period}"
+        val = weekly_pack["mas"].get(key)
+        flag = weekly_pack["above"].get(key)
+        if val is None:
+            print(f"   {key:<8}    : n/a")
+        else:
+            print(f"   {key:<8}    : {val:,.1f}   {'ABOVE' if flag else 'BELOW'}")
+    print(f"   full_stack  : {weekly_pack['full_stack']}")
+    print(f"   LONG gate   : {weekly_pack.get('long_gate')}  need={weekly_pack.get('long_gate_need')}")
+    print("-" * 72)
 
     decision = f">>> {sig.side}  |  Score: {sig.score}  |  {'ALLOWED' if sig.allowed else 'BLOCKED'} <<<"
-    print(f"\nDECISIÓN FINAL : {decision}")
+    print(f"\nDECISIÃ“N FINAL : {decision}")
 
     if sig.vetoes:
-        print("\n⛔ VETOES ACTIVOS:")
+        print("\nâ›” VETOES ACTIVOS:")
         for v in sig.vetoes:
-            print(f"   • {v}")
+            print(f"   â€¢ {v}")
     else:
-        print("\n✅ Sin vetoes")
+        print("\nâœ… Sin vetoes")
 
     print("\nRazones principales:")
-    for r in sig.reasons[:6]:
-        print(f"   • {r}")
+    for r in sig.reasons[:8]:
+        print(f"   â€¢ {r}")
 
     if sig.side in ("LONG", "SHORT"):
-        print(f"\nEntry          : {sig.price:,.1f}")
-        print(f"Stop Loss      : {sig.sl:,.1f}  ({STOP_PCT:.2%})")
-        print(f"Take Profit    : {sig.tp:,.1f}  ({TP_R:.1f}R)")
+        slp = STOP_PCT if sig.side == "LONG" else SHORT_STOP_PCT
+        tpp = LONG_TP_PCT if sig.side == "LONG" else SHORT_TP_PCT
+        print(f"\nEngine         : {sig.snapshot.get('engine')}")
+        print(f"Entry          : {sig.price:,.1f}")
+        print(f"Stop Loss      : {sig.sl:,.1f}  ({slp:.2%})")
+        print(f"Take Profit    : {sig.tp:,.1f}  ({tpp:.2%})")
 
-    print(f"\nSizing (paper):")
+    print("\nSizing (paper):")
     print(f"   Equity       : {equity:.0f} USDT")
     print(f"   Risk/trade   : {risk_pct}%")
     print(f"   Contratos    : {n}  (raw: {raw:.2f})")
 
     print("\n" + "-" * 72)
     print("TRACK RECORD ACUMULADO")
-    print(f"   Señales totales : {stats['total_signals']}")
+    print(f"   SeÃ±ales totales : {stats['total_signals']}")
     print(f"   Resueltas       : {stats['resolved']}  (WIN {stats['wins']} / LOSS {stats['losses']})")
     print(f"   Abiertas        : {stats['open']}   Ignoradas (score bajo): {stats['skipped']}")
     if stats["winrate_pct"] is not None:
         print(f"   WIN RATE        : {stats['winrate_pct']}%")
     else:
-        print("   WIN RATE        : aún sin señales resueltas")
+        print("   WIN RATE        : aÃºn sin seÃ±ales resueltas")
     print("-" * 72)
 
     report = {
@@ -842,12 +963,18 @@ def run_inspect(ox: OkxClient) -> Dict[str, Any]:
             "max_leverage": MAX_LEVERAGE,
             "default_leverage": DEFAULT_LEVERAGE,
             "live_default": False,
+            "weekly_long_mode": WEEKLY_LONG_MODE,
+            "enable_scalp_short": ENABLE_SCALP_SHORT,
+            "enable_regime_long": ENABLE_REGIME_LONG,
+            "long_tp_pct": LONG_TP_PCT,
+            "short_stop_pct": SHORT_STOP_PCT,
+            "short_tp_pct": SHORT_TP_PCT,
+            "max_scalp_shorts_per_day": MAX_SCALP_SHORTS_PER_DAY,
         },
     }
 
     print("\n--- FULL JSON REPORT ---")
     print(json.dumps(report, indent=2, default=str))
-
     return report
 
 
@@ -864,9 +991,8 @@ def run_trade(ox: OkxClient, report: Optional[dict] = None) -> dict:
         print("PROTECTOR: veto active. No order sent.")
         return {"status": "blocked", "reason": sig["vetoes"]}
 
-    # --- PROTECTOR: no abrir si ya hay posición activa ---
     if live and has_open_position(ox):
-        print("PROTECTOR: ya existe una posición abierta en BTC-USDT-SWAP. No se apila una nueva.")
+        print("PROTECTOR: ya existe una posiciÃ³n abierta en BTC-USDT-SWAP. No se apila una nueva.")
         return {"status": "blocked", "reason": "position_already_open"}
 
     n = int(report["sizing"]["suggested_contracts"])
@@ -899,13 +1025,18 @@ def run_trade(ox: OkxClient, report: Optional[dict] = None) -> dict:
     preview = {"live": live, "leverage": lever, "payload": payload}
     print("ORDER PREVIEW:")
     print(json.dumps(preview, indent=2))
+    if sig["side"] == "SHORT":
+        st = load_daily_state()
+        st["scalp_shorts"] = int(st.get("scalp_shorts", 0)) + 1
+        st["last_short_ts"] = datetime.now(timezone.utc).isoformat()
+        save_daily_state(st)
 
     if not live:
         print("PROTECTOR: LIVE_TRADING is false. Dry-run only. No order sent to OKX.")
         return {"status": "dry_run", "preview": preview}
 
     if ox.flag != "0":
-        print("NOTE: OKX_FLAG is not 0 — demo/simulated header is on.")
+        print("NOTE: OKX_FLAG is not 0 â€” demo/simulated header is on.")
 
     try:
         ox.set_leverage(str(lever), "cross", pos_side if pos_mode != "net" else "")
@@ -922,9 +1053,9 @@ def main() -> None:
     p = argparse.ArgumentParser(description="PANDA GSCSI OKX BTC-USDT-SWAP engine")
     p.add_argument("--mode", choices=["inspect", "signal", "trade", "stats"], default="inspect")
     p.add_argument("--interval", type=int, default=0,
-                    help="Segundos entre cada pasada dentro de una misma ejecución. 0 = una sola pasada.")
+                   help="Segundos entre cada pasada dentro de una misma ejecuciÃ³n. 0 = una sola pasada.")
     p.add_argument("--max-minutes", type=float, default=0.0,
-                    help="Duración máxima del bucle en minutos. 0 = una sola pasada.")
+                   help="DuraciÃ³n mÃ¡xima del bucle en minutos. 0 = una sola pasada.")
     args = p.parse_args()
     ox = OkxClient()
 
