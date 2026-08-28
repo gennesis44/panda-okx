@@ -802,7 +802,7 @@ def run_inspect(ox: OkxClient) -> Dict[str, Any]:
         "tp_r": TP_R,
         "ticker": {
             "last": float(ticker.get("last", 0)),
-            "mark": float(ticker.get("markPx", 0) or 0),
+            "mark": sig.mark,
             "bid": float(ticker.get("bidPx", 0) or 0),
             "ask": float(ticker.get("askPx", 0) or 0),
             "vol24h": ticker.get("vol24h"),
