@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-PANDA GSCSI â€” BTC-USDT-SWAP OKX futures engine
+PANDA GSCSI - BTC-USDT-SWAP OKX futures engine
 Gran Script Carbono Silicio
 Collaborator and protector of the operator.
 
@@ -212,6 +212,9 @@ class OkxClient:
                     "low": float(x[3]),
                     "close": float(x[4]),
                     "volume": float(x[5]),
+                    # OKX v5: [ts,o,h,l,c,vol,volCcy,volCcyQuote,confirm]
+                    # confirm=1 vela cerrada, 0 = vela aun en curso.
+                    "confirm": int(x[8]) if len(x) > 8 else 1,
                 }
             )
         df = pd.DataFrame(rows).sort_values("ts").reset_index(drop=True)
@@ -262,7 +265,7 @@ def has_open_position(ox: OkxClient) -> bool:
     try:
         pos = ox.positions()
     except Exception as exc:
-        print(f"PROTECTOR: no se pudo verificar posiciones abiertas ({exc}). Bloqueando por precauciÃ³n.")
+        print(f"PROTECTOR: no se pudo verificar posiciones abiertas ({exc}). Bloqueando por precaucion.")
         return True
     for p in pos:
         try:
@@ -325,11 +328,14 @@ def enrich(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def weekly_ma_pack(weekly_df: pd.DataFrame) -> Dict[str, Any]:
-    """
-    Carbon rule: same SMA pack the operator reads on 1W Binance.
-    Fail-closed: missing bars => stack incomplete => LONG veto.
-    """
-    close = weekly_df["close"]
+    # FIX operador 2026-08-28: la regla es "cierre semanal confirmado"
+    # (analogia marzo-2023), no el precio flotante de la semana en curso.
+    # Si la ultima vela aun no cerro (confirm=0), se descarta para el gate.
+    df = weekly_df
+    if "confirm" in df.columns and len(df) > 1 and int(df["confirm"].iloc[-1]) == 0:
+        df = df.iloc[:-1]
+
+    close = df["close"]
     last = float(close.iloc[-1])
     mas: Dict[str, Optional[float]] = {}
     above: Dict[str, Optional[bool]] = {}
@@ -368,9 +374,8 @@ def weekly_ma_pack(weekly_df: pd.DataFrame) -> Dict[str, Any]:
 
 
 def weekly_long_ok(pack: Optional[Dict[str, Any]]) -> Tuple[bool, str]:
-    """Mar-2023 analog / Axiom 3: full pack MA10+50+100+200 unless env overrides."""
     if not pack:
-        return False, "1W pack unavailable â€” fail-closed LONG"
+        return False, "1W pack unavailable - fail-closed LONG"
     missing = pack.get("missing_periods") or []
     if WEEKLY_LONG_MODE == "full_pack":
         need = [10, 50, 100, 200]
@@ -378,12 +383,12 @@ def weekly_long_ok(pack: Optional[Dict[str, Any]]) -> Tuple[bool, str]:
         need = [10, 50]
     still_missing = [n for n in need if n in missing]
     if still_missing:
-        return False, f"1W missing MA{still_missing} â€” fail-closed LONG"
+        return False, f"1W missing MA{still_missing} - fail-closed LONG"
     above = pack.get("above") or {}
     failed = [f"MA{n}" for n in need if not above.get(f"MA{n}")]
     if failed:
-        return False, f"1W LONG gate closed â€” close {pack['close']:.1f} not above {'+'.join(failed)}"
-    return True, f"1W LONG gate OPEN â€” close {pack['close']:.1f} above {'+'.join(f'MA{n}' for n in need)}"
+        return False, f"1W LONG gate closed - close {pack['close']:.1f} not above {'+'.join(failed)}"
+    return True, f"1W LONG gate OPEN - close {pack['close']:.1f} above {'+'.join(f'MA{n}' for n in need)}"
 
 
 def load_daily_state() -> Dict[str, Any]:
@@ -406,6 +411,36 @@ def load_daily_state() -> Dict[str, Any]:
 
 def save_daily_state(st: Dict[str, Any]) -> None:
     DAILY_STATE_PATH.write_text(json.dumps(st, indent=2, default=str))
+
+
+def compute_daily_realized_pnl_pct(log: Dict[str, Any], utc_date: str) -> float:
+    """
+    FIX operador 2026-08-28: el circuit-breaker de perdida diaria leia
+    'realized_pnl_pct' pero nada lo escribia nunca (quedaba en 0.0 para
+    siempre). Aqui se calcula de verdad, sumando el % real capturado por
+    cada senal WIN/LOSS resuelta HOY (UTC) en signals_log.json, usando el
+    precio de entrada vs. el precio al que se resolvio.
+    """
+    total_pct = 0.0
+    for entry in log.get("signals", []):
+        if entry.get("status") not in ("WIN", "LOSS"):
+            continue
+        resolved_utc = entry.get("resolved_utc") or ""
+        if not resolved_utc.startswith(utc_date):
+            continue
+        try:
+            entry_px = float(entry["entry"])
+            resolved_px = float(entry["resolved_price"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if entry_px <= 0:
+            continue
+        if entry["side"] == "LONG":
+            pct = (resolved_px - entry_px) / entry_px
+        else:
+            pct = (entry_px - resolved_px) / entry_px
+        total_pct += pct * 100.0
+    return round(total_pct, 4)
 
 
 def short_budget_ok(st: Dict[str, Any]) -> Tuple[bool, str]:
@@ -495,10 +530,10 @@ def score_market(
         reasons_l.append(long_gate_msg)
 
     if float(e["atr_pct"]) > ATR_PCT_HARD_CAP:
-        vetoes.append(f"ATR% {e['atr_pct']:.3%} > {ATR_PCT_HARD_CAP:.2%} â€” 2% stop sits inside noise")
+        vetoes.append(f"ATR% {e['atr_pct']:.3%} > {ATR_PCT_HARD_CAP:.2%} - 2% stop sits inside noise")
 
     if last > 0 and abs(mark - last) / last > MARK_LAST_DIVERGENCE_CAP:
-        vetoes.append("Mark vs last divergence â€” possible wick / dislocation")
+        vetoes.append("Mark vs last divergence - possible wick / dislocation")
 
     rng20 = float(exec_df["high"].tail(20).max() - exec_df["low"].tail(20).min())
     if rng20 < CHOP_RANGE_ATR_MULT * float(e["atr"]):
@@ -521,9 +556,9 @@ def score_market(
             reasons_s.append(f"4H ADX {b['adx']:.1f} trend-on")
     else:
         if bull_bias:
-            reasons_l.append(f"4H ADX {b['adx']:.1f} weak â€” size down")
+            reasons_l.append(f"4H ADX {b['adx']:.1f} weak - size down")
         if bear_bias:
-            reasons_s.append(f"4H ADX {b['adx']:.1f} weak â€” size down")
+            reasons_s.append(f"4H ADX {b['adx']:.1f} weak - size down")
 
     if int(s["st_dir"]) == 1:
         long_pts += 1.0
@@ -555,8 +590,8 @@ def score_market(
     if e["vol_sma"] and e["volume"] >= e["vol_sma"]:
         long_pts += 0.5
         short_pts += 0.5
-        reasons_l.append("Volume â‰¥ SMA20")
-        reasons_s.append("Volume â‰¥ SMA20")
+        reasons_l.append("Volume >= SMA20")
+        reasons_s.append("Volume >= SMA20")
 
     if fr >= FUNDING_EXTREME:
         short_pts += 1.5
@@ -575,7 +610,7 @@ def score_market(
         reasons_s.append(f"Funding neutral {fr:.4%}")
 
     if BLOCK_SHORT_IN_4H_SQUEEZE and bull_bias and float(b["adx"]) >= 28:
-        reasons_s.append("4H squeeze guard â€” short size/score watched")
+        reasons_s.append("4H squeeze guard - short size/score watched")
         short_pts -= 1.5
 
     side = "FLAT"
@@ -605,7 +640,7 @@ def score_market(
     else:
         score = max(long_pts, short_pts)
         reasons = [
-            f"No fire â€” long {long_pts:.1f}/{MIN_SCORE} short {short_pts:.1f}/{MIN_SCORE_SHORT}",
+            f"No fire - long {long_pts:.1f}/{MIN_SCORE} short {short_pts:.1f}/{MIN_SCORE_SHORT}",
             long_gate_msg,
             short_budget_msg,
             *reasons_l[:2],
@@ -799,14 +834,14 @@ def run_stats(ox: OkxClient) -> Dict[str, Any]:
         return {"status": "error", "reason": str(exc)}
     stats = compute_okx_track_record(closed)
     print("\n" + "=" * 72)
-    print("           PANDA GSCSI â€” TRACK RECORD REAL (fuente: OKX)")
+    print("           PANDA GSCSI - TRACK RECORD REAL (fuente: OKX)")
     print("=" * 72)
     print(f"Posiciones cerradas : {stats['total_closed']}")
     print(f"Wins / Losses       : {stats['wins']} / {stats['losses']}  (breakeven: {stats['breakeven']})")
     if stats["winrate_pct"] is not None:
         print(f"WIN RATE            : {stats['winrate_pct']}%")
     else:
-        print("WIN RATE            : sin operaciones resueltas todavÃ­a")
+        print("WIN RATE            : sin operaciones resueltas todavia")
     print(f"PnL neto            : {stats['net_pnl_usdt']:.4f} USDT")
     print("=" * 72)
     print("\n--- FULL JSON ---")
@@ -859,8 +894,15 @@ def run_inspect(ox: OkxClient) -> Dict[str, Any]:
     save_signals_log(log)
     stats = compute_stats(log)
 
+    # FIX operador 2026-08-28: actualizar el circuit-breaker de perdida
+    # diaria con el PnL real calculado, no dejarlo muerto en 0.0.
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    daily_state = load_daily_state()
+    daily_state["realized_pnl_pct"] = compute_daily_realized_pnl_pct(log, today)
+    save_daily_state(daily_state)
+
     print("\n" + "=" * 72)
-    print("                    PANDA GSCSI â€” INSPECT RESULT")
+    print("                    PANDA GSCSI - INSPECT RESULT")
     print("=" * 72)
     print(f"Time (UTC)     : {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"Instrument     : {INST_ID}")
@@ -884,18 +926,18 @@ def run_inspect(ox: OkxClient) -> Dict[str, Any]:
     print("-" * 72)
 
     decision = f">>> {sig.side}  |  Score: {sig.score}  |  {'ALLOWED' if sig.allowed else 'BLOCKED'} <<<"
-    print(f"\nDECISIÃ“N FINAL : {decision}")
+    print(f"\nDECISION FINAL : {decision}")
 
     if sig.vetoes:
-        print("\nâ›” VETOES ACTIVOS:")
+        print("\nVETOES ACTIVOS:")
         for v in sig.vetoes:
-            print(f"   â€¢ {v}")
+            print(f"   - {v}")
     else:
-        print("\nâœ… Sin vetoes")
+        print("\nSin vetoes")
 
     print("\nRazones principales:")
     for r in sig.reasons[:8]:
-        print(f"   â€¢ {r}")
+        print(f"   - {r}")
 
     if sig.side in ("LONG", "SHORT"):
         slp = STOP_PCT if sig.side == "LONG" else SHORT_STOP_PCT
@@ -912,13 +954,13 @@ def run_inspect(ox: OkxClient) -> Dict[str, Any]:
 
     print("\n" + "-" * 72)
     print("TRACK RECORD ACUMULADO")
-    print(f"   SeÃ±ales totales : {stats['total_signals']}")
+    print(f"   Senales totales : {stats['total_signals']}")
     print(f"   Resueltas       : {stats['resolved']}  (WIN {stats['wins']} / LOSS {stats['losses']})")
     print(f"   Abiertas        : {stats['open']}   Ignoradas (score bajo): {stats['skipped']}")
     if stats["winrate_pct"] is not None:
         print(f"   WIN RATE        : {stats['winrate_pct']}%")
     else:
-        print("   WIN RATE        : aÃºn sin seÃ±ales resueltas")
+        print("   WIN RATE        : aun sin senales resueltas")
     print("-" * 72)
 
     report = {
@@ -992,7 +1034,7 @@ def run_trade(ox: OkxClient, report: Optional[dict] = None) -> dict:
         return {"status": "blocked", "reason": sig["vetoes"]}
 
     if live and has_open_position(ox):
-        print("PROTECTOR: ya existe una posiciÃ³n abierta en BTC-USDT-SWAP. No se apila una nueva.")
+        print("PROTECTOR: ya existe una posicion abierta en BTC-USDT-SWAP. No se apila una nueva.")
         return {"status": "blocked", "reason": "position_already_open"}
 
     n = int(report["sizing"]["suggested_contracts"])
@@ -1036,7 +1078,7 @@ def run_trade(ox: OkxClient, report: Optional[dict] = None) -> dict:
         return {"status": "dry_run", "preview": preview}
 
     if ox.flag != "0":
-        print("NOTE: OKX_FLAG is not 0 â€” demo/simulated header is on.")
+        print("NOTE: OKX_FLAG is not 0 - demo/simulated header is on.")
 
     try:
         ox.set_leverage(str(lever), "cross", pos_side if pos_mode != "net" else "")
@@ -1053,9 +1095,9 @@ def main() -> None:
     p = argparse.ArgumentParser(description="PANDA GSCSI OKX BTC-USDT-SWAP engine")
     p.add_argument("--mode", choices=["inspect", "signal", "trade", "stats"], default="inspect")
     p.add_argument("--interval", type=int, default=0,
-                   help="Segundos entre cada pasada dentro de una misma ejecuciÃ³n. 0 = una sola pasada.")
+                   help="Segundos entre cada pasada dentro de una misma ejecucion. 0 = una sola pasada.")
     p.add_argument("--max-minutes", type=float, default=0.0,
-                   help="DuraciÃ³n mÃ¡xima del bucle en minutos. 0 = una sola pasada.")
+                   help="Duracion maxima del bucle en minutos. 0 = una sola pasada.")
     args = p.parse_args()
     ox = OkxClient()
 
