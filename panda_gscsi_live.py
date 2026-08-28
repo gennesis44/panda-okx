@@ -577,6 +577,14 @@ def resolve_open_signals(log: Dict[str, Any], current_price: float) -> None:
 def record_signal(log: Dict[str, Any], sig: Signal) -> None:
     if sig.side not in ("LONG", "SHORT"):
         return
+
+    # PROTECTOR: si ya hay una señal OPEN del mismo lado, no duplicar.
+    # Evita que el muestreo cada 30s cuente la misma oportunidad de
+    # mercado como si fueran varias señales distintas.
+    for entry in log["signals"]:
+        if entry["status"] == "OPEN" and entry["side"] == sig.side:
+            return
+
     log["signals"].append(
         {
             "id": len(log["signals"]) + 1,
