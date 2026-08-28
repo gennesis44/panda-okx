@@ -8,8 +8,7 @@ on:
 concurrency:
   group: panda-gscsi-stats
   cancel-in-progress: false
-
-jobs:
+jobs
   stats:
     runs-on: ubuntu-latest
     timeout-minutes: 5
