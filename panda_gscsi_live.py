@@ -737,7 +737,7 @@ def run_inspect(ox: OkxClient) -> Dict[str, Any]:
     inspection = inspect_indicators(exec_df, struct_df, bias_df)
     sig = score_market(exec_df, struct_df, bias_df, ticker, funding, oi)
 
-    equity = float(os.getenv("ACCOUNT_EQUITY_USDT", "100"))
+    equity = float(os.getenv("ACCOUNT_EQUITY_USDT", "10000"))
     risk_pct = float(os.getenv("RISK_PER_TRADE_PCT", "1.0"))
     ct_val = float(inst.get("ctVal", CONTRACT_CTVAL_FALLBACK) or CONTRACT_CTVAL_FALLBACK)
     raw, n = position_contracts(equity, risk_pct, sig.price, ct_val)
