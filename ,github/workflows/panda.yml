@@ -1,33 +1,115 @@
-name: PANDA GSCSI Stats
+# PANDA GSCSI — GitHub Actions dual engine
+# Copy to: .github/workflows/panda-gscsi.yml
+#
+# Secrets (repo Settings → Secrets → Actions):
+#   OKX_API_KEY, OKX_API_SECRET, OKX_PASSPHRASE
+# Optional vars:
+#   ACCOUNT_EQUITY_USDT=10000
+#   LIVE_TRADING=false          # keep false until paper data exists
+#   OKX_FLAG=1                  # 1=demo  0=live
+#   ENABLE_SCALP_SHORT=true
+#   ENABLE_REGIME_LONG=true
+#   WEEKLY_LONG_MODE=full_pack   # Axiom 3 law. Do not default to ma10_ma50.
+#
+# Job A: inspect every 15 min (data + veto print, no order)
+# Job B: trade-demo hourly (only fires if signal allowed; still dry unless LIVE_TRADING=true)
+
+name: PANDA GSCSI dual engine
 
 on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "inspect | trade | stats"
+        required: true
+        default: inspect
   schedule:
-    - cron: "0 * * * *"   # una vez por hora — es solo lectura, no hace falta más frecuencia
-  workflow_dispatch:        # también lo puedes lanzar a mano desde la pestaña Actions
+    - cron: "7,22,37,52 * * * *"   # \~15 min — inspect / scalp window
+    - cron: "11 */2 * * *"         # every 2h — slower trade pass
 
-concurrency:
-  group: panda-gscsi-stats
-  cancel-in-progress: false
+permissions:
+  contents: read
 
 jobs:
-  stats:
+  inspect:
+    if: github.event_name == 'schedule' && github.event.schedule == '7,22,37,52 * * * *' || github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'inspect'
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 8
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-
-      - name: Install deps
-        run: pip install requests pandas numpy python-dotenv
-
-      - name: Run PANDA stats (track record real de OKX)
+      - name: deps
+        run: pip install --quiet numpy pandas requests python-dotenv
+      - name: inspect
         env:
           OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
           OKX_API_SECRET: ${{ secrets.OKX_API_SECRET }}
           OKX_PASSPHRASE: ${{ secrets.OKX_PASSPHRASE }}
-          OKX_FLAG: "1"   # 1 = demo/simulated trading, igual que el bot principal
-        run: python panda_gscsi_live.py --mode stats
+          OKX_FLAG: ${{ vars.OKX_FLAG || '1' }}
+          ACCOUNT_EQUITY_USDT: ${{ vars.ACCOUNT_EQUITY_USDT || '10000' }}
+          RISK_PER_TRADE_PCT: "1.0"
+          LIVE_TRADING: "false"
+          ENABLE_SCALP_SHORT: ${{ vars.ENABLE_SCALP_SHORT || 'true' }}
+          ENABLE_REGIME_LONG: ${{ vars.ENABLE_REGIME_LONG || 'true' }}
+          WEEKLY_LONG_MODE: ${{ vars.WEEKLY_LONG_MODE || 'full_pack' }}
+          STOP_PCT: "0.01"
+          LONG_TP_PCT: "0.015"
+          SHORT_STOP_PCT: "0.01"
+          SHORT_TP_PCT: "0.015"
+          MAX_SCALP_SHORTS_PER_DAY: "4"
+          SHORT_COOLDOWN_MIN: "45"
+          BLOCK_SHORT_IN_4H_SQUEEZE: "true"
+        run: python panda_gscsi.py --mode inspect
+
+  trade_probe:
+    if: github.event_name == 'schedule' && github.event.schedule == '11 */2 * * *' || github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'trade'
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: deps
+        run: pip install --quiet numpy pandas requests python-dotenv
+      - name: trade (demo unless LIVE_TRADING secret/var is true)
+        env:
+          OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
+          OKX_API_SECRET: ${{ secrets.OKX_API_SECRET }}
+          OKX_PASSPHRASE: ${{ secrets.OKX_PASSPHRASE }}
+          OKX_FLAG: ${{ vars.OKX_FLAG || '1' }}
+          ACCOUNT_EQUITY_USDT: ${{ vars.ACCOUNT_EQUITY_USDT || '10000' }}
+          RISK_PER_TRADE_PCT: "1.0"
+          LIVE_TRADING: ${{ vars.LIVE_TRADING || 'false' }}
+          ENABLE_SCALP_SHORT: ${{ vars.ENABLE_SCALP_SHORT || 'true' }}
+          ENABLE_REGIME_LONG: ${{ vars.ENABLE_REGIME_LONG || 'true' }}
+          WEEKLY_LONG_MODE: ${{ vars.WEEKLY_LONG_MODE || 'full_pack' }}
+          STOP_PCT: "0.01"
+          LONG_TP_PCT: "0.015"
+          SHORT_STOP_PCT: "0.01"
+          SHORT_TP_PCT: "0.015"
+          MAX_SCALP_SHORTS_PER_DAY: "4"
+          SHORT_COOLDOWN_MIN: "45"
+          BLOCK_SHORT_IN_4H_SQUEEZE: "true"
+        run: python panda_gscsi.py --mode trade
+
+  stats:
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'stats'
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: deps
+        run: pip install --quiet numpy pandas requests python-dotenv
+      - name: stats
+        env:
+          OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
+          OKX_API_SECRET: ${{ secrets.OKX_API_SECRET }}
+          OKX_PASSPHRASE: ${{ secrets.OKX_PASSPHRASE }}
+          OKX_FLAG: ${{ vars.OKX_FLAG || '1' }}
+        run: python panda_gscsi.py --mode stats
