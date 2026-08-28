@@ -18,9 +18,6 @@ CHANGELOG (respecto a la versión original):
     cada señal generada y, en ejecuciones posteriores, comprueba si tocó
     TP (WIN), SL (LOSS) o sigue abierta (OPEN). Al final imprime winrate
     real acumulado.
-  - Add: --mode stats, que consulta /api/v5/account/positions-history en
-    OKX y calcula winrate/PnL REAL a partir del realizedPnl exacto que
-    calcula el propio motor de OKX (más preciso que el muestreo interno).
 """
 
 from __future__ import annotations
@@ -745,7 +742,7 @@ def run_inspect(ox: OkxClient) -> Dict[str, Any]:
     inspection = inspect_indicators(exec_df, struct_df, bias_df)
     sig = score_market(exec_df, struct_df, bias_df, ticker, funding, oi)
 
-    equity = float(os.getenv("ACCOUNT_EQUITY_USDT", "10000"))
+    equity = float(os.getenv("ACCOUNT_EQUITY_USDT", "100"))
     risk_pct = float(os.getenv("RISK_PER_TRADE_PCT", "1.0"))
     ct_val = float(inst.get("ctVal", CONTRACT_CTVAL_FALLBACK) or CONTRACT_CTVAL_FALLBACK)
     raw, n = position_contracts(equity, risk_pct, sig.price, ct_val)
