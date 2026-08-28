@@ -1,20 +1,5 @@
-# PANDA GSCSI — GitHub Actions dual engine
-# Copy to: .github/workflows/panda-gscsi.yml
-#
-# Secrets (repo Settings → Secrets → Actions):
-#   OKX_API_KEY, OKX_API_SECRET, OKX_PASSPHRASE
-# Optional vars:
-#   ACCOUNT_EQUITY_USDT=10000
-#   LIVE_TRADING=false          # keep false until paper data exists
-#   OKX_FLAG=1                  # 1=demo  0=live
-#   ENABLE_SCALP_SHORT=true
-#   ENABLE_REGIME_LONG=true
-#   WEEKLY_LONG_MODE=full_pack   # Axiom 3 law. Do not default to ma10_ma50.
-#
-# Job A: inspect every 15 min (data + veto print, no order)
-# Job B: trade-demo hourly (only fires if signal allowed; still dry unless LIVE_TRADING=true)
 
-name: PANDA GSCSI dual engine
+        name: PANDA GSCSI dual engine
 
 on:
   workflow_dispatch:
@@ -24,17 +9,20 @@ on:
         required: true
         default: inspect
   schedule:
-    - cron: "7,22,37,52 * * * *"   # \~15 min — inspect / scalp window
-    - cron: "11 */2 * * *"         # every 2h — slower trade pass
+    - cron: "7,22,37,52 * * * *"   # ~15 min - inspect / scalp window
+    - cron: "11 */2 * * *"         # every 2h - slower trade pass
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   inspect:
     if: github.event_name == 'schedule' && github.event.schedule == '7,22,37,52 * * * *' || github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'inspect'
     runs-on: ubuntu-latest
     timeout-minutes: 8
+    concurrency:
+      group: panda-gscsi-inspect
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -61,12 +49,30 @@ jobs:
           MAX_SCALP_SHORTS_PER_DAY: "4"
           SHORT_COOLDOWN_MIN: "45"
           BLOCK_SHORT_IN_4H_SQUEEZE: "true"
-        run: python panda_gscsi.py --mode inspect
+        run: python panda_gscsi_live.py --mode inspect
+      # FIX operador 2026-08-28: sin este paso, signals_log.json y
+      # daily_state.json se pierden en cada ejecucion (runner efimero).
+      # El winrate acumulado y el limite de shorts/dia dependen de esto.
+      - name: Commit signals + daily state
+        if: always()
+        run: |
+          git config user.name "panda-gscsi-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add signals_log.json daily_state.json
+          if git diff --cached --quiet; then
+            echo "Sin cambios que commitear"
+          else
+            git commit -m "chore: update signals_log.json + daily_state.json [skip ci]"
+            git push
+          fi
 
   trade_probe:
     if: github.event_name == 'schedule' && github.event.schedule == '11 */2 * * *' || github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'trade'
     runs-on: ubuntu-latest
     timeout-minutes: 8
+    concurrency:
+      group: panda-gscsi-trade
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -93,7 +99,19 @@ jobs:
           MAX_SCALP_SHORTS_PER_DAY: "4"
           SHORT_COOLDOWN_MIN: "45"
           BLOCK_SHORT_IN_4H_SQUEEZE: "true"
-        run: python panda_gscsi.py --mode trade
+        run: python panda_gscsi_live.py --mode trade
+      - name: Commit signals + daily state
+        if: always()
+        run: |
+          git config user.name "panda-gscsi-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add signals_log.json daily_state.json
+          if git diff --cached --quiet; then
+            echo "Sin cambios que commitear"
+          else
+            git commit -m "chore: update signals_log.json + daily_state.json [skip ci]"
+            git push
+          fi
 
   stats:
     if: github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'stats'
@@ -112,4 +130,4 @@ jobs:
           OKX_API_SECRET: ${{ secrets.OKX_API_SECRET }}
           OKX_PASSPHRASE: ${{ secrets.OKX_PASSPHRASE }}
           OKX_FLAG: ${{ vars.OKX_FLAG || '1' }}
-        run: python panda_gscsi.py --mode stats
+        run: python panda_gscsi_live.py --mode stats
