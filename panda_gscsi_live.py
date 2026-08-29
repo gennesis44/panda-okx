@@ -642,7 +642,7 @@ def score_market(
         f"4H ADX >= {ANALYSIS_LONG_MIN_ADX_4H:.0f}": float(b["adx"]) >= ANALYSIS_LONG_MIN_ADX_4H,
         "1H Supertrend long": int(s["st_dir"]) == 1,
         "MACD hist 15m subiendo y > 0": bool(e["macd_hist"] > prev["macd_hist"] and e["macd_hist"] > 0),
-        f"RSI 15m en {ANALYSIS_LONG_RSI_LO:.0f}-{ANALYSIS_LONG_RSI_HI:.0f}": ANALYSIS_LONG_RSI_LO <= e["rsi"] <= ANALYSIS_LONG_RSI_HI,
+        f"RSI 15m en {ANALYSIS_LONG_RSI_LO:.0f}-{ANALYSIS_LONG_RSI_HI:.0f}": bool(ANALYSIS_LONG_RSI_LO <= e["rsi"] <= ANALYSIS_LONG_RSI_HI),
     }
     analysis_long_confluence = all(analysis_checks.values())
     reasons_analysis = [f"{'OK' if v else 'no'}: {k}" for k, v in analysis_checks.items()]
