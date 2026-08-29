@@ -70,6 +70,23 @@ SHORT_COOLDOWN_MIN = int(os.getenv("SHORT_COOLDOWN_MIN", "45"))
 # Block squeeze-shorts when 4H is strongly trending up
 BLOCK_SHORT_IN_4H_SQUEEZE = os.getenv("BLOCK_SHORT_IN_4H_SQUEEZE", "true").lower() in ("1", "true", "yes")
 
+# Motor 3 - ANALYSIS LONG (momentum/confluencia): filosofia distinta al
+# regime_long (pack semanal de medias). Independiente del gate semanal
+# por diseno - confirma impulso de corto/medio plazo, no tendencia macro.
+# Exige que TODOS los siguientes se cumplan a la vez (AND estricto, no
+# suma de puntos como los otros motores):
+#   - 4H con sesgo alcista (mismo bull_bias que usa regime_long)
+#   - 4H ADX >= umbral (tendencia con fuerza real, no plana)
+#   - 1H Supertrend en largo
+#   - MACD hist 15m subiendo y positivo (momentum activo, no agotado)
+#   - RSI 15m en zona de impulso sano (ni sobrecomprado ni plano)
+ENABLE_ANALYSIS_LONG = os.getenv("ENABLE_ANALYSIS_LONG", "true").lower() in ("1", "true", "yes")
+ANALYSIS_LONG_MIN_ADX_4H = float(os.getenv("ANALYSIS_LONG_MIN_ADX_4H", "25"))
+ANALYSIS_LONG_RSI_LO = float(os.getenv("ANALYSIS_LONG_RSI_LO", "45"))
+ANALYSIS_LONG_RSI_HI = float(os.getenv("ANALYSIS_LONG_RSI_HI", "65"))
+ANALYSIS_LONG_STOP_PCT = float(os.getenv("ANALYSIS_LONG_STOP_PCT", "0.01"))
+ANALYSIS_LONG_TP_PCT = float(os.getenv("ANALYSIS_LONG_TP_PCT", "0.02"))
+
 SIGNALS_LOG_PATH = Path(os.getenv("SIGNALS_LOG_PATH", "signals_log.json"))
 DAILY_STATE_PATH = Path(os.getenv("DAILY_STATE_PATH", "daily_state.json"))
 
@@ -280,6 +297,7 @@ def has_open_position(ox: OkxClient) -> bool:
 class Signal:
     side: str
     score: float
+    engine: str = "none"
     reasons: List[str] = field(default_factory=list)
     vetoes: List[str] = field(default_factory=list)
     price: float = 0.0
@@ -295,6 +313,10 @@ class Signal:
     def allowed(self) -> bool:
         if self.vetoes:
             return False
+        if self.side == "LONG" and self.engine == "analysis_long":
+            # Ya se valido con AND estricto (todas las confluencias) en
+            # score_market antes de llegar aqui - no usa umbral de score.
+            return True
         if self.side == "LONG":
             return self.score >= MIN_SCORE
         if self.side == "SHORT":
@@ -526,8 +548,9 @@ def score_market(
     long_gate, long_gate_msg = weekly_long_ok(weekly_pack)
     daily = load_daily_state()
     short_ok, short_budget_msg = short_budget_ok(daily)
-    if not long_gate:
-        reasons_l.append(long_gate_msg)
+    # FIX operador 2026-08-29: no anadir long_gate_msg aqui tambien -
+    # ya se inyecta explicitamente mas abajo (lineas can_long / no-fire).
+    # Anadirlo en los dos sitios duplicaba el mensaje en el log.
 
     if float(e["atr_pct"]) > ATR_PCT_HARD_CAP:
         vetoes.append(f"ATR% {e['atr_pct']:.3%} > {ATR_PCT_HARD_CAP:.2%} - 2% stop sits inside noise")
@@ -613,6 +636,18 @@ def score_market(
         reasons_s.append("4H squeeze guard - short size/score watched")
         short_pts -= 1.5
 
+    # --- Motor 3: ANALYSIS LONG (momentum/confluencia, AND estricto) ---
+    analysis_checks = {
+        "4H sesgo alcista": bool(bull_bias),
+        f"4H ADX >= {ANALYSIS_LONG_MIN_ADX_4H:.0f}": float(b["adx"]) >= ANALYSIS_LONG_MIN_ADX_4H,
+        "1H Supertrend long": int(s["st_dir"]) == 1,
+        "MACD hist 15m subiendo y > 0": bool(e["macd_hist"] > prev["macd_hist"] and e["macd_hist"] > 0),
+        f"RSI 15m en {ANALYSIS_LONG_RSI_LO:.0f}-{ANALYSIS_LONG_RSI_HI:.0f}": ANALYSIS_LONG_RSI_LO <= e["rsi"] <= ANALYSIS_LONG_RSI_HI,
+    }
+    analysis_long_confluence = all(analysis_checks.values())
+    reasons_analysis = [f"{'OK' if v else 'no'}: {k}" for k, v in analysis_checks.items()]
+    can_analysis_long = ENABLE_ANALYSIS_LONG and analysis_long_confluence
+
     side = "FLAT"
     score = 0.0
     reasons: List[str] = []
@@ -631,9 +666,14 @@ def score_market(
         and short_pts > long_pts
     )
 
+    # Prioridad cuando varios motores calificarian a la vez: el regimen
+    # semanal (macro) manda sobre el momentum (medio plazo), que a su vez
+    # manda sobre el scalp corto.
     if can_long:
         side, score, reasons, engine = "LONG", long_pts, reasons_l, "regime_long"
         reasons = [long_gate_msg, *reasons]
+    elif can_analysis_long:
+        side, score, reasons, engine = "LONG", float(sum(analysis_checks.values())), reasons_analysis, "analysis_long"
     elif can_short:
         side, score, reasons, engine = "SHORT", short_pts, reasons_s, "scalp_short"
         reasons = [short_budget_msg, *reasons]
@@ -643,6 +683,7 @@ def score_market(
             f"No fire - long {long_pts:.1f}/{MIN_SCORE} short {short_pts:.1f}/{MIN_SCORE_SHORT}",
             long_gate_msg,
             short_budget_msg,
+            f"analysis_long: {sum(analysis_checks.values())}/{len(analysis_checks)} confluencias",
             *reasons_l[:2],
             *reasons_s[:2],
         ]
@@ -650,9 +691,14 @@ def score_market(
             reasons.insert(1, "scalp SHORT disabled by env")
         if not ENABLE_REGIME_LONG:
             reasons.insert(1, "regime LONG disabled by env")
+        if not ENABLE_ANALYSIS_LONG:
+            reasons.insert(1, "analysis LONG disabled by env")
 
     sl = tp = 0.0
-    if side == "LONG":
+    if side == "LONG" and engine == "analysis_long":
+        sl = last * (1 - ANALYSIS_LONG_STOP_PCT)
+        tp = last * (1 + ANALYSIS_LONG_TP_PCT)
+    elif side == "LONG":
         sl = last * (1 - STOP_PCT)
         tp = last * (1 + LONG_TP_PCT)
     elif side == "SHORT":
@@ -674,11 +720,16 @@ def score_market(
         "short_stop_pct": SHORT_STOP_PCT,
         "short_tp_pct": SHORT_TP_PCT,
         "short_budget": short_budget_msg,
+        "analysis_long_confluence": f"{sum(analysis_checks.values())}/{len(analysis_checks)}",
+        "analysis_long_checks": analysis_checks,
+        "analysis_long_stop_pct": ANALYSIS_LONG_STOP_PCT,
+        "analysis_long_tp_pct": ANALYSIS_LONG_TP_PCT,
     }
 
     return Signal(
         side=side,
         score=round(float(score), 2),
+        engine=engine,
         reasons=reasons,
         vetoes=vetoes,
         price=last,
@@ -856,6 +907,7 @@ def print_banner() -> None:
     print(f"Instrument: {INST_ID}   Hard SL: {STOP_PCT:.2%} both sides   TP: {TP_R:.1f}R")
     print(f"LONG gate: 1W {WEEKLY_LONG_MODE}  SL {STOP_PCT:.2%} TP {LONG_TP_PCT:.2%} ({LONG_TP_PCT/STOP_PCT:.1f}R)")
     print(f"SHORT scalp: {'ON' if ENABLE_SCALP_SHORT else 'OFF'}  SL {SHORT_STOP_PCT:.2%} TP {SHORT_TP_PCT:.2%}  max/day {MAX_SCALP_SHORTS_PER_DAY}")
+    print(f"ANALYSIS LONG: {'ON' if ENABLE_ANALYSIS_LONG else 'OFF'}  SL {ANALYSIS_LONG_STOP_PCT:.2%} TP {ANALYSIS_LONG_TP_PCT:.2%}  ADX4H>={ANALYSIS_LONG_MIN_ADX_4H:.0f}")
     print("=" * 72)
 
 
@@ -885,7 +937,12 @@ def run_inspect(ox: OkxClient) -> Dict[str, Any]:
     equity = float(os.getenv("ACCOUNT_EQUITY_USDT", "100"))
     risk_pct = float(os.getenv("RISK_PER_TRADE_PCT", "1.0"))
     ct_val = float(inst.get("ctVal", CONTRACT_CTVAL_FALLBACK) or CONTRACT_CTVAL_FALLBACK)
-    stop_for_size = STOP_PCT if sig.side != "SHORT" else SHORT_STOP_PCT
+    if sig.side == "SHORT":
+        stop_for_size = SHORT_STOP_PCT
+    elif sig.side == "LONG" and sig.snapshot.get("engine") == "analysis_long":
+        stop_for_size = ANALYSIS_LONG_STOP_PCT
+    else:
+        stop_for_size = STOP_PCT
     raw, n = position_contracts(equity, risk_pct, sig.price, ct_val, stop_pct=stop_for_size)
 
     log = load_signals_log()
@@ -940,9 +997,14 @@ def run_inspect(ox: OkxClient) -> Dict[str, Any]:
         print(f"   - {r}")
 
     if sig.side in ("LONG", "SHORT"):
-        slp = STOP_PCT if sig.side == "LONG" else SHORT_STOP_PCT
-        tpp = LONG_TP_PCT if sig.side == "LONG" else SHORT_TP_PCT
-        print(f"\nEngine         : {sig.snapshot.get('engine')}")
+        engine_now = sig.snapshot.get("engine")
+        if sig.side == "SHORT":
+            slp, tpp = SHORT_STOP_PCT, SHORT_TP_PCT
+        elif engine_now == "analysis_long":
+            slp, tpp = ANALYSIS_LONG_STOP_PCT, ANALYSIS_LONG_TP_PCT
+        else:
+            slp, tpp = STOP_PCT, LONG_TP_PCT
+        print(f"\nEngine         : {engine_now}")
         print(f"Entry          : {sig.price:,.1f}")
         print(f"Stop Loss      : {sig.sl:,.1f}  ({slp:.2%})")
         print(f"Take Profit    : {sig.tp:,.1f}  ({tpp:.2%})")
