@@ -1,5 +1,4 @@
-
-        name: PANDA GSCSI dual engine
+name: PANDA GSCSI dual engine
 
 on:
   workflow_dispatch:
