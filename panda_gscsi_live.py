@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-PANDA GSCSI - BTC-USDT-SWAP OKX futures engine
+PANDA GSCSI v2.0 - BTC-USDT-SWAP OKX futures engine
 Gran Script Carbono Silicio
 Collaborator and protector of the operator.
 
@@ -8,6 +8,19 @@ Dual engine:
   - SCALP SHORT: fast continuous probes while 1W is indecisive.
   - REGIME LONG: only if weekly close sits above MA10 AND MA50 (Mar-2023 analog,
     operator rule 2026-08-28). 15m/1H/4H cannot override that gate.
+  - ANALYSIS LONG: momentum confluence (AND estricto) con gate EMA200 4H duro.
+
+BUILD v2.0 (auditoria integrada):
+  P1  confirm==1 en TODOS los TFs (sin repainting)
+  P2  circuit breaker de perdida diaria = veto GLOBAL (3 motores)
+  P3  presupuesto + cooldown para analysis_long
+  P4  gate duro EMA200 4H para analysis_long (env: ANALYSIS_LONG_REQUIRE_4H_EMA200)
+  P5  presupuesto de shorts/analysis SOLO cuando la orden parte en live
+  P6  resolucion de senales con high/low real, SL-first, expiracion (sin zombies)
+  P7  inyeccion de daily-state y reloj en score_market (live == backtest)
+  P8  backoff 429/5xx, validacion sCode, account_config, equity real
+  P9  margen ISOLATED (no cross)
+  P10 sizing live con equity real de OKX
 
 Default: dry-run / demo. Live trading is an explicit opt-in.
 Not financial advice. No guaranteed hit-rate.
@@ -67,29 +80,28 @@ ENABLE_SCALP_SHORT = os.getenv("ENABLE_SCALP_SHORT", "true").lower() in ("1", "t
 ENABLE_REGIME_LONG = os.getenv("ENABLE_REGIME_LONG", "true").lower() in ("1", "true", "yes")
 MAX_SCALP_SHORTS_PER_DAY = int(os.getenv("MAX_SCALP_SHORTS_PER_DAY", "4"))
 SHORT_COOLDOWN_MIN = int(os.getenv("SHORT_COOLDOWN_MIN", "45"))
-# Block squeeze-shorts when 4H is strongly trending up
 BLOCK_SHORT_IN_4H_SQUEEZE = os.getenv("BLOCK_SHORT_IN_4H_SQUEEZE", "true").lower() in ("1", "true", "yes")
 
-# Motor 3 - ANALYSIS LONG (momentum/confluencia): filosofia distinta al
-# regime_long (pack semanal de medias). Independiente del gate semanal
-# por diseno - confirma impulso de corto/medio plazo, no tendencia macro.
-# Exige que TODOS los siguientes se cumplan a la vez (AND estricto, no
-# suma de puntos como los otros motores):
-#   - 4H con sesgo alcista (mismo bull_bias que usa regime_long)
-#   - 4H ADX >= umbral (tendencia con fuerza real, no plana)
-#   - 1H Supertrend en largo
-#   - MACD hist 15m subiendo y positivo (momentum activo, no agotado)
-#   - RSI 15m en zona de impulso sano (ni sobrecomprado ni plano)
+# Motor 3 - ANALYSIS LONG (momentum/confluencia, AND estricto).
 ENABLE_ANALYSIS_LONG = os.getenv("ENABLE_ANALYSIS_LONG", "true").lower() in ("1", "true", "yes")
 ANALYSIS_LONG_MIN_ADX_4H = float(os.getenv("ANALYSIS_LONG_MIN_ADX_4H", "25"))
 ANALYSIS_LONG_RSI_LO = float(os.getenv("ANALYSIS_LONG_RSI_LO", "45"))
 ANALYSIS_LONG_RSI_HI = float(os.getenv("ANALYSIS_LONG_RSI_HI", "65"))
 ANALYSIS_LONG_STOP_PCT = float(os.getenv("ANALYSIS_LONG_STOP_PCT", "0.01"))
 ANALYSIS_LONG_TP_PCT = float(os.getenv("ANALYSIS_LONG_TP_PCT", "0.02"))
+# P3: presupuesto diario + cooldown para analysis_long.
+MAX_ANALYSIS_LONGS_PER_DAY = int(os.getenv("MAX_ANALYSIS_LONGS_PER_DAY", "3"))
+ANALYSIS_LONG_COOLDOWN_MIN = int(os.getenv("ANALYSIS_LONG_COOLDOWN_MIN", "60"))
+# P4: gate duro de estructura. Default ON: no compra squeezes en 4H bajista.
+ANALYSIS_LONG_REQUIRE_4H_EMA200 = os.getenv(
+    "ANALYSIS_LONG_REQUIRE_4H_EMA200", "true"
+).lower() in ("1", "true", "yes")
 
 SIGNALS_LOG_PATH = Path(os.getenv("SIGNALS_LOG_PATH", "signals_log.json"))
 DAILY_STATE_PATH = Path(os.getenv("DAILY_STATE_PATH", "daily_state.json"))
 
+
+# ---------------------------------------------------------------- indicators
 
 def ema(s: pd.Series, n: int) -> pd.Series:
     return s.ewm(span=n, adjust=False).mean()
@@ -112,7 +124,7 @@ def rsi(close: pd.Series, n: int = 14) -> pd.Series:
 def atr(df: pd.DataFrame, n: int = 14) -> pd.Series:
     h, l, c = df["high"], df["low"], df["close"]
     prev = c.shift(1)
-    tr = pd.concat([(h - l), (h - prev).abs(), (l - prev).abs()], axis=1).max(axis=1)
+    tr = pd.concat([h - l, (h - prev).abs(), (l - prev).abs()], axis=1).max(axis=1)
     return tr.ewm(alpha=1 / n, adjust=False).mean()
 
 
@@ -160,6 +172,8 @@ def supertrend(df: pd.DataFrame, n: int = 10, mult: float = 3.0) -> pd.Series:
     return pd.Series(direction, index=df.index)
 
 
+# ---------------------------------------------------------------- OKX client
+
 class OkxClient:
     def __init__(self) -> None:
         self.api_key = os.getenv("OKX_API_KEY", "")
@@ -176,14 +190,32 @@ class OkxClient:
         mac = hmac.new(self.api_secret.encode(), msg.encode(), hashlib.sha256)
         return base64.b64encode(mac.digest()).decode()
 
+    # P8: transporte unico con backoff para 429/5xx/errores de red.
+    def _send(self, method: str, url: str, headers: dict,
+              body: Optional[str] = None, params: Optional[dict] = None) -> dict:
+        last: Optional[Exception] = None
+        for delay in (0.0, 1.0, 2.5, 6.0):
+            if delay:
+                time.sleep(delay)
+            try:
+                if method == "GET":
+                    r = requests.get(url, headers=headers, params=params, timeout=20)
+                else:
+                    r = requests.post(url, headers=headers, data=body or "", timeout=20)
+                if r.status_code in (429, 500, 502, 503, 504):
+                    last = RuntimeError(f"HTTP {r.status_code} en {url.split('?')[0]}")
+                    continue
+                r.raise_for_status()
+                data = r.json()
+                if str(data.get("code")) != "0":
+                    raise RuntimeError(f"OKX error: {data}")
+                return data
+            except (requests.RequestException, ValueError) as exc:
+                last = exc
+        raise last  # type: ignore[misc]
+
     def public(self, path: str, params: Optional[dict] = None) -> dict:
-        url = self.base + path
-        r = requests.get(url, params=params or {}, timeout=20)
-        r.raise_for_status()
-        data = r.json()
-        if str(data.get("code")) != "0":
-            raise RuntimeError(f"OKX public error {path}: {data}")
-        return data
+        return self._send("GET", self.base + path, {}, params=params or {})
 
     def private(self, method: str, path: str, body: Optional[dict] = None) -> dict:
         if not (self.api_key and self.api_secret and self.passphrase):
@@ -203,16 +235,7 @@ class OkxClient:
             "Content-Type": "application/json",
             "x-simulated-trading": self.flag,
         }
-        url = self.base + path + qs
-        if method == "GET":
-            r = requests.get(url, headers=headers, timeout=20)
-        else:
-            r = requests.post(url, headers=headers, data=body_str, timeout=20)
-        r.raise_for_status()
-        data = r.json()
-        if str(data.get("code")) != "0":
-            raise RuntimeError(f"OKX private error {path}: {data}")
-        return data
+        return self._send(method, self.base + path + qs, headers, body_str or None)
 
     def candles(self, bar: str, limit: int = 200) -> pd.DataFrame:
         raw = self.public(
@@ -235,6 +258,8 @@ class OkxClient:
                 }
             )
         df = pd.DataFrame(rows).sort_values("ts").reset_index(drop=True)
+        # P1: SOLO velas cerradas en todos los TFs. Mata el repainting.
+        df = df[df["confirm"] == 1].reset_index(drop=True)
         return df
 
     def ticker(self) -> dict:
@@ -268,10 +293,32 @@ class OkxClient:
         )
         return data.get("data", [])
 
-    def place_order(self, payload: dict) -> dict:
-        return self.private("POST", "/api/v5/trade/order", payload)
+    # P8: modo REAL de la cuenta (no confiar en el env).
+    def account_config(self) -> dict:
+        return self.private("GET", "/api/v5/account/config").get("data", [{}])[0]
 
-    def set_leverage(self, lever: str, mgn_mode: str = "cross", pos_side: str = "") -> dict:
+    # P10: equity real USDT desde el balance de la cuenta.
+    def usdt_equity(self) -> Optional[float]:
+        data = self.private("GET", "/api/v5/account/balance")
+        for det in data.get("data", [{}])[0].get("details", []):
+            if det.get("ccy") == "USDT":
+                try:
+                    return float(det.get("eq") or 0)
+                except (TypeError, ValueError):
+                    return None
+        return None
+
+    # P8: code=0 NO implica orden aceptada - validar sCode individual.
+    def place_order(self, payload: dict) -> dict:
+        res = self.private("POST", "/api/v5/trade/order", payload)
+        entry = (res.get("data") or [{}])[0]
+        if str(entry.get("sCode", "0")) != "0":
+            raise RuntimeError(
+                f"Orden rechazada: sCode={entry.get('sCode')} sMsg={entry.get('sMsg')}"
+            )
+        return res
+
+    def set_leverage(self, lever: str, mgn_mode: str = "isolated", pos_side: str = "") -> dict:
         body = {"instId": INST_ID, "lever": lever, "mgnMode": mgn_mode}
         if pos_side:
             body["posSide"] = pos_side
@@ -292,6 +339,8 @@ def has_open_position(ox: OkxClient) -> bool:
             continue
     return False
 
+
+# ---------------------------------------------------------------- signal
 
 @dataclass
 class Signal:
@@ -314,8 +363,8 @@ class Signal:
         if self.vetoes:
             return False
         if self.side == "LONG" and self.engine == "analysis_long":
-            # Ya se valido con AND estricto (todas las confluencias) en
-            # score_market antes de llegar aqui - no usa umbral de score.
+            # Ya se valido con AND estricto (todas las confluencias + P2/P3/P4)
+            # en score_market antes de llegar aqui - no usa umbral de score.
             return True
         if self.side == "LONG":
             return self.score >= MIN_SCORE
@@ -352,7 +401,6 @@ def enrich(df: pd.DataFrame) -> pd.DataFrame:
 def weekly_ma_pack(weekly_df: pd.DataFrame) -> Dict[str, Any]:
     # FIX operador 2026-08-28: la regla es "cierre semanal confirmado"
     # (analogia marzo-2023), no el precio flotante de la semana en curso.
-    # Si la ultima vela aun no cerro (confirm=0), se descarta para el gate.
     df = weekly_df
     if "confirm" in df.columns and len(df) > 1 and int(df["confirm"].iloc[-1]) == 0:
         df = df.iloc[:-1]
@@ -413,12 +461,16 @@ def weekly_long_ok(pack: Optional[Dict[str, Any]]) -> Tuple[bool, str]:
     return True, f"1W LONG gate OPEN - close {pack['close']:.1f} above {'+'.join(f'MA{n}' for n in need)}"
 
 
+# ---------------------------------------------------------------- state
+
 def load_daily_state() -> Dict[str, Any]:
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     blank = {
         "utc_date": today,
         "scalp_shorts": 0,
         "last_short_ts": None,
+        "analysis_longs": 0,            # P3
+        "last_analysis_long_ts": None,  # P3
         "realized_pnl_pct": 0.0,
     }
     if DAILY_STATE_PATH.exists():
@@ -437,15 +489,13 @@ def save_daily_state(st: Dict[str, Any]) -> None:
 
 def compute_daily_realized_pnl_pct(log: Dict[str, Any], utc_date: str) -> float:
     """
-    FIX operador 2026-08-28: el circuit-breaker de perdida diaria leia
-    'realized_pnl_pct' pero nada lo escribia nunca (quedaba en 0.0 para
-    siempre). Aqui se calcula de verdad, sumando el % real capturado por
-    cada senal WIN/LOSS resuelta HOY (UTC) en signals_log.json, usando el
-    precio de entrada vs. el precio al que se resolvio.
+    FIX operador 2026-08-28 + P6: suma el % real capturado por cada senal
+    WIN/LOSS/EXPIRED resuelta HOY (UTC), usando entry vs resolved_price.
+    Con P6 el resolved_price de WIN/LOSS es el SL/TP exacto -> circuit exacto.
     """
     total_pct = 0.0
     for entry in log.get("signals", []):
-        if entry.get("status") not in ("WIN", "LOSS"):
+        if entry.get("status") not in ("WIN", "LOSS", "EXPIRED"):
             continue
         resolved_utc = entry.get("resolved_utc") or ""
         if not resolved_utc.startswith(utc_date):
@@ -465,22 +515,49 @@ def compute_daily_realized_pnl_pct(log: Dict[str, Any], utc_date: str) -> float:
     return round(total_pct, 4)
 
 
-def short_budget_ok(st: Dict[str, Any]) -> Tuple[bool, str]:
-    if st.get("realized_pnl_pct", 0.0) <= -abs(MAX_DAILY_LOSS_PCT) * 100:
-        return False, f"daily loss circuit {st.get('realized_pnl_pct')}%"
+# P2: circuit breaker GLOBAL - aplica a los tres motores, no solo shorts.
+def daily_loss_ok(st: Dict[str, Any]) -> Tuple[bool, str]:
+    pnl = float(st.get("realized_pnl_pct", 0.0))
+    if pnl <= -abs(MAX_DAILY_LOSS_PCT) * 100:
+        return False, f"daily loss circuit {pnl}% (limite -{MAX_DAILY_LOSS_PCT*100:.0f}%)"
+    return True, "daily loss OK"
+
+
+def short_budget_ok(st: Dict[str, Any], now: Optional[datetime] = None) -> Tuple[bool, str]:
+    # P7: reloj inyectable. El circuit de perdida vive ahora en daily_loss_ok.
+    now = now or datetime.now(timezone.utc)
     if int(st.get("scalp_shorts", 0)) >= MAX_SCALP_SHORTS_PER_DAY:
         return False, f"max scalp shorts/day {MAX_SCALP_SHORTS_PER_DAY} reached"
     last = st.get("last_short_ts")
     if last:
         try:
             ts = datetime.fromisoformat(str(last).replace("Z", "+00:00"))
-            age_min = (datetime.now(timezone.utc) - ts).total_seconds() / 60.0
+            age_min = (now - ts).total_seconds() / 60.0
             if age_min < SHORT_COOLDOWN_MIN:
                 return False, f"short cooldown {SHORT_COOLDOWN_MIN - age_min:.0f}m left"
         except Exception:
             pass
     return True, "short budget open"
 
+
+# P3: presupuesto + cooldown propio de analysis_long.
+def analysis_long_budget_ok(st: Dict[str, Any], now: Optional[datetime] = None) -> Tuple[bool, str]:
+    now = now or datetime.now(timezone.utc)
+    if int(st.get("analysis_longs", 0)) >= MAX_ANALYSIS_LONGS_PER_DAY:
+        return False, f"max analysis longs/day {MAX_ANALYSIS_LONGS_PER_DAY} reached"
+    last = st.get("last_analysis_long_ts")
+    if last:
+        try:
+            ts = datetime.fromisoformat(str(last).replace("Z", "+00:00"))
+            age_min = (now - ts).total_seconds() / 60.0
+            if age_min < ANALYSIS_LONG_COOLDOWN_MIN:
+                return False, f"analysis long cooldown {ANALYSIS_LONG_COOLDOWN_MIN - age_min:.0f}m left"
+        except Exception:
+            pass
+    return True, "analysis long budget open"
+
+
+# ---------------------------------------------------------------- inspect core
 
 def inspect_indicators(
     exec_df: pd.DataFrame,
@@ -490,16 +567,23 @@ def inspect_indicators(
 ) -> Dict[str, Any]:
     e, s, b = exec_df.iloc[-1], struct_df.iloc[-1], bias_df.iloc[-1]
     rank = [
-        {"rank": 0, "name": "1W full_pack gate", "value": None if not weekly_pack else weekly_pack.get("long_gate"), "use": "Regime LONG only if 1W close > MA10+50+100+200"},
+        {"rank": 0, "name": "1W full_pack gate",
+         "value": None if not weekly_pack else weekly_pack.get("long_gate"),
+         "use": "Regime LONG only if 1W close above pack MAs"},
         {"rank": 1, "name": "ATR regime", "value": float(e["atr_pct"]), "use": "Gate 2% SL validity"},
-        {"rank": 2, "name": "EMA200 bias 4H", "value": float(b["close"] / b["ema200"] - 1), "use": "Direction lock (subordinate to 1W)"},
+        {"rank": 2, "name": "EMA200 bias 4H", "value": float(b["close"] / b["ema200"] - 1),
+         "use": "Direction lock (subordinate to 1W)"},
         {"rank": 3, "name": "ADX 4H", "value": float(b["adx"]), "use": "Trend-on switch"},
         {"rank": 4, "name": "Supertrend 1H", "value": int(s["st_dir"]), "use": "Structure bias"},
         {"rank": 5, "name": "EMA21 pullback 15m", "value": float(e["close"] / e["ema21"] - 1), "use": "Execution"},
         {"rank": 6, "name": "RSI 15m", "value": float(e["rsi"]), "use": "Pullback-in-trend only"},
         {"rank": 7, "name": "MACD hist 15m", "value": float(e["macd_hist"]), "use": "Momentum confirm"},
-        {"rank": 8, "name": "BB position 15m", "value": float((e["close"] - e["bb_lo"]) / max(e["bb_up"] - e["bb_lo"], 1e-9)), "use": "Mean-reversion in trend"},
-        {"rank": 9, "name": "Volume vs SMA20", "value": float(e["volume"] / e["vol_sma"]) if e["vol_sma"] else None, "use": "Participation"},
+        {"rank": 8, "name": "BB position 15m",
+         "value": float((e["close"] - e["bb_lo"]) / max(e["bb_up"] - e["bb_lo"], 1e-9)),
+         "use": "Mean-reversion in trend"},
+        {"rank": 9, "name": "Volume vs SMA20",
+         "value": float(e["volume"] / e["vol_sma"]) if e["vol_sma"] else None,
+         "use": "Participation"},
         {"rank": 10, "name": "Oscillator-only packs", "value": None, "use": "REJECTED as primary"},
     ]
     return {
@@ -528,6 +612,8 @@ def score_market(
     funding: dict,
     oi: dict,
     weekly_pack: Optional[Dict[str, Any]] = None,
+    daily: Optional[Dict[str, Any]] = None,   # P7: estado inyectable (backtest)
+    now: Optional[datetime] = None,           # P7: reloj inyectable (backtest)
 ) -> Signal:
     e = exec_df.iloc[-1]
     prev = exec_df.iloc[-2]
@@ -546,11 +632,13 @@ def score_market(
     short_pts = 0.0
 
     long_gate, long_gate_msg = weekly_long_ok(weekly_pack)
-    daily = load_daily_state()
-    short_ok, short_budget_msg = short_budget_ok(daily)
-    # FIX operador 2026-08-29: no anadir long_gate_msg aqui tambien -
-    # ya se inyecta explicitamente mas abajo (lineas can_long / no-fire).
-    # Anadirlo en los dos sitios duplicaba el mensaje en el log.
+    # P7: una sola fuente de verdad para live y backtest.
+    daily = daily if daily is not None else load_daily_state()
+    short_ok, short_budget_msg = short_budget_ok(daily, now)
+    al_ok, al_msg = analysis_long_budget_ok(daily, now)
+    loss_ok, loss_msg = daily_loss_ok(daily)
+    if not loss_ok:
+        vetoes.append(loss_msg)   # P2: veto global -> Signal.allowed = False
 
     if float(e["atr_pct"]) > ATR_PCT_HARD_CAP:
         vetoes.append(f"ATR% {e['atr_pct']:.3%} > {ATR_PCT_HARD_CAP:.2%} - 2% stop sits inside noise")
@@ -642,33 +730,44 @@ def score_market(
         f"4H ADX >= {ANALYSIS_LONG_MIN_ADX_4H:.0f}": float(b["adx"]) >= ANALYSIS_LONG_MIN_ADX_4H,
         "1H Supertrend long": int(s["st_dir"]) == 1,
         "MACD hist 15m subiendo y > 0": bool(e["macd_hist"] > prev["macd_hist"] and e["macd_hist"] > 0),
-        f"RSI 15m en {ANALYSIS_LONG_RSI_LO:.0f}-{ANALYSIS_LONG_RSI_HI:.0f}": bool(ANALYSIS_LONG_RSI_LO <= e["rsi"] <= ANALYSIS_LONG_RSI_HI),
+        f"RSI 15m en {ANALYSIS_LONG_RSI_LO:.0f}-{ANALYSIS_LONG_RSI_HI:.0f}": bool(
+            ANALYSIS_LONG_RSI_LO <= e["rsi"] <= ANALYSIS_LONG_RSI_HI
+        ),
     }
     analysis_long_confluence = all(analysis_checks.values())
     reasons_analysis = [f"{'OK' if v else 'no'}: {k}" for k, v in analysis_checks.items()]
-    can_analysis_long = ENABLE_ANALYSIS_LONG and analysis_long_confluence
 
+    # P4: gate duro de estructura - el micro (1H/15m) no compra contra el 4H.
+    ema200_4h_ok = float(b["close"]) > float(b["ema200"])
+
+    can_long = (
+        ENABLE_REGIME_LONG
+        and long_gate
+        and loss_ok
+        and long_pts >= MIN_SCORE
+        and long_pts >= short_pts
+    )
+    can_analysis_long = (
+        ENABLE_ANALYSIS_LONG
+        and loss_ok
+        and al_ok
+        and analysis_long_confluence
+        and (ema200_4h_ok or not ANALYSIS_LONG_REQUIRE_4H_EMA200)
+    )
+    can_short = (
+        ENABLE_SCALP_SHORT
+        and short_ok
+        and loss_ok
+        and short_pts >= MIN_SCORE_SHORT
+        and short_pts > long_pts
+    )
+
+    # Prioridad: regimen semanal (macro) > momentum (medio plazo) > scalp corto.
     side = "FLAT"
     score = 0.0
     reasons: List[str] = []
     engine = "none"
 
-    can_long = (
-        ENABLE_REGIME_LONG
-        and long_gate
-        and long_pts >= MIN_SCORE
-        and long_pts >= short_pts
-    )
-    can_short = (
-        ENABLE_SCALP_SHORT
-        and short_ok
-        and short_pts >= MIN_SCORE_SHORT
-        and short_pts > long_pts
-    )
-
-    # Prioridad cuando varios motores calificarian a la vez: el regimen
-    # semanal (macro) manda sobre el momentum (medio plazo), que a su vez
-    # manda sobre el scalp corto.
     if can_long:
         side, score, reasons, engine = "LONG", long_pts, reasons_l, "regime_long"
         reasons = [long_gate_msg, *reasons]
@@ -682,11 +781,14 @@ def score_market(
         reasons = [
             f"No fire - long {long_pts:.1f}/{MIN_SCORE} short {short_pts:.1f}/{MIN_SCORE_SHORT}",
             long_gate_msg,
+            f"analysis_long: {sum(analysis_checks.values())}/{len(analysis_checks)} confluencias | "
+            f"EMA200_4H {'OK' if ema200_4h_ok else 'CERRADO'} | {al_msg}",
             short_budget_msg,
-            f"analysis_long: {sum(analysis_checks.values())}/{len(analysis_checks)} confluencias",
             *reasons_l[:2],
             *reasons_s[:2],
         ]
+        if not loss_ok:
+            reasons.insert(0, f"CIRCUIT: {loss_msg}")
         if not ENABLE_SCALP_SHORT:
             reasons.insert(1, "scalp SHORT disabled by env")
         if not ENABLE_REGIME_LONG:
@@ -720,6 +822,9 @@ def score_market(
         "short_stop_pct": SHORT_STOP_PCT,
         "short_tp_pct": SHORT_TP_PCT,
         "short_budget": short_budget_msg,
+        "analysis_long_budget": al_msg,
+        "ema200_4h_ok": ema200_4h_ok,
+        "daily_loss_ok": loss_ok,
         "analysis_long_confluence": f"{sum(analysis_checks.values())}/{len(analysis_checks)}",
         "analysis_long_checks": analysis_checks,
         "analysis_long_stop_pct": ANALYSIS_LONG_STOP_PCT,
@@ -743,7 +848,8 @@ def score_market(
     )
 
 
-def position_contracts(equity: float, risk_pct: float, price: float, ct_val: float, stop_pct: float = STOP_PCT) -> Tuple[float, int]:
+def position_contracts(equity: float, risk_pct: float, price: float,
+                       ct_val: float, stop_pct: float = STOP_PCT) -> Tuple[float, int]:
     risk_usdt = equity * (risk_pct / 100.0)
     loss_per_contract = price * ct_val * stop_pct
     if loss_per_contract <= 0:
@@ -752,6 +858,8 @@ def position_contracts(equity: float, risk_pct: float, price: float, ct_val: flo
     n = max(1, int(np.floor(raw))) if raw >= 1 else 0
     return raw, n
 
+
+# ---------------------------------------------------------------- signals log
 
 def load_signals_log() -> Dict[str, Any]:
     if SIGNALS_LOG_PATH.exists():
@@ -766,25 +874,62 @@ def save_signals_log(log: Dict[str, Any]) -> None:
     SIGNALS_LOG_PATH.write_text(json.dumps(log, indent=2, default=str))
 
 
-def resolve_open_signals(log: Dict[str, Any], current_price: float) -> None:
+# P6 v1.1: resolucion contra high/low REALES de velas cerradas, SL-first,
+# con expiracion de senales zombie y guardas contra entradas legacy corruptas.
+def resolve_open_signals(
+    log: Dict[str, Any],
+    exec_df: pd.DataFrame,
+    max_hold_hours: float = 48.0,
+) -> None:
+    now = datetime.now(timezone.utc)
+
+    def _expire(entry: Dict[str, Any], reason: str, price: Optional[float] = None) -> None:
+        entry["status"], entry["reason"] = "EXPIRED", reason
+        entry["resolved_utc"] = now.isoformat()
+        if price is not None:
+            entry["resolved_price"] = price
+
     for entry in log["signals"]:
-        if entry["status"] != "OPEN":
+        if entry.get("status") != "OPEN":
             continue
-        side = entry["side"]
-        tp, sl = entry["tp"], entry["sl"]
-        if side == "LONG":
-            if current_price >= tp:
-                entry["status"] = "WIN"
-            elif current_price <= sl:
-                entry["status"] = "LOSS"
-        elif side == "SHORT":
-            if current_price <= tp:
-                entry["status"] = "WIN"
-            elif current_price >= sl:
-                entry["status"] = "LOSS"
-        if entry["status"] != "OPEN":
-            entry["resolved_utc"] = datetime.now(timezone.utc).isoformat()
-            entry["resolved_price"] = current_price
+        side = entry.get("side")
+        try:
+            tp, sl = float(entry["tp"]), float(entry["sl"])
+        except (KeyError, TypeError, ValueError):
+            _expire(entry, "bad-sl-tp")
+            continue
+        if tp <= 0 or sl <= 0:                      # legado corrupto: no inventar WIN
+            _expire(entry, "bad-sl-tp")
+            continue
+        try:
+            gen = datetime.fromisoformat(str(entry["generated_utc"]).replace("Z", "+00:00"))
+        except (TypeError, ValueError):
+            _expire(entry, "bad-timestamp")
+            continue
+        if gen.tzinfo is None:
+            gen = gen.replace(tzinfo=timezone.utc)
+
+        bars = exec_df[exec_df["ts"] > gen]
+        if bars.empty:
+            if (now - gen).total_seconds() > max_hold_hours * 3600:
+                _expire(entry, "timeout-no-data",
+                        float(exec_df["close"].iloc[-1]) if len(exec_df) else None)
+            continue                                 # senal mas nueva que la ultima vela: legitimo
+
+        for _, row in bars.iterrows():
+            hit_sl = row["low"] <= sl if side == "LONG" else row["high"] >= sl
+            hit_tp = row["high"] >= tp if side == "LONG" else row["low"] <= tp
+            if hit_sl:                               # SL-first: supuesto ADVERSO
+                entry["status"], entry["resolved_price"], entry["reason"] = "LOSS", sl, "SL"
+                break
+            if hit_tp:
+                entry["status"], entry["resolved_price"], entry["reason"] = "WIN", tp, "TP"
+                break
+
+        if entry["status"] == "OPEN" and (now - gen).total_seconds() > max_hold_hours * 3600:
+            _expire(entry, "timeout", float(bars["close"].iloc[-1]))
+        if entry["status"] in ("WIN", "LOSS"):
+            entry["resolved_utc"] = now.isoformat()
 
 
 def record_signal(log: Dict[str, Any], sig: Signal) -> None:
@@ -798,6 +943,7 @@ def record_signal(log: Dict[str, Any], sig: Signal) -> None:
             "id": len(log["signals"]) + 1,
             "generated_utc": datetime.now(timezone.utc).isoformat(),
             "side": sig.side,
+            "engine": sig.engine,
             "score": sig.score,
             "entry": sig.price,
             "sl": sig.sl,
@@ -814,6 +960,7 @@ def compute_stats(log: Dict[str, Any]) -> Dict[str, Any]:
     losses = sum(1 for s in signals if s["status"] == "LOSS")
     open_ = sum(1 for s in signals if s["status"] == "OPEN")
     skipped = sum(1 for s in signals if s["status"] == "SKIPPED")
+    expired = sum(1 for s in signals if s["status"] == "EXPIRED")
     resolved = wins + losses
     winrate = (wins / resolved * 100.0) if resolved else None
     return {
@@ -822,6 +969,7 @@ def compute_stats(log: Dict[str, Any]) -> Dict[str, Any]:
         "losses": losses,
         "open": open_,
         "skipped": skipped,
+        "expired": expired,
         "resolved": resolved,
         "winrate_pct": round(winrate, 2) if winrate is not None else None,
     }
@@ -902,12 +1050,18 @@ def run_stats(ox: OkxClient) -> Dict[str, Any]:
 
 def print_banner() -> None:
     print("=" * 72)
-    print("PANDA GSCSI  |  Gran Script Carbono Silicio")
+    print("PANDA GSCSI v2.0  |  Gran Script Carbono Silicio")
+    print("Build: P1-P10 integrados | confirm-filter | SL-first | isolated | circuit global")
     print("Collaborator and protector of the operator")
     print(f"Instrument: {INST_ID}   Hard SL: {STOP_PCT:.2%} both sides   TP: {TP_R:.1f}R")
     print(f"LONG gate: 1W {WEEKLY_LONG_MODE}  SL {STOP_PCT:.2%} TP {LONG_TP_PCT:.2%} ({LONG_TP_PCT/STOP_PCT:.1f}R)")
-    print(f"SHORT scalp: {'ON' if ENABLE_SCALP_SHORT else 'OFF'}  SL {SHORT_STOP_PCT:.2%} TP {SHORT_TP_PCT:.2%}  max/day {MAX_SCALP_SHORTS_PER_DAY}")
-    print(f"ANALYSIS LONG: {'ON' if ENABLE_ANALYSIS_LONG else 'OFF'}  SL {ANALYSIS_LONG_STOP_PCT:.2%} TP {ANALYSIS_LONG_TP_PCT:.2%}  ADX4H>={ANALYSIS_LONG_MIN_ADX_4H:.0f}")
+    print(f"SHORT scalp: {'ON' if ENABLE_SCALP_SHORT else 'OFF'}  SL {SHORT_STOP_PCT:.2%} TP {SHORT_TP_PCT:.2%}  "
+          f"max/day {MAX_SCALP_SHORTS_PER_DAY} cooldown {SHORT_COOLDOWN_MIN}m")
+    print(f"ANALYSIS LONG: {'ON' if ENABLE_ANALYSIS_LONG else 'OFF'}  SL {ANALYSIS_LONG_STOP_PCT:.2%} "
+          f"TP {ANALYSIS_LONG_TP_PCT:.2%}  ADX4H>={ANALYSIS_LONG_MIN_ADX_4H:.0f}  "
+          f"max/day {MAX_ANALYSIS_LONGS_PER_DAY} cooldown {ANALYSIS_LONG_COOLDOWN_MIN}m  "
+          f"EMA200_4H {'REQUERIDO' if ANALYSIS_LONG_REQUIRE_4H_EMA200 else 'no requerido'}")
+    print(f"CIRCUIT daily loss: -{MAX_DAILY_LOSS_PCT*100:.0f}% (GLOBAL, 3 motores)")
     print("=" * 72)
 
 
@@ -946,20 +1100,19 @@ def run_inspect(ox: OkxClient) -> Dict[str, Any]:
     raw, n = position_contracts(equity, risk_pct, sig.price, ct_val, stop_pct=stop_for_size)
 
     log = load_signals_log()
-    resolve_open_signals(log, sig.price)
+    resolve_open_signals(log, exec_df)      # P6: high/low real, no precio muestreado
     record_signal(log, sig)
     save_signals_log(log)
     stats = compute_stats(log)
 
-    # FIX operador 2026-08-28: actualizar el circuit-breaker de perdida
-    # diaria con el PnL real calculado, no dejarlo muerto en 0.0.
+    # FIX operador 2026-08-28 + P6: circuit breaker con PnL real (incluye EXPIRED).
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     daily_state = load_daily_state()
     daily_state["realized_pnl_pct"] = compute_daily_realized_pnl_pct(log, today)
     save_daily_state(daily_state)
 
     print("\n" + "=" * 72)
-    print("                    PANDA GSCSI - INSPECT RESULT")
+    print("                    PANDA GSCSI v2.0 - INSPECT RESULT")
     print("=" * 72)
     print(f"Time (UTC)     : {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"Instrument     : {INST_ID}")
@@ -1018,7 +1171,8 @@ def run_inspect(ox: OkxClient) -> Dict[str, Any]:
     print("TRACK RECORD ACUMULADO")
     print(f"   Senales totales : {stats['total_signals']}")
     print(f"   Resueltas       : {stats['resolved']}  (WIN {stats['wins']} / LOSS {stats['losses']})")
-    print(f"   Abiertas        : {stats['open']}   Ignoradas (score bajo): {stats['skipped']}")
+    print(f"   Abiertas        : {stats['open']}   Ignoradas (score bajo): {stats['skipped']}   "
+          f"Expiradas: {stats['expired']}")
     if stats["winrate_pct"] is not None:
         print(f"   WIN RATE        : {stats['winrate_pct']}%")
     else:
@@ -1028,6 +1182,7 @@ def run_inspect(ox: OkxClient) -> Dict[str, Any]:
     report = {
         "generated_utc": datetime.now(timezone.utc).isoformat(),
         "instrument": INST_ID,
+        "build": "v2.0-P1-P10",
         "stop_pct": STOP_PCT,
         "tp_r": TP_R,
         "ticker": {
@@ -1067,13 +1222,19 @@ def run_inspect(ox: OkxClient) -> Dict[str, Any]:
             "max_leverage": MAX_LEVERAGE,
             "default_leverage": DEFAULT_LEVERAGE,
             "live_default": False,
+            "margin_mode": "isolated",
             "weekly_long_mode": WEEKLY_LONG_MODE,
             "enable_scalp_short": ENABLE_SCALP_SHORT,
             "enable_regime_long": ENABLE_REGIME_LONG,
+            "enable_analysis_long": ENABLE_ANALYSIS_LONG,
             "long_tp_pct": LONG_TP_PCT,
             "short_stop_pct": SHORT_STOP_PCT,
             "short_tp_pct": SHORT_TP_PCT,
             "max_scalp_shorts_per_day": MAX_SCALP_SHORTS_PER_DAY,
+            "max_analysis_longs_per_day": MAX_ANALYSIS_LONGS_PER_DAY,
+            "analysis_long_cooldown_min": ANALYSIS_LONG_COOLDOWN_MIN,
+            "analysis_long_require_4h_ema200": ANALYSIS_LONG_REQUIRE_4H_EMA200,
+            "max_daily_loss_pct": MAX_DAILY_LOSS_PCT,
         },
     }
 
@@ -1095,23 +1256,51 @@ def run_trade(ox: OkxClient, report: Optional[dict] = None) -> dict:
         print("PROTECTOR: veto active. No order sent.")
         return {"status": "blocked", "reason": sig["vetoes"]}
 
-    if live and has_open_position(ox):
-        print("PROTECTOR: ya existe una posicion abierta en BTC-USDT-SWAP. No se apila una nueva.")
-        return {"status": "blocked", "reason": "position_already_open"}
+    if live:
+        if has_open_position(ox):
+            print("PROTECTOR: ya existe una posicion abierta en BTC-USDT-SWAP. No se apila una nueva.")
+            return {"status": "blocked", "reason": "position_already_open"}
 
-    n = int(report["sizing"]["suggested_contracts"])
-    if n < 1:
-        print("PROTECTOR: sized contracts < 1. Increase equity or lower contract requirement.")
-        return {"status": "blocked", "reason": "size_zero"}
+        # P8: verificar modo REAL de la cuenta (fail-closed).
+        try:
+            real_mode = ox.account_config().get("posMode", "")
+        except Exception as exc:
+            print(f"PROTECTOR: sin verificacion de cuenta ({exc}). Abortando.")
+            return {"status": "blocked", "reason": "account_unverified"}
+        pos_mode = "long_short" if "long_short" in real_mode else "net"
+
+        # P10: sizing con equity REAL, no con el env.
+        eq_real = ox.usdt_equity()
+        env_equity = float(report["sizing"]["equity_usdt"])
+        equity = eq_real if eq_real and eq_real > 0 else env_equity
+        if eq_real and abs(eq_real - env_equity) / eq_real > 0.10:
+            print(f"AVISO: equity real {eq_real:.2f} difiere >10% del env ({env_equity:.2f}). Usando el real.")
+        stop_pct_live = abs(sig["entry"] - sig["sl"]) / sig["entry"] if sig["entry"] else STOP_PCT
+        _, n = position_contracts(
+            equity,
+            float(report["sizing"]["risk_pct_account"]),
+            sig["entry"],
+            float(report["contract_value_btc"]),
+            stop_pct=stop_pct_live,
+        )
+        if n < 1:
+            print("PROTECTOR: equity real insuficiente para 1 contrato al riesgo configurado.")
+            return {"status": "blocked", "reason": "size_zero_real_equity"}
+    else:
+        n = int(report["sizing"]["suggested_contracts"])
+        if n < 1:
+            print("PROTECTOR: sized contracts < 1. Increase equity or lower contract requirement.")
+            return {"status": "blocked", "reason": "size_zero"}
+        pos_mode = os.getenv("POS_MODE", "long_short")
 
     lever = min(int(os.getenv("LEVERAGE", str(DEFAULT_LEVERAGE))), MAX_LEVERAGE)
-    pos_mode = os.getenv("POS_MODE", "long_short")
     side = "buy" if sig["side"] == "LONG" else "sell"
     pos_side = "long" if sig["side"] == "LONG" else "short"
 
+    # P9: margen ISOLATED - una posicion adversa no drena la cuenta.
     payload = {
         "instId": INST_ID,
-        "tdMode": "cross",
+        "tdMode": "isolated",
         "side": side,
         "ordType": "market",
         "sz": str(n),
@@ -1129,11 +1318,6 @@ def run_trade(ox: OkxClient, report: Optional[dict] = None) -> dict:
     preview = {"live": live, "leverage": lever, "payload": payload}
     print("ORDER PREVIEW:")
     print(json.dumps(preview, indent=2))
-    if sig["side"] == "SHORT":
-        st = load_daily_state()
-        st["scalp_shorts"] = int(st.get("scalp_shorts", 0)) + 1
-        st["last_short_ts"] = datetime.now(timezone.utc).isoformat()
-        save_daily_state(st)
 
     if not live:
         print("PROTECTOR: LIVE_TRADING is false. Dry-run only. No order sent to OKX.")
@@ -1142,8 +1326,19 @@ def run_trade(ox: OkxClient, report: Optional[dict] = None) -> dict:
     if ox.flag != "0":
         print("NOTE: OKX_FLAG is not 0 - demo/simulated header is on.")
 
+    # P5: contabilidad de presupuesto SOLO cuando la orden parte de verdad.
+    engine = sig["snapshot"].get("engine")
+    st = load_daily_state()
+    if sig["side"] == "SHORT":
+        st["scalp_shorts"] = int(st.get("scalp_shorts", 0)) + 1
+        st["last_short_ts"] = datetime.now(timezone.utc).isoformat()
+    elif engine == "analysis_long":
+        st["analysis_longs"] = int(st.get("analysis_longs", 0)) + 1
+        st["last_analysis_long_ts"] = datetime.now(timezone.utc).isoformat()
+    save_daily_state(st)
+
     try:
-        ox.set_leverage(str(lever), "cross", pos_side if pos_mode != "net" else "")
+        ox.set_leverage(str(lever), "isolated", pos_side if pos_mode != "net" else "")
     except Exception as exc:
         print(f"Leverage set warning (continuing): {exc}")
 
@@ -1154,7 +1349,7 @@ def run_trade(ox: OkxClient, report: Optional[dict] = None) -> dict:
 
 
 def main() -> None:
-    p = argparse.ArgumentParser(description="PANDA GSCSI OKX BTC-USDT-SWAP engine")
+    p = argparse.ArgumentParser(description="PANDA GSCSI v2.0 OKX BTC-USDT-SWAP engine")
     p.add_argument("--mode", choices=["inspect", "signal", "trade", "stats"], default="inspect")
     p.add_argument("--interval", type=int, default=0,
                    help="Segundos entre cada pasada dentro de una misma ejecucion. 0 = una sola pasada.")
