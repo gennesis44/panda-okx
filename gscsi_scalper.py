@@ -61,8 +61,8 @@ def call(key, secret, passphrase, flag, path):
 
 
 def main():
-    key = env("OKX_API_KEY")
-    secret = env("OKX_API_SECRET")
+    key = env("OKX_API_KEY").replace("-", "")
+    secret = env("OKX_API_SECRET").replace("-", "")
     passphrase = env("OKX_PASSPHRASE")
     inst = env("INST_ID") or "BTC-USDT-SWAP"
 
