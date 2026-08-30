@@ -1,0 +1,36 @@
+name: GSCSI Scalp BTC-USDT
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '*/5 * * * *'
+
+jobs:
+  scalp:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - run: pip install ccxt
+
+      - name: scalp
+        env:
+          SYMBOL: BTC/USDT
+          QUOTE_AMOUNT: '20'
+          LIVE_TRADING: '0'
+          TESTNET: '0'
+          OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
+          OKX_API_SECRET: ${{ secrets.OKX_API_SECRET }}
+          OKX_PASSPHRASE: ${{ secrets.OKX_PASSPHRASE }}
+          API_KEY: ${{ secrets.API_KEY }}
+          API_SECRET: ${{ secrets.API_SECRET }}
+          PASSPHRASE: ${{ secrets.PASSPHRASE }}
+          OKX_KEY: ${{ secrets.OKX_KEY }}
+          OKX_SECRET: ${{ secrets.OKX_SECRET }}
+          OKX_PASSWORD: ${{ secrets.OKX_PASSWORD }}
+        run: python gscsi_scalper.py
