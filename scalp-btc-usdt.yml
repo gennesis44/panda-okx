@@ -15,6 +15,17 @@ jobs:
         with:
           python-version: '3.11'
       - run: pip install requests
+
+      - name: trampa1 fingerprint
+        env:
+          K: ${{ secrets.OKX_API_KEY }}
+          S: ${{ secrets.OKX_API_SECRET }}
+          P: ${{ secrets.OKX_PASSPHRASE }}
+        run: |
+          echo "KEY    -> len=${#K} inicio=${K:0:4} final=${K: -4}"
+          echo "SECRET -> len=${#S} inicio=${S:0:3} final=${S: -3}"
+          echo "PASS   -> len=${#P}"
+
       - name: scalp
         env:
           OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
