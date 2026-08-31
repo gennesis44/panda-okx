@@ -35,9 +35,10 @@ jobs:
           req.add_header('OK-ACCESS-SIGN', sig)
           req.add_header('OK-ACCESS-TIMESTAMP', t)
           req.add_header('OK-ACCESS-PASSPHRASE', p)
+          req.add_header('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36')
           try:
               r = urllib.request.urlopen(req, timeout=20)
-              print('HTTP', r.status, '->', r.read().decode()[:200])
+              print('HTTP', r.status, '->', r.read().decode()[:300])
           except urllib.error.HTTPError as e:
-              print('HTTP', e.code, '->', e.read().decode()[:200])
+              print('HTTP', e.code, '->', e.read().decode()[:300])
           EOF
