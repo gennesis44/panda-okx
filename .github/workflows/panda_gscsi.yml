@@ -1,0 +1,84 @@
+# PANDA GSCSI — GitHub Actions
+# Protector: solo inspect / stats. Nunca trade.
+# Keys: GitHub Secrets (Read Only en OKX). El YAML no lleva valores.
+
+name: PANDA GSCSI actions inspect
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "inspect (publico) o stats (lectura privada OKX)"
+        required: true
+        default: inspect
+        type: choice
+        options:
+          - inspect
+          - stats
+  schedule:
+    # cada 15 min UTC — descomenta si el operador lo autoriza
+    # - cron: "*/15 * * * *"
+    - cron: "5 * * * *"
+
+permissions:
+  contents: read
+
+jobs:
+  panda:
+    name: Run panda_gscsi_actions.py
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install numpy pandas requests python-dotenv
+
+      - name: Restore state from previous run
+        uses: actions/cache@v4
+        with:
+          path: |
+            signals_log.json
+            daily_state.json
+          key: panda-state-\( {{ github.repository }}- \){{ github.ref_name }}
+          restore-keys: |
+            panda-state-${{ github.repository }}-
+
+      - name: Run engine
+        env:
+          OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
+          OKX_API_SECRET: ${{ secrets.OKX_API_SECRET }}
+          OKX_PASSPHRASE: ${{ secrets.OKX_PASSPHRASE }}
+          OKX_FLAG: ${{ secrets.OKX_FLAG }}
+          LIVE_TRADING: "false"
+          ACCOUNT_EQUITY_USDT: ${{ vars.ACCOUNT_EQUITY_USDT }}
+          WEEKLY_LONG_MODE: ${{ vars.WEEKLY_LONG_MODE }}
+        run: |
+          set -euo pipefail
+          MODE="${{ github.event.inputs.mode || 'inspect' }}"
+          echo "PANDA mode=$MODE LIVE_TRADING=false (hardcoded protector)"
+          if [ "$MODE" != "inspect" ] && [ "$MODE" != "stats" ]; then
+            echo "PROTECTOR: mode no autorizado en Actions: $MODE"
+            exit 1
+          fi
+          python panda_gscsi_actions.py --mode "$MODE"
+
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: panda-state-${{ github.run_id }}
+          path: |
+            signals_log.json
+            daily_state.json
+          if-no-files-found: ignore
+          retention-days: 14
