@@ -1,4 +1,4 @@
-# PANDA GSCSI — GitHub Actions
+ # PANDA GSCSI — GitHub Actions
 # Protector: solo inspect / stats. Nunca trade.
 # Keys: GitHub Secrets (Read Only en OKX). El YAML no lleva valores.
 
@@ -58,14 +58,14 @@ jobs:
           OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
           OKX_API_SECRET: ${{ secrets.OKX_API_SECRET }}
           OKX_PASSPHRASE: ${{ secrets.OKX_PASSPHRASE }}
-          OKX_FLAG: ${{ secrets.OKX_FLAG }}
+          OKX_FLAG: ${{ secrets.OKX_FLAG || '1' }}
           LIVE_TRADING: "false"
-          ACCOUNT_EQUITY_USDT: ${{ vars.ACCOUNT_EQUITY_USDT }}
-          WEEKLY_LONG_MODE: ${{ vars.WEEKLY_LONG_MODE }}
+          ACCOUNT_EQUITY_USDT: "10000"
+          WEEKLY_LONG_MODE: ${{ vars.WEEKLY_LONG_MODE || 'full_pack' }}
         run: |
           set -euo pipefail
           MODE="${{ github.event.inputs.mode || 'inspect' }}"
-          echo "PANDA mode=$MODE LIVE_TRADING=false (hardcoded protector)"
+          echo "PANDA mode=$MODE LIVE_TRADING=false equity=10000 (hardcoded protector)"
           if [ "$MODE" != "inspect" ] && [ "$MODE" != "stats" ]; then
             echo "PROTECTOR: mode no autorizado en Actions: $MODE"
             exit 1
