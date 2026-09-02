@@ -8,11 +8,11 @@ import okx.Account as Account
 # Cargar claves buscando automáticamente el archivo .env en el directorio o superiores
 load_dotenv(find_dotenv())
 
-# .strip() elimina espacios o saltos de línea ocultos (muy común al pegar secretos en GitHub)
 API_KEY = os.getenv("OKX_API_KEY", "").strip()
 API_SECRET = os.getenv("OKX_API_SECRET", "").strip()
 API_PASSPHRASE = os.getenv("OKX_PASSPHRASE", "").strip()
 FLAG = os.getenv("OKX_FLAG", "0").strip()  # 0 = real, 1 = demo
+DOMAIN = os.getenv("OKX_DOMAIN", "https://eea.okx.com").strip()
 
 if not API_KEY or not API_SECRET or not API_PASSPHRASE:
     raise ValueError(
@@ -27,9 +27,15 @@ SL_PCT = 0.01      # 1% SL
 TP_PCT = 0.015     # 1.5% TP
 FIXED_SZ = 50      # tamaño fijo conservador
 
-market_api = MarketData.MarketAPI(flag=FLAG)
-trade_api = Trade.TradeAPI(API_KEY, API_SECRET, API_PASSPHRASE, flag=FLAG)
-account_api = Account.AccountAPI(API_KEY, API_SECRET, API_PASSPHRASE, flag=FLAG)
+# Inicialización con soporte de dominio EEA para Europa
+try:
+    market_api = MarketData.MarketAPI(flag=FLAG, domain=DOMAIN)
+    trade_api = Trade.TradeAPI(API_KEY, API_SECRET, API_PASSPHRASE, flag=FLAG, domain=DOMAIN)
+    account_api = Account.AccountAPI(API_KEY, API_SECRET, API_PASSPHRASE, flag=FLAG, domain=DOMAIN)
+except TypeError:
+    market_api = MarketData.MarketAPI(flag=FLAG)
+    trade_api = Trade.TradeAPI(API_KEY, API_SECRET, API_PASSPHRASE, flag=FLAG)
+    account_api = Account.AccountAPI(API_KEY, API_SECRET, API_PASSPHRASE, flag=FLAG)
 
 
 def get_last_price():
@@ -75,13 +81,18 @@ def place_order(side, pos_side, price):
 
     print(f"ENTRADA {pos_side.upper()} | Precio={price} | SL={sl_px} | TP={tp_px}")
 
+    # Inyección de Stop Loss y Take Profit directamente en la orden de mercado
     res = trade_api.place_order(
         instId=INST_ID,
         tdMode=TD_MODE,
         side=side,
         ordType="market",
         sz=str(sz),
-        posSide=pos_side
+        posSide=pos_side,
+        slTriggerPx=str(round(sl_px, 4)),
+        slOrdPx="-1",
+        tpTriggerPx=str(round(tp_px, 4)),
+        tpOrdPx="-1"
     )
 
     print("Orden enviada:", res)
