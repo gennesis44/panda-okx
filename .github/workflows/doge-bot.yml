@@ -29,6 +29,6 @@ jobs:
           OKX_SECRET_KEY: ${{ secrets.OKX_API_SECRET }}
           OKX_PASSWORD: ${{ secrets.OKX_PASSPHRASE }}
         run: |
-          python bot_doge_swap.py
+          python bot_doge_swap.py   
 
 
