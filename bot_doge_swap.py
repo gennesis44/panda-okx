@@ -11,7 +11,7 @@ load_dotenv(find_dotenv())
 API_KEY = os.getenv("OKX_API_KEY")
 API_SECRET = os.getenv("OKX_API_SECRET")
 API_PASSPHRASE = os.getenv("OKX_PASSPHRASE")
-FLAG = os.getenv("OKX_FLAG", "1")  # 1 = demo, 0 = real
+FLAG = os.getenv("OKX_FLAG", "0")  # 1 = demo, 0 = real
 
 if not API_KEY or not API_SECRET or not API_PASSPHRASE:
     raise ValueError(
