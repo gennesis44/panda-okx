@@ -1,34 +1,111 @@
-# .github/workflows/bot.yml
-name: OKX DOGE Swap Bot
+# bot_doge_swap.py
+import os
+import sys
+import ccxt
+import pandas as pd
 
-on:
-  schedule:
-    # Se ejecuta a los 13, 28, 43 y 58 minutos de cada hora (2 minutos antes del cierre de cada vela de 15m)
-    - cron: '13,28,43,58 * * * *'
-  workflow_dispatch:        # Permite ejecutarlo manualmente desde la pestaña Actions en GitHub
+# Carga opcional de variables locales con dotenv
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 
-jobs:
-  run-bot:
-    runs-on: ubuntu-latest
+def execute_strategy():
+    # Comprobación ampliada de nombres alternativos para compatibilidad con cualquier secreto configurado
+    api_key = os.getenv('OKX_API_KEY') or os.getenv('API_KEY') or os.getenv('OKX_KEY')
+    secret_key = os.getenv('OKX_SECRET_KEY') or os.getenv('SECRET_KEY') or os.getenv('OKX_SECRET')
+    password = os.getenv('OKX_PASSWORD') or os.getenv('PASSWORD') or os.getenv('PASSPHRASE') or os.getenv('OKX_PASSPHRASE')
 
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v3
+    if not api_key or not secret_key or not password:
+        print("Error: Faltan las credenciales de OKX en las variables de entorno.")
+        print(f"Estado de lectura -> API_KEY: {bool(api_key)}, SECRET_KEY: {bool(secret_key)}, PASSWORD: {bool(password)}")
+        sys.exit(1)
 
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.10'
+    exchange = ccxt.okx({
+        'apiKey': api_key,
+        'secret': secret_key,
+        'password': password,
+        'enableRateLimit': True,
+        'options': {
+            'defaultType': 'swap',
+        }
+    })
 
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install ccxt pandas
+    symbol = 'DOGE/USD:DOGE'
+    timeframe = '15m'
+    
+    SL_PCT = 0.01   
+    TP_PCT = 0.015  
 
-      - name: Run trading script
-        env:
-          OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
-          OKX_SECRET_KEY: ${{ secrets.OKX_SECRET_KEY }}
-          OKX_PASSWORD: ${{ secrets.OKX_PASSWORD }}
-        run: |
-          python bot_doge_swap.py
+    try:
+        exchange.load_markets()
+        
+        ohlcv = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=50)
+        df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        
+        fast_period = 9
+        slow_period = 21
+        
+        df['sma_fast'] = df['close'].rolling(window=fast_period).mean()
+        df['sma_slow'] = df['close'].rolling(window=slow_period).mean()
+        
+        prev_fast = df['sma_fast'].iloc[-2]
+        prev_slow = df['sma_slow'].iloc[-2]
+        curr_fast = df['sma_fast'].iloc[-1]
+        curr_slow = df['sma_slow'].iloc[-1]
+        
+        current_price = df['close'].iloc[-1]
+        print(f"[{symbol}] Precio actual: {current_price} | MA Rápida: {curr_fast:.4f} | MA Lenta: {curr_slow:.4f}")
+
+        positions = exchange.fetch_positions([symbol])
+        active_position = None
+        for pos in positions:
+            if pos['symbol'] == symbol and float(pos['contracts']) > 0:
+                active_position = pos
+                break
+
+        if prev_fast <= prev_slow and curr_fast > curr_slow:
+            print("Señal detectada: Cruce Alcista (COMPRA)")
+            if not active_position or active_position['side'] == 'short':
+                amount = 1  
+                
+                sl_price = current_price * (1 - SL_PCT)
+                tp_price = current_price * (1 + TP_PCT)
+                
+                params = {
+                    'slTriggerPx': sl_price,
+                    'tpTriggerPx': tp_price,
+                }
+                
+                order = exchange.create_market_buy_order(symbol, amount, params)
+                print(f"Orden LONG ejecutada con SL a {sl_price:.4f} y TP a {tp_price:.4f}: {order}")
+            else:
+                print("Ya existe una posición larga activa.")
+
+        elif prev_fast >= prev_slow and curr_fast < curr_slow:
+            print("Señal detectada: Cruce Bajista (VENTA)")
+            if not active_position or active_position['side'] == 'long':
+                amount = 1
+                
+                sl_price = current_price * (1 + SL_PCT)
+                tp_price = current_price * (1 - TP_PCT)
+                
+                params = {
+                    'slTriggerPx': sl_price,
+                    'tpTriggerPx': tp_price,
+                }
+                
+                order = exchange.create_market_sell_order(symbol, amount, params)
+                print(f"Orden SHORT ejecutada con SL a {sl_price:.4f} y TP a {tp_price:.4f}: {order}")
+            else:
+                print("Ya existe una posición corta activa.")
+        else:
+            print("Sin cruce de medias móviles en este ciclo.")
+
+    except Exception as e:
+        print(f"Error crítico durante la ejecución del bot: {e}")
+        sys.exit(1)
+
+if __name__ == "__main__":
+    execute_strategy()
