@@ -8,10 +8,11 @@ import okx.Account as Account
 # Cargar claves buscando automáticamente el archivo .env en el directorio o superiores
 load_dotenv(find_dotenv())
 
-API_KEY = os.getenv("OKX_API_KEY")
-API_SECRET = os.getenv("OKX_API_SECRET")
-API_PASSPHRASE = os.getenv("OKX_PASSPHRASE")
-FLAG = os.getenv("OKX_FLAG", "0")  # 1 = demo, 0 = real
+# .strip() elimina espacios o saltos de línea ocultos (muy común al pegar secretos en GitHub)
+API_KEY = os.getenv("OKX_API_KEY", "").strip()
+API_SECRET = os.getenv("OKX_API_SECRET", "").strip()
+API_PASSPHRASE = os.getenv("OKX_PASSPHRASE", "").strip()
+FLAG = os.getenv("OKX_FLAG", "0").strip()  # 0 = real, 1 = demo
 
 if not API_KEY or not API_SECRET or not API_PASSPHRASE:
     raise ValueError(
@@ -74,7 +75,6 @@ def place_order(side, pos_side, price):
 
     print(f"ENTRADA {pos_side.upper()} | Precio={price} | SL={sl_px} | TP={tp_px}")
 
-    # Petición estándar compatible con el SDK de OKX
     res = trade_api.place_order(
         instId=INST_ID,
         tdMode=TD_MODE,
