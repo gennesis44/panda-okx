@@ -1,10 +1,8 @@
-# bot_doge_swap.py
 import os
 import sys
 import ccxt
 import pandas as pd
 
-# Carga opcional de variables locales con dotenv (ignorado si no está instalado, como en GitHub Actions)
 try:
     from dotenv import load_dotenv
     load_dotenv()
@@ -12,12 +10,13 @@ except ImportError:
     pass
 
 def execute_strategy():
-    api_key = os.getenv('OKX_API_KEY')
-    secret_key = os.getenv('OKX_SECRET_KEY')
-    password = os.getenv('OKX_PASSWORD')
+    api_key = os.getenv('OKX_API_KEY') or os.getenv('API_KEY') or os.getenv('OKX_KEY')
+    secret_key = os.getenv('OKX_SECRET_KEY') or os.getenv('SECRET_KEY') or os.getenv('OKX_SECRET')
+    password = os.getenv('OKX_PASSWORD') or os.getenv('PASSWORD') or os.getenv('PASSPHRASE') or os.getenv('OKX_PASSPHRASE')
 
     if not api_key or not secret_key or not password:
         print("Error: Faltan las credenciales de OKX en las variables de entorno.")
+        print(f"Estado de lectura -> API_KEY: {bool(api_key)}, SECRET_KEY: {bool(secret_key)}, PASSWORD: {bool(password)}")
         sys.exit(1)
 
     exchange = ccxt.okx({
@@ -30,21 +29,18 @@ def execute_strategy():
         }
     })
 
-    symbol = 'DOGE/USD:DOGE'  # Contrato perpetuo marginado en DOGE
+    symbol = 'DOGE/USD:DOGE'
     timeframe = '15m'
     
-    # Parámetros de Gestión de Riesgo
-    SL_PCT = 0.01   # 1% Stop Loss
-    TP_PCT = 0.015  # 1.5% Take Profit
+    SL_PCT = 0.01   
+    TP_PCT = 0.015  
 
     try:
         exchange.load_markets()
         
-        # Descargar datos históricos de velas de 15 minutos
         ohlcv = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=50)
         df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         
-        # Configuración de la estrategia de Doble Media Móvil (9 y 21)
         fast_period = 9
         slow_period = 21
         
@@ -59,7 +55,6 @@ def execute_strategy():
         current_price = df['close'].iloc[-1]
         print(f"[{symbol}] Precio actual: {current_price} | MA Rápida: {curr_fast:.4f} | MA Lenta: {curr_slow:.4f}")
 
-        # Comprobar posiciones actuales
         positions = exchange.fetch_positions([symbol])
         active_position = None
         for pos in positions:
@@ -67,20 +62,16 @@ def execute_strategy():
                 active_position = pos
                 break
 
-        # Lógica de cruce con SL (1%) y TP (1.5%) integrados
         if prev_fast <= prev_slow and curr_fast > curr_slow:
             print("Señal detectada: Cruce Alcista (COMPRA)")
             if not active_position or active_position['side'] == 'short':
-                amount = 1  # Cantidad de contratos
-                
+                amount = 1  
                 sl_price = current_price * (1 - SL_PCT)
                 tp_price = current_price * (1 + TP_PCT)
-                
                 params = {
                     'slTriggerPx': sl_price,
                     'tpTriggerPx': tp_price,
                 }
-                
                 order = exchange.create_market_buy_order(symbol, amount, params)
                 print(f"Orden LONG ejecutada con SL a {sl_price:.4f} y TP a {tp_price:.4f}: {order}")
             else:
@@ -90,15 +81,12 @@ def execute_strategy():
             print("Señal detectada: Cruce Bajista (VENTA)")
             if not active_position or active_position['side'] == 'long':
                 amount = 1
-                
                 sl_price = current_price * (1 + SL_PCT)
                 tp_price = current_price * (1 - TP_PCT)
-                
                 params = {
                     'slTriggerPx': sl_price,
                     'tpTriggerPx': tp_price,
                 }
-                
                 order = exchange.create_market_sell_order(symbol, amount, params)
                 print(f"Orden SHORT ejecutada con SL a {sl_price:.4f} y TP a {tp_price:.4f}: {order}")
             else:
