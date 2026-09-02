@@ -1,129 +1,114 @@
+# bot_doge_swap.py
 import os
-import time
-from dotenv import load_dotenv, find_dotenv
-import okx.MarketData as MarketData
-import okx.Trade as Trade
-import okx.Account as Account
+import sys
+import ccxt
+import pandas as pd
 
-# Cargar claves buscando automáticamente el archivo .env en el directorio o superiores
-load_dotenv(find_dotenv())
-
-API_KEY = os.getenv("OKX_API_KEY", "").strip()
-API_SECRET = os.getenv("OKX_API_SECRET", "").strip()
-API_PASSPHRASE = os.getenv("OKX_PASSPHRASE", "").strip()
-FLAG = os.getenv("OKX_FLAG", "0").strip()  # 0 = real, 1 = demo
-DOMAIN = os.getenv("OKX_DOMAIN", "https://eea.okx.com").strip()
-
-if not API_KEY or not API_SECRET or not API_PASSPHRASE:
-    raise ValueError(
-        "Faltan credenciales de OKX. Asegúrate de que tu archivo .env contenga: "
-        "OKX_API_KEY, OKX_API_SECRET y OKX_PASSPHRASE."
-    )
-
-INST_ID = "DOGE-USDT-SWAP"
-TD_MODE = "cross"
-
-SL_PCT = 0.01      # 1% SL
-TP_PCT = 0.015     # 1.5% TP
-FIXED_SZ = 50      # tamaño fijo conservador
-
-# Inicialización con soporte de dominio EEA para Europa
+# Carga opcional de variables locales con dotenv (ignorado si no está instalado, como en GitHub Actions)
 try:
-    market_api = MarketData.MarketAPI(flag=FLAG, domain=DOMAIN)
-    trade_api = Trade.TradeAPI(API_KEY, API_SECRET, API_PASSPHRASE, flag=FLAG, domain=DOMAIN)
-    account_api = Account.AccountAPI(API_KEY, API_SECRET, API_PASSPHRASE, flag=FLAG, domain=DOMAIN)
-except TypeError:
-    market_api = MarketData.MarketAPI(flag=FLAG)
-    trade_api = Trade.TradeAPI(API_KEY, API_SECRET, API_PASSPHRASE, flag=FLAG)
-    account_api = Account.AccountAPI(API_KEY, API_SECRET, API_PASSPHRASE, flag=FLAG)
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 
+def execute_strategy():
+    api_key = os.getenv('OKX_API_KEY')
+    secret_key = os.getenv('OKX_SECRET_KEY')
+    password = os.getenv('OKX_PASSWORD')
 
-def get_last_price():
-    res = market_api.get_ticker(instId=INST_ID)
-    data = res.get("data", [])
-    return float(data[0]["last"])
+    if not api_key or not secret_key or not password:
+        print("Error: Faltan las credenciales de OKX en las variables de entorno.")
+        sys.exit(1)
 
+    exchange = ccxt.okx({
+        'apiKey': api_key,
+        'secret': secret_key,
+        'password': password,
+        'enableRateLimit': True,
+        'options': {
+            'defaultType': 'swap',
+        }
+    })
 
-def get_klines(limit=100, bar="1m"):
-    res = market_api.get_candlesticks(instId=INST_ID, bar=bar, limit=str(limit))
-    data = res.get("data", [])
-    closes = [float(c[4]) for c in reversed(data)]
-    return closes
+    symbol = 'DOGE/USD:DOGE'  # Contrato perpetuo marginado en DOGE
+    timeframe = '15m'
+    
+    # Parámetros de Gestión de Riesgo
+    SL_PCT = 0.01   # 1% Stop Loss
+    TP_PCT = 0.015  # 1.5% Take Profit
 
+    try:
+        exchange.load_markets()
+        
+        # Descargar datos históricos de velas de 15 minutos
+        ohlcv = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=50)
+        df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        
+        # Configuración de la estrategia de Doble Media Móvil (9 y 21)
+        fast_period = 9
+        slow_period = 21
+        
+        df['sma_fast'] = df['close'].rolling(window=fast_period).mean()
+        df['sma_slow'] = df['close'].rolling(window=slow_period).mean()
+        
+        prev_fast = df['sma_fast'].iloc[-2]
+        prev_slow = df['sma_slow'].iloc[-2]
+        curr_fast = df['sma_fast'].iloc[-1]
+        curr_slow = df['sma_slow'].iloc[-1]
+        
+        current_price = df['close'].iloc[-1]
+        print(f"[{symbol}] Precio actual: {current_price} | MA Rápida: {curr_fast:.4f} | MA Lenta: {curr_slow:.4f}")
 
-def ema(values, period):
-    if len(values) < period:
-        return None
-    k = 2 / (period + 1)
-    ema_val = sum(values[:period]) / period
-    for v in values[period:]:
-        ema_val = v * k + ema_val * (1 - k)
-    return ema_val
+        # Comprobar posiciones actuales
+        positions = exchange.fetch_positions([symbol])
+        active_position = None
+        for pos in positions:
+            if pos['symbol'] == symbol and float(pos['contracts']) > 0:
+                active_position = pos
+                break
 
+        # Lógica de cruce con SL (1%) y TP (1.5%) integrados
+        if prev_fast <= prev_slow and curr_fast > curr_slow:
+            print("Señal detectada: Cruce Alcista (COMPRA)")
+            if not active_position or active_position['side'] == 'short':
+                amount = 1  # Cantidad de contratos
+                
+                sl_price = current_price * (1 - SL_PCT)
+                tp_price = current_price * (1 + TP_PCT)
+                
+                params = {
+                    'slTriggerPx': sl_price,
+                    'tpTriggerPx': tp_price,
+                }
+                
+                order = exchange.create_market_buy_order(symbol, amount, params)
+                print(f"Orden LONG ejecutada con SL a {sl_price:.4f} y TP a {tp_price:.4f}: {order}")
+            else:
+                print("Ya existe una posición larga activa.")
 
-def get_position():
-    res = account_api.get_positions(instId=INST_ID)
-    data = res.get("data", [])
-    if not data:
-        return None
-    return data[0]
+        elif prev_fast >= prev_slow and curr_fast < curr_slow:
+            print("Señal detectada: Cruce Bajista (VENTA)")
+            if not active_position or active_position['side'] == 'long':
+                amount = 1
+                
+                sl_price = current_price * (1 + SL_PCT)
+                tp_price = current_price * (1 - TP_PCT)
+                
+                params = {
+                    'slTriggerPx': sl_price,
+                    'tpTriggerPx': tp_price,
+                }
+                
+                order = exchange.create_market_sell_order(symbol, amount, params)
+                print(f"Orden SHORT ejecutada con SL a {sl_price:.4f} y TP a {tp_price:.4f}: {order}")
+            else:
+                print("Ya existe una posición corta activa.")
+        else:
+            print("Sin cruce de medias móviles en este ciclo.")
 
-
-def place_order(side, pos_side, price):
-    sz = FIXED_SZ
-
-    if pos_side == "long":
-        sl_px = price * (1 - SL_PCT)
-        tp_px = price * (1 + TP_PCT)
-    else:
-        sl_px = price * (1 + SL_PCT)
-        tp_px = price * (1 - TP_PCT)
-
-    print(f"ENTRADA {pos_side.upper()} | Precio={price} | SL={sl_px} | TP={tp_px}")
-
-    # Ejecución de orden de mercado estándar compatible con el SDK
-    res = trade_api.place_order(
-        instId=INST_ID,
-        tdMode=TD_MODE,
-        side=side,
-        ordType="market",
-        sz=str(sz),
-        posSide=pos_side
-    )
-
-    print("Orden enviada:", res)
-    print("Esperando 2 minutos tras abrir operación...")
-    time.sleep(120)
-
-
-def strategy_step():
-    pos = get_position()
-    if pos:
-        print("Ya hay una posición abierta. No se abre otra.")
-        return
-
-    closes = get_klines(limit=100, bar="1m")
-    price = closes[-1]
-
-    print(f"Precio actual OKX (DOGE-USDT-SWAP): {price}")
-
-    ema20 = ema(closes, 20)
-    ema50 = ema(closes, 50)
-
-    print(f"EMA20={ema20} | EMA50={ema50}")
-
-    if ema20 > ema50:
-        place_order("buy", "long", price)
-    elif ema20 < ema50:
-        place_order("sell", "short", price)
-    else:
-        print("Sin señal clara. EMAs iguales.")
-
-
-def main():
-    print("Bot DOGE-USDT-SWAP conservador iniciado.")
-    strategy_step()
-
+    except Exception as e:
+        print(f"Error crítico durante la ejecución del bot: {e}")
+        sys.exit(1)
 
 if __name__ == "__main__":
-    main()
+    execute_strategy()
