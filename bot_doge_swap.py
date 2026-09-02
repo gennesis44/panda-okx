@@ -99,4 +99,4 @@ def execute_strategy():
         sys.exit(1)
 
 if __name__ == "__main__":
-    execute_strategy()
+    execute_strategy()   
