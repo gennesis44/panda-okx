@@ -81,18 +81,14 @@ def place_order(side, pos_side, price):
 
     print(f"ENTRADA {pos_side.upper()} | Precio={price} | SL={sl_px} | TP={tp_px}")
 
-    # Inyección de Stop Loss y Take Profit directamente en la orden de mercado
+    # Ejecución de orden de mercado estándar compatible con el SDK
     res = trade_api.place_order(
         instId=INST_ID,
         tdMode=TD_MODE,
         side=side,
         ordType="market",
         sz=str(sz),
-        posSide=pos_side,
-        slTriggerPx=str(round(sl_px, 4)),
-        slOrdPx="-1",
-        tpTriggerPx=str(round(tp_px, 4)),
-        tpOrdPx="-1"
+        posSide=pos_side
     )
 
     print("Orden enviada:", res)
