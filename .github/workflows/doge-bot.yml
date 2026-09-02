@@ -23,11 +23,12 @@ jobs:
           python -m pip install --upgrade pip
           pip install ccxt pandas python-dotenv
 
-      - name: Run trading script
+            - name: Run trading script
         env:
           OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
-          OKX_SECRET_KEY: ${{ secrets.OKX_SECRET_KEY }}
-          OKX_PASSWORD: ${{ secrets.OKX_PASSWORD }}
+          OKX_SECRET_KEY: ${{ secrets.OKX_API_SECRET }}
+          OKX_PASSWORD: ${{ secrets.OKX_PASSPHRASE }}
         run: |
           python bot_doge_swap.py
+
 
