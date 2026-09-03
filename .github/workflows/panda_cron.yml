@@ -30,4 +30,4 @@ jobs:
           OKX_FLAG: ${{ secrets.OKX_FLAG }}
           LIVE_TRADING: ${{ secrets.LIVE_TRADING }}
         run: |
-          python3 bot.py --mode trade
+          python3 panda_gscsi_actions.py --mode trade
