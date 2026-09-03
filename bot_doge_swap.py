@@ -2,7 +2,6 @@ import os
 import ccxt
 import pandas as pd
 
-# Instancia pública exclusiva para lectura de precios y velas (sin errores de autenticación)
 exchange_public = ccxt.okx({
     'enableRateLimit': True,
     'options': {'defaultType': 'swap'}
@@ -10,10 +9,10 @@ exchange_public = ccxt.okx({
 
 symbol = 'DOGE/USD:DOGE'
 timeframe = '15m'
-amount = 1  # Número de contratos para la orden (ajustable según tu gestión de riesgo)
+amount = 136  # Tus 136 contratos de DOGE
 
 def run_bot():
-    print(f"Conectando a OKX (modo público) para analizar {symbol} en {timeframe}...")
+    print(f"Analizando {symbol} en {timeframe}...")
     
     try:
         ohlcv = exchange_public.fetch_ohlcv(symbol, timeframe, limit=100)
@@ -31,12 +30,8 @@ def run_bot():
         print(f"Precio actual: {current_price} | EMA9: {curr_ema9:.5f} | EMA21: {curr_ema21:.5f}")
         
         if prev_ema9 <= prev_ema21 and curr_ema9 > curr_ema21:
-            print("¡Cruce alcista (Golden Cross) detectado! Disparando orden en vivo...")
-            sl_price = current_price * 0.99
-            tp_price = current_price * 1.015
-            print(f"Parámetros calculados -> SL: {sl_price:.5f} | TP: {tp_price:.5f}")
+            print("¡Golden Cross detectado! Lanzando orden de ataque...")
             
-            # Instancia privada con credenciales activada únicamente al cazar la señal
             exchange_trade = ccxt.okx({
                 'apiKey': os.getenv('OKX_API_KEY'),
                 'secret': os.getenv('OKX_SECRET_KEY'),
@@ -45,17 +40,51 @@ def run_bot():
                 'options': {'defaultType': 'swap'}
             })
             
-            # Ejecución real de la orden de compra a mercado
+            # 1. Ejecutar compra a mercado
             order = exchange_trade.create_order(symbol, 'market', 'buy', amount)
-            print(f"¡Orden ejecutada con éxito! ID: {order['id']}")
+            print(f"¡Posición abierta! ID: {order['id']}")
+            
+            entry_price = order['average'] if 'average' in order and order['average'] else current_price
+            sl_price = entry_price * 0.99
+            tp_price = entry_price * 1.015
+            
+            print(f"Objetivos fijados -> Entrada: {entry_price} | SL: {sl_price:.5f} | TP: {tp_price:.5f}")
+            
+            # 2. Anclar Stop-Loss condicional en OKX
+            exchange_trade.create_order(
+                symbol=symbol,
+                type='conditional',
+                side='sell',
+                amount=amount,
+                price=sl_price,
+                params={
+                    'triggerPrice': sl_price,
+                    'stopLoss': True
+                }
+            )
+            print("Stop-Loss anclado en el exchange.")
+
+            # 3. Anclar Take-Profit condicional en OKX
+            exchange_trade.create_order(
+                symbol=symbol,
+                type='conditional',
+                side='sell',
+                amount=amount,
+                price=tp_price,
+                params={
+                    'triggerPrice': tp_price,
+                    'takeProfit': True
+                }
+            )
+            print("Take-Profit anclado en el exchange. Ciclo de riesgo completo.")
             
         elif prev_ema9 >= prev_ema21 and curr_ema9 < curr_ema21:
-            print("Cruce bajista (Death Cross) detectado. Sin entradas en largo.")
+            print("Death Cross detectado. Margen en observación.")
         else:
-            print("Sin cruce nuevo en esta ejecución. Esperando siguiente ciclo.")
+            print("Sin cruces nuevos en este ciclo. Vigilando.")
             
     except Exception as e:
-        print(f"Error crítico durante la ejecución del bot: {e}")
+        print(f"Error crítico durante la ejecución: {e}")
         raise e
 
 if __name__ == "__main__":
