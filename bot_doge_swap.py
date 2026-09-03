@@ -9,28 +9,28 @@ exchange_public = ccxt.okx({
 
 symbol = 'DOGE/USD:DOGE'
 timeframe = '15m'
-amount = 136  # Tus 136 contratos de DOGE
+amount = 136  # 136 contratos de DOGE
 
 def run_bot():
-    print(f"Analizando {symbol} en {timeframe}...")
+    print(f"Analizando {symbol} en {timeframe} con configuración EMA 7/21...")
     
     try:
         ohlcv = exchange_public.fetch_ohlcv(symbol, timeframe, limit=100)
         df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         
-        df['ema9'] = df['close'].ewm(span=9, adjust=False).mean()
+        df['ema7'] = df['close'].ewm(span=7, adjust=False).mean()
         df['ema21'] = df['close'].ewm(span=21, adjust=False).mean()
         
-        prev_ema9 = df['ema9'].iloc[-2]
+        prev_ema7 = df['ema7'].iloc[-2]
         prev_ema21 = df['ema21'].iloc[-2]
-        curr_ema9 = df['ema9'].iloc[-1]
+        curr_ema7 = df['ema7'].iloc[-1]
         curr_ema21 = df['ema21'].iloc[-1]
         
         current_price = df['close'].iloc[-1]
-        print(f"Precio actual: {current_price} | EMA9: {curr_ema9:.5f} | EMA21: {curr_ema21:.5f}")
+        print(f"Precio actual: {current_price} | EMA7: {curr_ema7:.5f} | EMA21: {curr_ema21:.5f}")
         
-        if prev_ema9 <= prev_ema21 and curr_ema9 > curr_ema21:
-            print("¡Golden Cross detectado! Lanzando orden de ataque...")
+        if prev_ema7 <= prev_ema21 and curr_ema7 > curr_ema21:
+            print("¡Golden Cross (7/21) detectado! Lanzando orden de ataque...")
             
             exchange_trade = ccxt.okx({
                 'apiKey': os.getenv('OKX_API_KEY'),
@@ -78,8 +78,8 @@ def run_bot():
             )
             print("Take-Profit anclado en el exchange. Ciclo de riesgo completo.")
             
-        elif prev_ema9 >= prev_ema21 and curr_ema9 < curr_ema21:
-            print("Death Cross detectado. Margen en observación.")
+        elif prev_ema7 >= prev_ema21 and curr_ema7 < curr_ema21:
+            print("Death Cross (7/21) detectado. Margen en observación.")
         else:
             print("Sin cruces nuevos en este ciclo. Vigilando.")
             
