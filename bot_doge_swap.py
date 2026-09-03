@@ -1,20 +1,22 @@
+import os
 import ccxt
 import pandas as pd
 
-# Inicializar el exchange en modo público (sin credenciales para la fase de lectura)
-exchange = ccxt.okx({
+# Instancia pública exclusiva para lectura de precios y velas (sin errores de autenticación)
+exchange_public = ccxt.okx({
     'enableRateLimit': True,
     'options': {'defaultType': 'swap'}
 })
 
 symbol = 'DOGE/USD:DOGE'
 timeframe = '15m'
+amount = 1  # Número de contratos para la orden (ajustable según tu gestión de riesgo)
 
 def run_bot():
     print(f"Conectando a OKX (modo público) para analizar {symbol} en {timeframe}...")
     
     try:
-        ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=100)
+        ohlcv = exchange_public.fetch_ohlcv(symbol, timeframe, limit=100)
         df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         
         df['ema9'] = df['close'].ewm(span=9, adjust=False).mean()
@@ -29,10 +31,24 @@ def run_bot():
         print(f"Precio actual: {current_price} | EMA9: {curr_ema9:.5f} | EMA21: {curr_ema21:.5f}")
         
         if prev_ema9 <= prev_ema21 and curr_ema9 > curr_ema21:
-            print("¡Cruce alcista (Golden Cross) detectado!")
+            print("¡Cruce alcista (Golden Cross) detectado! Disparando orden en vivo...")
             sl_price = current_price * 0.99
             tp_price = current_price * 1.015
             print(f"Parámetros calculados -> SL: {sl_price:.5f} | TP: {tp_price:.5f}")
+            
+            # Instancia privada con credenciales activada únicamente al cazar la señal
+            exchange_trade = ccxt.okx({
+                'apiKey': os.getenv('OKX_API_KEY'),
+                'secret': os.getenv('OKX_SECRET_KEY'),
+                'password': os.getenv('OKX_PASSWORD'),
+                'enableRateLimit': True,
+                'options': {'defaultType': 'swap'}
+            })
+            
+            # Ejecución real de la orden de compra a mercado
+            order = exchange_trade.create_order(symbol, 'market', 'buy', amount)
+            print(f"¡Orden ejecutada con éxito! ID: {order['id']}")
+            
         elif prev_ema9 >= prev_ema21 and curr_ema9 < curr_ema21:
             print("Cruce bajista (Death Cross) detectado. Sin entradas en largo.")
         else:
