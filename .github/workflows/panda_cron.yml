@@ -1,0 +1,34 @@
+name: PANDA GSCSI Execution
+
+on:
+  schedule:
+    - cron: '0,45 * * * *' # Ejecución a los minutos 0 y 45 de cada hora (cada 45 minutos)
+  workflow_dispatch:
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests pandas numpy python-dotenv
+
+      - name: Run GSCSI Engine
+        env:
+          OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
+          OKX_SECRET: ${{ secrets.OKX_SECRET }}
+          OKX_PASSPHRASE: ${{ secrets.OKX_PASSPHRASE }}
+          OKX_FLAG: ${{ secrets.OKX_FLAG }}
+          LIVE_TRADING: ${{ secrets.LIVE_TRADING }}
+        run: |
+          python3 bot.py --mode trade
