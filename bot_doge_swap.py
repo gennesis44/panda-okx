@@ -1,11 +1,8 @@
-import os
 import ccxt
 import pandas as pd
 
+# Inicializar el exchange en modo público (sin credenciales para la fase de lectura)
 exchange = ccxt.okx({
-    'apiKey': os.getenv('OKX_API_KEY'),
-    'secret': os.getenv('OKX_SECRET_KEY'),
-    'password': os.getenv('OKX_PASSWORD'),
     'enableRateLimit': True,
     'options': {'defaultType': 'swap'}
 })
@@ -14,7 +11,7 @@ symbol = 'DOGE/USD:DOGE'
 timeframe = '15m'
 
 def run_bot():
-    print(f"Conectando a OKX para analizar {symbol} en el marco temporal de {timeframe}...")
+    print(f"Conectando a OKX (modo público) para analizar {symbol} en {timeframe}...")
     
     try:
         ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=100)
