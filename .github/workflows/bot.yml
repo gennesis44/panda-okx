@@ -2,10 +2,9 @@ name: bot-ema-okx
 
 on:
   schedule:
-    - cron: '*/15 * * * *'      # cada 15 min
-  workflow_dispatch:             # permite lanzarlo a mano desde la pestaña Actions (pruebas)
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
 
-# Evita instancias solapadas: si una carrera no ha acabado, la nueva la cancela
 concurrency:
   group: bot-ema-okx
   cancel-in-progress: true
@@ -13,7 +12,7 @@ concurrency:
 jobs:
   run-bot:
     runs-on: ubuntu-latest
-    timeout-minutes: 8           # si se cuelga, se mata antes del siguiente ciclo
+    timeout-minutes: 8
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -26,10 +25,29 @@ jobs:
       - name: Instalar dependencias
         run: pip install -U ccxt pandas
 
+      - name: Verificar credenciales OKX
+        env:
+          OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
+          OKX_SECRET_KEY: ${{ secrets.OKX_API_SECRET }}
+          OKX_PASSWORD: ${{ secrets.OKX_PASSPHRASE }}
+        run: |
+          python - <<'EOF'
+          import ccxt, os
+          ex = ccxt.okx({
+              'apiKey': os.getenv('OKX_API_KEY'),
+              'secret': os.getenv('OKX_SECRET_KEY'),
+              'password': os.getenv('OKX_PASSWORD'),
+              'enableRateLimit': True,
+              'options': {'defaultType': 'swap'},
+          })
+          bal = ex.fetch_balance()
+          print(f"OK: Autenticacion correcta | USDT libre: {bal.get('USDT', {}).get('free')}")
+          EOF
+
       - name: Ejecutar ciclo del bot
         env:
           SINGLE_CYCLE: '1'
           OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
-          OKX_SECRET_KEY: ${{ secrets.OKX_SECRET_KEY }}
-          OKX_PASSWORD: ${{ secrets.OKX_PASSWORD }}
+          OKX_SECRET_KEY: ${{ secrets.OKX_API_SECRET }}
+          OKX_PASSWORD: ${{ secrets.OKX_PASSPHRASE }}
         run: python bot.py
