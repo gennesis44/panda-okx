@@ -16,9 +16,13 @@ SIGNAL_ON_CLOSE  = True              # True: cruce con velas CERRADAS (sin repin
 TD_MODE          = 'cross'           # 'cross' o 'isolated'
 HEDGE_MODE       = False             # True solo si la cuenta OKX está en modo cobertura
 
+# Cuenta creada en my.okx.com -> endpoint de API de esa plataforma
+OKX_REST_HOST = 'https://aws.my.okx.com'
+
 exchange_public = ccxt.okx({
     'enableRateLimit': True,
     'options': {'defaultType': 'swap'},
+    'urls': {'api': {'rest': OKX_REST_HOST}},
 })
 
 
@@ -48,6 +52,7 @@ def get_trade_exchange():
         'password':  password.strip(),
         'enableRateLimit': True,
         'options':   {'defaultType': 'swap'},
+        'urls': {'api': {'rest': OKX_REST_HOST}},
     })
 
 
@@ -59,10 +64,10 @@ def verify_credentials(exchange):
         print(f"[{now()}] OK: Autenticacion correcta | USDT libre: {usdt}")
     except ccxt.AuthenticationError as e:
         print(f"[{now()}] ERROR de autenticacion OKX: {e}")
-        print("  50119 ('API key doesn't exist') causas tipicas:")
-        print("  1) Key borrada/invalida o creada en DEMO (debe ser TRADING REAL).")
+        print("  Causas tipicas:")
+        print("  1) Key creada en DEMO (debe ser TRADING REAL en my.okx.com).")
         print("  2) Comillas/espacios/saltos pegados en el valor del secret.")
-        print("  3) Sin permiso Trade o con whitelist de IP activada.")
+        print("  3) Sin permiso Trade en la key.")
         raise
 
 
