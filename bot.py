@@ -5,7 +5,7 @@ import ccxt
 import pandas as pd
 
 # ==================== CONFIGURACIÓN ====================
-BOT_VERSION      = 'futuros-final'
+BOT_VERSION      = 'futuros-attach-v2'
 TIMEFRAME        = '15m'
 AMOUNT           = 3                 # contratos por entrada (10 DOGE/contrato)
 SL_PCT           = 0.010             # Stop Loss 1.0%
@@ -13,8 +13,7 @@ TP_PCT           = 0.015             # Take Profit 1.5%
 MAX_ENTRIES      = 2                 # máx. entradas acumuladas por dirección
 WAIT_AFTER_ENTRY = 120               # 2 min de espera tras entrar
 SIGNAL_ON_CLOSE  = True              # True: cruce con velas CERRADAS (sin repintado)
-TD_MODE          = 'cross'           # tu cuenta usa margen cruzado multi-divisa
-HEDGE_MODE       = False             # True solo si la cuenta OKX está en modo cobertura
+TD_MODE          = 'cross'           # margen cruzado multi-divisa (tu cuenta)
 
 HOST_CANDIDATES = [
     'https://my.okx.com',      # <- host confirmado de tu cuenta
@@ -80,8 +79,7 @@ def detect_exchange():
 
 # ==================== INSTRUMENTO ====================
 def pick_future(exchange):
-    """Elige el futuro DOGE/USD activo con vencimiento MAS LEJANO
-    (menos expiraciones inesperadas, menos rolls)."""
+    """Futuro DOGE/USD activo con vencimiento MAS LEJANO."""
     exchange.load_markets()
     candidatos = []
     for m in exchange.markets.values():
@@ -95,23 +93,21 @@ def pick_future(exchange):
     if not candidatos:
         return None
     candidatos.sort(reverse=True)
-    sym = candidatos[0][1]
-    return sym
+    return candidatos[0][1]
 
 
 def resolve_symbol(exchange):
-    """Si hay posicion abierta en un instrumento DOGE, opera sobre ese contrato.
-    Si no, elige el futuro con vencimiento mas lejano."""
+    """Si hay posicion DOGE abierta, opera ese contrato; si no, el futuro mas lejano."""
     try:
         positions = exchange.fetch_positions()
         for p in positions:
             if (p.get('contracts') or 0) > 0 and (p.get('symbol') or '').startswith('DOGE/'):
-                print(f"[{now()}] Instrumento operativo (posicion abierta): {p['symbol']}")
+                print(f"[{now()}] Instrumento (posicion abierta): {p['symbol']}")
                 return p['symbol']
     except Exception:
         pass
     sym = pick_future(exchange)
-    print(f"[{now()}] Instrumento operativo: {sym} (futuro con vencimiento mas lejano)")
+    print(f"[{now()}] Instrumento: {sym} (futuro con vencimiento mas lejano)")
     return sym
 
 
@@ -157,14 +153,25 @@ def close_position(exchange, side, contracts, symbol):
     close_side = 'sell' if side == 'long' else 'buy'
     amount = exchange.amount_to_precision(symbol, contracts)
     params = {'tdMode': TD_MODE, 'reduceOnly': True}
-    if HEDGE_MODE:
-        params['posSide'] = side
     exchange.create_order(symbol, 'market', close_side, amount, params=params)
     print(f"[{now()}] Posicion {side} cerrada ({amount} contratos). Flat.")
 
 
-# ==================== ENTRADA CON SL/TP ====================
-def open_entry(exchange, signal, ref_price, symbol):
+# ==================== ENTRADA (llamada directa a OKX) ====================
+def _post_trade_order(exchange, req):
+    """Llamada directa al endpoint /api/v5/trade/order (independiente de ccxt)."""
+    method = getattr(exchange, 'privatePostTradeOrder', None)
+    if method is None:
+        method = exchange.private_post_trade_order
+    return method(req)
+
+
+def _place_entry(exchange, symbol, signal, amount, ref_price):
+    """Envia la orden de entrada con SL/TP ADJUNTOS en el payload exacto de OKX.
+    ordType='optimal_limit_ioc' = orden a mercado para futuros/swap en OKX."""
+    market = exchange.market(symbol)
+    inst_id = market['id']
+
     if signal == 'long':
         side, sl_raw, tp_raw = 'buy', ref_price * (1 - SL_PCT), ref_price * (1 + TP_PCT)
     else:
@@ -172,41 +179,59 @@ def open_entry(exchange, signal, ref_price, symbol):
 
     sl = exchange.price_to_precision(symbol, sl_raw)
     tp = exchange.price_to_precision(symbol, tp_raw)
+    sz = exchange.amount_to_precision(symbol, amount)
 
+    req = {
+        'instId': inst_id,
+        'tdMode': TD_MODE,
+        'side': side,
+        'ordType': 'optimal_limit_ioc',
+        'sz': sz,
+        'attachAlgoOrds': [{
+            'tpTriggerPx': tp, 'tpOrdPx': '-1',     # -1 = ejecutar a mercado al gatillo
+            'slTriggerPx': sl, 'slOrdPx': '-1',
+        }],
+    }
+
+    resp = _post_trade_order(exchange, req)
+    data = resp.get('data') or []
+    d0 = data[0] if isinstance(data, list) and data else {}
+    s_code = str(d0.get('sCode', resp.get('code', '1')))
+    if s_code != '0':
+        raise ccxt.ExchangeError(
+            f"OKX rechazo la entrada: sCode={s_code} "
+            f"{d0.get('sMsg') or resp.get('msg')}"
+        )
+    ord_id = d0.get('ordId')
+    print(f"[{now()}] Orden {side.upper()} enviada CON SL/TP adjuntos. ordId: {ord_id}")
+    return ord_id, side, sl, tp
+
+
+def open_entry(exchange, signal, ref_price, symbol):
     market = exchange.market(symbol)
     ctval = float(market.get('contractSize') or 1)
     print(f"[{now()}] Tamano orden: {AMOUNT} contratos x {ctval} DOGE/contrato "
           f"= {AMOUNT * ctval} DOGE (~{AMOUNT * ctval * ref_price:.2f} USD)")
 
-    params = {
-        'tdMode': TD_MODE,
-        'stopLossPrice':   float(sl),
-        'takeProfitPrice': float(tp),
-    }
-    if HEDGE_MODE:
-        params['posSide'] = 'long' if signal == 'long' else 'short'
+    ord_id, side, sl, tp = _place_entry(exchange, symbol, signal, AMOUNT, ref_price)
 
-    order = exchange.create_order(symbol, 'market', side, AMOUNT, params=params)
-    print(f"[{now()}] Orden {side.upper()} enviada. ID: {order.get('id')}")
-
-    entry = order.get('average')
-    if not entry:
-        for _ in range(5):
-            time.sleep(1)
-            try:
-                o = exchange.fetch_order(order['id'], symbol)
-                if o.get('average'):
-                    entry = o['average']
-                    break
-            except ccxt.ExchangeError:
-                continue
+    entry = None
+    for _ in range(5):
+        time.sleep(1)
+        try:
+            o = exchange.fetch_order(ord_id, symbol)
+            if o.get('average'):
+                entry = o['average']
+                break
+        except ccxt.ExchangeError:
+            continue
     entry = entry or ref_price
 
     print(f"[{now()}] Entrada: {entry} | SL: {sl} | TP: {tp}")
     return entry
 
 
-# ==================== MODO PRUEBA (valida SL/TP en el futuro real) ====================
+# ==================== MODO PRUEBA (valida SL/TP adjuntos en el futuro real) ====================
 def run_test(exchange):
     sym = pick_future(exchange)
     if not sym:
@@ -216,33 +241,31 @@ def run_test(exchange):
     ctval = float(market.get('contractSize') or 1)
 
     price = exchange.fetch_ticker(sym).get('last')
-    print(f"[{now()}] TEST en {sym} | 1 contrato x {ctval} DOGE = {ctval} DOGE (~{ctval * price:.2f} USD)")
+    print(f"[{now()}] TEST en {sym} | 1 contrato x {ctval} DOGE (~{ctval * price:.2f} USD)")
 
-    sl = exchange.price_to_precision(sym, price * (1 - SL_PCT))
-    tp = exchange.price_to_precision(sym, price * (1 + TP_PCT))
-    order = exchange.create_order(sym, 'market', 'buy', 1,
-                                  params={'tdMode': TD_MODE,
-                                          'stopLossPrice': float(sl),
-                                          'takeProfitPrice': float(tp)})
-    print(f"[{now()}] TEST: BUY enviada CON SL/TP adjuntos. ID: {order.get('id')} | SL: {sl} | TP: {tp}")
+    ord_id, side, sl, tp = _place_entry(exchange, sym, 'long', 1, price)
     time.sleep(4)
 
-    # Verificar que los SL/TP quedaron anclados en el exchange
+    # Verificar ordenes condicionales (SL/TP) activas en el exchange
     try:
-        abiertas = exchange.fetch_open_orders(sym)
-        print(f"[{now()}] TEST: ordenes condicionales activas en el exchange: {len(abiertas)}")
-        for o in abiertas:
-            print(f"    -> tipo={o.get('type')} | stop={o.get('stopPrice')} | side={o.get('side')}")
+        method = getattr(exchange, 'privateGetTradeOrdersAlgoPending', None)
+        if method is None:
+            method = exchange.private_get_trade_orders_algo_pending
+        algo = method({'instId': market['id'], 'ordType': 'oco'})
+        n = len(algo.get('data') or [])
+        print(f"[{now()}] TEST: ordenes condicionales OCO activas (SL/TP): {n}")
+        for a in (algo.get('data') or []):
+            print(f"    -> tpTrigger={a.get('tpTriggerPx')} | slTrigger={a.get('slTriggerPx')}")
     except Exception as e:
-        print(f"[{now()}] TEST: aviso leyendo ordenes condicionales: {str(e)[:100]}")
+        print(f"[{now()}] TEST: aviso leyendo algo-pending: {str(e)[:100]}")
 
-    side, contracts = get_position(exchange, sym)
-    print(f"[{now()}] TEST: posicion -> side={side}, contratos={contracts}")
-    if side == 'long':
-        close_position(exchange, side, contracts, sym)
-        print(f"[{now()}] TEST COMPLETO: apertura + SL/TP anclados + cierre validados en cuenta real.")
+    pside, contracts = get_position(exchange, sym)
+    print(f"[{now()}] TEST: posicion -> side={pside}, contratos={contracts}")
+    if pside == 'long':
+        close_position(exchange, pside, contracts, sym)
+        print(f"[{now()}] TEST COMPLETO: apertura + SL/TP adjuntos + cierre validados.")
     else:
-        print(f"[{now()}] TEST: no se vio la posicion; revisar en OKX.")
+        print(f"[{now()}] TEST: posicion no vista; revisar en OKX.")
 
 
 # ==================== CICLO ====================
@@ -297,7 +320,7 @@ def run_once():
 
 
 def main():
-    print(f"[{now()}] Bot EMA 7/21 futuros | {TIMEFRAME} | SL {SL_PCT:.1%} / TP {TP_PCT:.1%} | bot {BOT_VERSION}")
+    print(f"[{now()}] Bot EMA 7/21 futuros | {TIMEFRAME} | SL {SL_PCT:.1%} / TP {TP_PCT:.1%} | {BOT_VERSION}")
     exchange = detect_exchange()
     while True:
         try:
