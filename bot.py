@@ -16,65 +16,79 @@ SIGNAL_ON_CLOSE  = True              # True: cruce con velas CERRADAS (sin repin
 TD_MODE          = 'cross'           # 'cross' o 'isolated'
 HEDGE_MODE       = False             # True solo si la cuenta OKX está en modo cobertura
 
-# Cuenta creada en my.okx.com -> endpoint de API de esa plataforma
-OKX_REST_HOST = 'https://aws.my.okx.com'
-
-exchange_public = ccxt.okx({
-    'enableRateLimit': True,
-    'options': {'defaultType': 'swap'},
-    'urls': {'api': {'rest': OKX_REST_HOST}},
-})
+# Cuentas creadas en my.okx.com viven en una instancia separada de www.okx.com.
+# El bot prueba los dominios oficiales de OKX y opera contra el que reconozca la key.
+HOST_CANDIDATES = [
+    'https://www.okx.com',
+    'https://my.okx.com',
+    'https://aws.okx.com',
+    'https://www.okx.eu',
+    'https://www.okx.us',
+]
 
 
 def now():
     return time.strftime('%Y-%m-%d %H:%M:%S')
 
 
-def get_trade_exchange():
-    api_key  = os.getenv('OKX_API_KEY')
-    secret   = os.getenv('OKX_SECRET_KEY')
-    password = os.getenv('OKX_PASSWORD')
-
+def _creds():
+    api_key  = (os.getenv('OKX_API_KEY') or '').strip()
+    secret   = (os.getenv('OKX_SECRET_KEY') or '').strip()
+    password = (os.getenv('OKX_PASSWORD') or '').strip()
     faltantes = [n for n, v in [('OKX_API_KEY', api_key),
                                 ('OKX_SECRET_KEY', secret),
                                 ('OKX_PASSWORD', password)] if not v]
     if faltantes:
-        raise RuntimeError(
-            f"Variables VACIAS: {', '.join(faltantes)}. "
-            "Revisa el env del workflow y los secrets "
-            "(OKX_API_KEY, OKX_API_SECRET, OKX_PASSPHRASE)."
-        )
+        raise RuntimeError(f"Variables VACIAS: {', '.join(faltantes)}. Revisa el env del workflow.")
+    return api_key, secret, password
 
-    # .strip(): defensa contra espacios/saltos pegados en los secrets
+
+def build_exchange(host):
+    api_key, secret, password = _creds()
     return ccxt.okx({
-        'apiKey':    api_key.strip(),
-        'secret':    secret.strip(),
-        'password':  password.strip(),
+        'apiKey':    api_key,
+        'secret':    secret,
+        'password':  password,
         'enableRateLimit': True,
         'options':   {'defaultType': 'swap'},
-        'urls': {'api': {'rest': OKX_REST_HOST}},
+        'urls':      {'api': {'rest': host}},
     })
 
 
-def verify_credentials(exchange):
-    """Login real contra OKX antes de operar. Falla rápido y con diagnóstico."""
-    try:
-        bal = exchange.fetch_balance()
-        usdt = (bal.get('USDT') or {}).get('free')
-        print(f"[{now()}] OK: Autenticacion correcta | USDT libre: {usdt}")
-    except ccxt.AuthenticationError as e:
-        print(f"[{now()}] ERROR de autenticacion OKX: {e}")
-        print("  Causas tipicas:")
-        print("  1) Key creada en DEMO (debe ser TRADING REAL en my.okx.com).")
-        print("  2) Comillas/espacios/saltos pegados en el valor del secret.")
-        print("  3) Sin permiso Trade en la key.")
-        raise
+def detect_exchange():
+    """Prueba los dominios oficiales de OKX y devuelve el exchange del primer
+    host que reconozca la API key (verificado con login real)."""
+    ultimo = None
+    for host in HOST_CANDIDATES:
+        try:
+            ex = build_exchange(host)
+            ex.private_get_account_balance()  # endpoint privado: solo pasa con credenciales válidas
+            print(f"[{now()}] HOST OKX detectado: {host}")
+        except ccxt.AuthenticationError:
+            print(f"[{now()}] {host} -> key rechazada (no existe en esta instancia)")
+            ultimo = 'autenticacion'
+            continue
+        except Exception as e:
+            print(f"[{now()}] {host} -> no disponible ({str(e)[:80]})")
+            ultimo = str(e)[:200]
+            continue
+        try:
+            bal = ex.fetch_balance()
+            usdt = (bal.get('USDT') or {}).get('free')
+            print(f"[{now()}] OK: Autenticacion correcta | USDT libre: {usdt}")
+        except Exception as e:
+            print(f"[{now()}] Autenticacion OK (aviso cargando mercados: {str(e)[:80]})")
+        return ex
+    raise RuntimeError(
+        "Ningun host OKX reconoce la API key. "
+        "Verifica que la key es de TRADING REAL y esta activa. Ultimo fallo: " + str(ultimo)
+    )
 
 
 # ==================== SEÑAL ====================
-def get_signal():
+def get_signal(exchange):
     """Devuelve ('long' | 'short' | None, precio_actual)."""
-    ohlcv = exchange_public.fetch_ohlcv(SYMBOL, TIMEFRAME, limit=100)
+    ohlcv = exchange.fetch_ohlcv(SYMBOL, TIMEFRAME, limit=100)
     df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
 
     df['ema7']  = df['close'].ewm(span=7,  adjust=False).mean()
@@ -88,7 +102,7 @@ def get_signal():
     prev7, prev21 = df['ema7'].iloc[i_prev], df['ema21'].iloc[i_prev]
     curr7, curr21 = df['ema7'].iloc[i_curr], df['ema21'].iloc[i_curr]
 
-    ticker = exchange_public.fetch_ticker(SYMBOL)
+    ticker = exchange.fetch_ticker(SYMBOL)
     price = ticker.get('last') or df['close'].iloc[-1]
 
     print(f"[{now()}] Precio: {price} | EMA7: {curr7:.5f} | EMA21: {curr21:.5f}")
@@ -165,7 +179,7 @@ def open_entry(exchange, signal, ref_price):
 # ==================== CICLO ====================
 def run_cycle(exchange):
     """Ejecuta un ciclo. Devuelve True si abrió posición."""
-    signal, price = get_signal()
+    signal, price = get_signal(exchange)
     if signal is None:
         print(f"[{now()}] Sin cruces nuevos en este ciclo. Vigilando.")
         return False
@@ -192,7 +206,9 @@ def run_cycle(exchange):
 
 
 def sleep_until_next_candle():
-    period_ms = exchange_public.parse_timeframe(TIMEFRAME) * 1000
+    unit = TIMEFRAME[-1]
+    secs = int(TIMEFRAME[:-1]) * {'m': 60, 'h': 3600, 'd': 86400}.get(unit, 60)
+    period_ms = secs * 1000
     now_ms = time.time() * 1000
     next_ms = (int(now_ms // period_ms) + 1) * period_ms
     time.sleep(max(1.0, (next_ms - now_ms) / 1000))
@@ -202,8 +218,7 @@ def sleep_until_next_candle():
 def run_once():
     """Un ciclo y sale. GitHub Actions (SINGLE_CYCLE=1)."""
     print(f"[{now()}] Modo ciclo unico (GitHub Actions).")
-    exchange = get_trade_exchange()
-    verify_credentials(exchange)
+    exchange = detect_exchange()
     entered = run_cycle(exchange)
     if entered:
         print(f"[{now()}] Espera post-entrada: {WAIT_AFTER_ENTRY}s")
@@ -213,8 +228,7 @@ def run_once():
 def main():
     """Bucle infinito. VPS / local."""
     print(f"[{now()}] Bot EMA 7/21 | {SYMBOL} {TIMEFRAME} | SL {SL_PCT:.1%} / TP {TP_PCT:.1%}")
-    exchange = get_trade_exchange()
-    verify_credentials(exchange)
+    exchange = detect_exchange()
     while True:
         try:
             entered = run_cycle(exchange)
