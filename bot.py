@@ -111,8 +111,8 @@ def get_signal(exchange):
 
 
 # ==================== POSICIÓN ====================
-def get_position(exchange):
-    positions = exchange.fetch_positions([SYMBOL])
+def get_position(exchange, symbol=None):
+    positions = exchange.fetch_positions([symbol or SYMBOL])
     for p in positions:
         contracts = p.get('contracts') or 0
         if contracts > 0:
@@ -120,13 +120,14 @@ def get_position(exchange):
     return None, 0
 
 
-def close_position(exchange, side, contracts):
+def close_position(exchange, side, contracts, symbol=None):
+    sym = symbol or SYMBOL
     close_side = 'sell' if side == 'long' else 'buy'
-    amount = exchange.amount_to_precision(SYMBOL, contracts)
+    amount = exchange.amount_to_precision(sym, contracts)
     params = {'tdMode': TD_MODE, 'reduceOnly': True}
     if HEDGE_MODE:
         params['posSide'] = side
-    exchange.create_order(SYMBOL, 'market', close_side, amount, params=params)
+    exchange.create_order(sym, 'market', close_side, amount, params=params)
     print(f"[{now()}] Posicion {side} cerrada ({amount} contratos). Flat.")
 
 
@@ -175,79 +176,89 @@ def open_entry(exchange, signal, ref_price):
 
 # ==================== DIAGNÓSTICO DE PERMISOS ====================
 def run_test(exchange):
-    """3 sondas para distinguir: permiso de perpetuos vs whitelist de cripto
-    vs instrumento inexistente. Solo sondas minimas e inofensivas."""
+    """Diagnostico adaptativo: cataloga los instrumentos DOGE reales de la
+    plataforma y lanza sondas minimas contra los que existan."""
     exchange.load_markets()
 
-    print(f"[{now()}] --- Catalogo DOGE en esta plataforma ---")
-    encontrados = []
+    print(f"[{now()}] --- CATALOGO DOGE en esta plataforma ---")
+    spot_syms, swap_syms, fut_syms = [], [], []
     for m in exchange.markets.values():
-        if (m.get('base') == 'DOGE') and (m.get('swap') or m.get('future') or m.get('spot')):
-            info = m.get('info') or {}
-            tipo = info.get('instType') or ('SPOT' if m.get('spot') else '?')
-            print(f"  {m['symbol']} | tipo={tipo} | activo={m.get('active')} | "
-                  f"ctVal={info.get('ctVal')} | settle={info.get('settleCcy')}")
-            encontrados.append(m['symbol'])
-    if not encontrados:
-        print("  (ningun instrumento DOGE encontrado)")
+        if m.get('base') != 'DOGE':
+            continue
+        info = m.get('info') or {}
+        itype = info.get('instType') or ('SPOT' if m.get('spot') else '?')
+        print(f"  {m['symbol']} | tipo={itype} | activo={m.get('active')} | "
+              f"ctVal={info.get('ctVal')} | settle={info.get('settleCcy') or info.get('quoteCcy')}")
+        if m.get('active'):
+            if m.get('spot'):
+                spot_syms.append(m['symbol'])
+            elif m.get('swap'):
+                swap_syms.append(m['symbol'])
+            elif m.get('future'):
+                fut_syms.append(m['symbol'])
 
-    # SONDA 1: SPOT — vender 10 DOGE por USDT (~0.85 USD, inofensivo y util)
-    print(f"[{now()}] --- SONDA 1: SPOT (vender 10 DOGE) ---")
+    # --- SONDA SPOT (vender ~10 DOGE -> divisa de cotizacion, inofensivo) ---
+    print(f"[{now()}] --- SONDA SPOT ---")
     spot_ok = False
-    try:
-        m = exchange.market('DOGE/USDT')
-        min_amt = (m.get('limits', {}).get('amount') or {}).get('min') or 10
-        amt = exchange.amount_to_precision('DOGE/USDT', max(min_amt, 10))
-        o = exchange.create_order('DOGE/USDT', 'market', 'sell', amt)
-        print(f"[{now()}] SONDA SPOT: OK (vendidos {amt} DOGE -> USDT). ID: {o.get('id')}")
-        spot_ok = True
-    except Exception as e:
-        print(f"[{now()}] SONDA SPOT: FALLO -> {str(e)[:150]}")
-
-    # SONDA 2: PERPETUO INVERSO DOGE/USD:DOGE — buy 1 contrato
-    print(f"[{now()}] --- SONDA 2: SWAP DOGE/USD:DOGE (buy 1 contrato) ---")
-    try:
-        o = exchange.create_order(SYMBOL, 'market', 'buy', 1, params={'tdMode': TD_MODE})
-        print(f"[{now()}] SONDA SWAP USD: OK. ID: {o.get('id')}")
-        time.sleep(3)
-        side, contracts = get_position(exchange)
-        if side == 'long':
-            close_position(exchange, side, contracts)
-    except Exception as e:
-        print(f"[{now()}] SONDA SWAP USD: FALLO -> {str(e)[:150]}")
-
-    # SONDA 3: PERPETUO LINEAL DOGE/USDT:USDT — buy 1 contrato
-    print(f"[{now()}] --- SONDA 3: SWAP DOGE/USDT:USDT (buy 1 contrato) ---")
-    try:
-        o = exchange.create_order('DOGE/USDT:USDT', 'market', 'buy', 1,
-                                  params={'tdMode': TD_MODE})
-        print(f"[{now()}] SONDA SWAP USDT: OK. ID: {o.get('id')}")
-        time.sleep(3)
-        try:
-            pos = exchange.fetch_positions(['DOGE/USDT:USDT'])
-            for p in pos:
-                if (p.get('contracts') or 0) > 0:
-                    cside, cct = p.get('side'), p.get('contracts')
-                    camt = exchange.amount_to_precision('DOGE/USDT:USDT', cct)
-                    cparams = {'tdMode': TD_MODE, 'reduceOnly': True}
-                    exchange.create_order('DOGE/USDT:USDT', 'market',
-                                          'sell' if cside == 'long' else 'buy',
-                                          camt, params=cparams)
-                    print(f"[{now()}] Posicion {cside} de prueba cerrada. Flat.")
-        except Exception as e2:
-            print(f"[{now()}] Aviso cerrando posicion de prueba: {str(e2)[:100]}")
-    except Exception as e:
-        print(f"[{now()}] SONDA SWAP USDT: FALLO -> {str(e)[:150]}")
-
-    # INTERPRETACION AUTOMATICA
-    print(f"[{now()}] --- LECTURA DEL DIAGNOSTICO ---")
-    if not spot_ok:
-        print("  Spot tambien falla -> la key NO tiene DOGE en su whitelist de criptos")
-        print("  (o permiso general). Recrear la key anadiendo DOGE en 'Cripto'.")
+    if not spot_syms:
+        print("  No hay mercados spot DOGE en esta plataforma.")
     else:
-        print("  Spot OK -> la key SI puede operar DOGE.")
-        print("  Si las sondas SWAP fallan con 50124 -> falta permiso de PERPETUOS")
-        print("  en la plataforma/key (revisar creacion de key o disponibilidad EU).")
+        for sym in spot_syms:
+            try:
+                m = exchange.market(sym)
+                min_amt = (m.get('limits', {}).get('amount') or {}).get('min') or 10
+                amt = exchange.amount_to_precision(sym, max(float(min_amt), 10))
+                o = exchange.create_order(sym, 'market', 'sell', amt)
+                print(f"[{now()}] SPOT OK: vendidos {amt} DOGE en {sym}. ID: {o.get('id')}")
+                spot_ok = True
+                break
+            except Exception as e:
+                print(f"[{now()}] SPOT {sym} -> FALLO: {str(e)[:150]}")
+
+    # --- SONDA SWAP (buy 1 contrato en cada swap DOGE existente) ---
+    print(f"[{now()}] --- SONDA SWAP (1 contrato) ---")
+    swap_resultados = {}
+    if not swap_syms:
+        print("  NO existe ningun swap perpetuo DOGE en esta plataforma (hipotesis C).")
+    for sym in swap_syms:
+        try:
+            o = exchange.create_order(sym, 'market', 'buy', 1, params={'tdMode': TD_MODE})
+            print(f"[{now()}] SWAP {sym} OK: buy 1 contrato. ID: {o.get('id')}")
+            swap_resultados[sym] = 'OK'
+            time.sleep(3)
+            side, contracts = get_position(exchange, sym)
+            if side:
+                close_position(exchange, side, contracts, sym)
+        except Exception as e:
+            err = str(e)
+            print(f"[{now()}] SWAP {sym} -> FALLO: {err[:150]}")
+            swap_resultados[sym] = err
+
+    # --- SONDA FUTUROS CON VENCIMIENTO (info) ---
+    if fut_syms:
+        print(f"[{now()}] Futuros con vencimiento DOGE disponibles: {fut_syms[:3]}")
+
+    # --- INTERPRETACION AUTOMATICA ---
+    print(f"[{now()}] ================= LECTURA DEL DIAGNOSTICO =================")
+    if not spot_syms and not swap_syms:
+        print("  Plataforma sin instrumentos DOGE aparte de datos de mercado. Plan B necesario.")
+        return
+    if spot_ok:
+        print("  SPOT OK -> key con permiso y DOGE en whitelist. Cuenta operable en spot.")
+    else:
+        print("  SPOT fallo -> revisar whitelist/permisos de la key (raro, DOGE esta en la lista).")
+    for sym, res in swap_resultados.items():
+        if res == 'OK':
+            print(f"  SWAP {sym} OK -> PERPETUOS OPERABLES. El bot puede funcionar con {sym}.")
+            return
+        if '50124' in res:
+            print(f"  SWAP {sym}: 50124 -> el instrumento existe pero la KEY no tiene")
+            print("  permiso de perpetuos. La creacion de keys de tu plataforma no lo ofrece")
+            print("  por API -> Plan B (futuros con vencimiento o spot) o soporte OKX.")
+        elif '51001' in res:
+            print(f"  SWAP {sym}: 51001 -> no existe para trading en esta cuenta/plataforma.")
+        else:
+            print(f"  SWAP {sym}: otro error -> {res[:120]}")
 
 
 # ==================== CICLO ====================
