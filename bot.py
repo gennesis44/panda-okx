@@ -5,9 +5,9 @@ import ccxt
 import pandas as pd
 
 # ==================== CONFIGURACIÓN ====================
-SYMBOL           = 'DOGE/USD:DOGE'   # swap perpetuo DOGE en OKX
+SYMBOL           = 'DOGE/USD:DOGE'   # swap perpetuo DOGE (margen en DOGE)
 TIMEFRAME        = '15m'
-AMOUNT           = 136               # contratos por entrada
+AMOUNT           = 3                 # contratos por entrada
 SL_PCT           = 0.010             # Stop Loss 1.0%
 TP_PCT           = 0.015             # Take Profit 1.5%
 MAX_ENTRIES      = 2                 # máx. entradas acumuladas por dirección
@@ -16,11 +16,11 @@ SIGNAL_ON_CLOSE  = True              # True: cruce con velas CERRADAS (sin repin
 TD_MODE          = 'cross'           # 'cross' o 'isolated'
 HEDGE_MODE       = False             # True solo si la cuenta OKX está en modo cobertura
 
-# Cuentas creadas en my.okx.com viven en una instancia separada de www.okx.com.
-# El bot prueba los dominios oficiales de OKX y opera contra el que reconozca la key.
+# Cuentas de my.okx.com viven en una instancia separada de www.okx.com.
+# El bot prueba los dominios oficiales y opera contra el que reconozca la key.
 HOST_CANDIDATES = [
+    'https://my.okx.com',      # <- host confirmado de tu cuenta (primero)
     'https://www.okx.com',
-    'https://my.okx.com',
     'https://aws.okx.com',
     'https://www.okx.eu',
     'https://www.okx.us',
@@ -62,7 +62,7 @@ def detect_exchange():
     for host in HOST_CANDIDATES:
         try:
             ex = build_exchange(host)
-            ex.private_get_account_balance()  # endpoint privado: solo pasa con credenciales válidas
+            ex.private_get_account_balance()  # endpoint privado: solo pasa con credenciales validas
             print(f"[{now()}] HOST OKX detectado: {host}")
         except ccxt.AuthenticationError:
             print(f"[{now()}] {host} -> key rechazada (no existe en esta instancia)")
@@ -75,7 +75,12 @@ def detect_exchange():
         try:
             bal = ex.fetch_balance()
             usdt = (bal.get('USDT') or {}).get('free')
-            print(f"[{now()}] OK: Autenticacion correcta | USDT libre: {usdt}")
+            doge = (bal.get('DOGE') or {}).get('free')
+            print(f"[{now()}] OK: Autenticacion correcta")
+            print(f"[{now()}] Saldos (cuenta trading) -> USDT: {usdt} | DOGE: {doge}")
+            if not usdt and not doge:
+                print(f"[{now()}] AVISO: sin fondos visibles en cuenta TRADING.")
+                print(f"[{now()}] En my.okx.com: Activos -> Transferir -> mover a 'Trading'.")
         except Exception as e:
             print(f"[{now()}] Autenticacion OK (aviso cargando mercados: {str(e)[:80]})")
         return ex
@@ -147,6 +152,11 @@ def open_entry(exchange, signal, ref_price):
     sl = exchange.price_to_precision(SYMBOL, sl_raw)
     tp = exchange.price_to_precision(SYMBOL, tp_raw)
 
+    market = exchange.market(SYMBOL)
+    ctval = float(market.get('contractSize') or 1)
+    print(f"[{now()}] Tamano orden: {AMOUNT} contratos x {ctval} DOGE/contrato "
+          f"= {AMOUNT * ctval} DOGE (~{AMOUNT * ctval * ref_price:.2f} USD)")
+
     params = {
         'tdMode': TD_MODE,
         # SL/TP adjuntos: OKX los ejecuta en servidor y se anulan solos al cerrar
@@ -174,6 +184,36 @@ def open_entry(exchange, signal, ref_price):
 
     print(f"[{now()}] Entrada: {entry} | SL: {sl} | TP: {tp}")
     return entry
+
+
+# ==================== MODO PRUEBA ====================
+def run_test(exchange):
+    """Prueba controlada: orden minima con SL/TP, verificar posicion y cerrar."""
+    market = exchange.market(SYMBOL)
+    ctval = float(market.get('contractSize') or 1)
+    min_amt = (market.get('limits', {}).get('amount') or {}).get('min') or 1
+    amt = exchange.amount_to_precision(SYMBOL, min_amt)
+
+    price = exchange.fetch_ticker(SYMBOL).get('last')
+    nocional = float(amt) * ctval
+    print(f"[{now()}] TEST -> {amt} contrato(s) x {ctval} DOGE = {nocional} DOGE (~{nocional * price:.2f} USD)")
+
+    sl = exchange.price_to_precision(SYMBOL, price * (1 - SL_PCT))
+    tp = exchange.price_to_precision(SYMBOL, price * (1 + TP_PCT))
+    order = exchange.create_order(SYMBOL, 'market', 'buy', amt,
+                                  params={'tdMode': TD_MODE,
+                                          'stopLossPrice': float(sl),
+                                          'takeProfitPrice': float(tp)})
+    print(f"[{now()}] TEST: BUY enviada. ID: {order.get('id')} | SL: {sl} | TP: {tp}")
+    time.sleep(4)
+
+    side, contracts = get_position(exchange)
+    print(f"[{now()}] TEST: posicion -> side={side}, contratos={contracts}")
+    if side == 'long':
+        close_position(exchange, side, contracts)
+        print(f"[{now()}] TEST COMPLETO: apertura + SL/TP + cierre validados en cuenta real.")
+    else:
+        print(f"[{now()}] TEST: no se vio la posicion; revisar en OKX si la orden se abrio.")
 
 
 # ==================== CICLO ====================
@@ -219,6 +259,9 @@ def run_once():
     """Un ciclo y sale. GitHub Actions (SINGLE_CYCLE=1)."""
     print(f"[{now()}] Modo ciclo unico (GitHub Actions).")
     exchange = detect_exchange()
+    if os.getenv('TEST_MODE') == '1':
+        run_test(exchange)
+        return
     entered = run_cycle(exchange)
     if entered:
         print(f"[{now()}] Espera post-entrada: {WAIT_AFTER_ENTRY}s")
