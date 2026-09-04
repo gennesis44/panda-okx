@@ -1,0 +1,35 @@
+name: bot-ema-okx
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'      # cada 15 min
+  workflow_dispatch:             # permite lanzarlo a mano desde la pestaña Actions (pruebas)
+
+# Evita instancias solapadas: si una carrera no ha acabado, la nueva la cancela
+concurrency:
+  group: bot-ema-okx
+  cancel-in-progress: true
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8           # si se cuelga, se mata antes del siguiente ciclo
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instalar dependencias
+        run: pip install -U ccxt pandas
+
+      - name: Ejecutar ciclo del bot
+        env:
+          SINGLE_CYCLE: '1'
+          OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
+          OKX_SECRET_KEY: ${{ secrets.OKX_SECRET_KEY }}
+          OKX_PASSWORD: ${{ secrets.OKX_PASSWORD }}
+        run: python bot.py
