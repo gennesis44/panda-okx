@@ -26,13 +26,43 @@ def now():
 
 
 def get_trade_exchange():
+    api_key  = os.getenv('OKX_API_KEY')
+    secret   = os.getenv('OKX_SECRET_KEY')
+    password = os.getenv('OKX_PASSWORD')
+
+    # Fail-fast: si falta alguna variable, el error es claro (no un 50119 críptico)
+    faltantes = [nombre for nombre, valor in
+                 [('OKX_API_KEY', api_key),
+                  ('OKX_SECRET_KEY', secret),
+                  ('OKX_PASSWORD', password)] if not valor]
+    if faltantes:
+        raise RuntimeError(
+            f"Variables de entorno VACÍAS: {', '.join(faltantes)}. "
+            "Revisa el bloque env: de bot.yml (mapeo de secrets) y haz commit en main."
+        )
+
     return ccxt.okx({
-        'apiKey':    os.getenv('OKX_API_KEY'),
-        'secret':    os.getenv('OKX_SECRET_KEY'),
-        'password':  os.getenv('OKX_PASSWORD'),  # passphrase de OKX
+        'apiKey':    api_key,
+        'secret':    secret,
+        'password':  password,
         'enableRateLimit': True,
         'options':   {'defaultType': 'swap'},
     })
+
+
+def verify_credentials(exchange):
+    """Login real contra OKX antes de operar. Falla rápido y con diagnóstico."""
+    try:
+        bal = exchange.fetch_balance()
+        usdt = (bal.get('USDT') or {}).get('free')
+        print(f"[{now()}] OK: Autenticación correcta | USDT libre: {usdt}")
+    except ccxt.AuthenticationError as e:
+        print(f"[{now()}] ERROR de autenticación OKX: {e}")
+        print("  Causas típicas del 50119 ('API key doesn't exist'):")
+        print("  1) El secret contiene una key vieja/borrada o de DEMO (no vale para real).")
+        print("  2) Comillas/espacios/saltos de línea pegados en el valor del secret.")
+        print("  3) La API key no tiene permiso Trade o tiene whitelist de IP.")
+        raise
 
 
 # ==================== SEÑAL ====================
@@ -89,13 +119,12 @@ def open_entry(exchange, signal, ref_price):
     else:
         side, sl_raw, tp_raw = 'sell', ref_price * (1 + SL_PCT), ref_price * (1 - TP_PCT)
 
-    sl = exchange.price_to_precision(SYMBOL, sl_raw)  # OKX exige precisión exacta
+    sl = exchange.price_to_precision(SYMBOL, sl_raw)
     tp = exchange.price_to_precision(SYMBOL, tp_raw)
 
     params = {
         'tdMode': TD_MODE,
-        # SL y TP adjuntos a la orden: los gestiona OKX en el servidor
-        # y se anulan automáticamente al cerrar la posición
+        # SL/TP adjuntos: los gestiona OKX en servidor y se anulan solos al cerrar
         'stopLossPrice':   float(sl),
         'takeProfitPrice': float(tp),
     }
@@ -105,7 +134,6 @@ def open_entry(exchange, signal, ref_price):
     order = exchange.create_order(SYMBOL, 'market', side, AMOUNT, params=params)
     print(f"[{now()}] Orden {side.upper()} enviada. ID: {order.get('id')}")
 
-    # Precio real de entrada (el market order puede no reportar 'average' al instante)
     entry = order.get('average')
     if not entry:
         for _ in range(5):
@@ -133,13 +161,11 @@ def run_cycle(exchange):
 
     side, contracts = get_position(exchange)
 
-    # Cruce contrario con posición abierta -> cerrar (flat) antes de girar
     if side and side != signal:
         close_position(exchange, side, contracts)
         side, contracts = None, 0
         time.sleep(2)
 
-    # Límite de entradas acumuladas en la misma dirección (máx. 2)
     if side == signal:
         entries_done = round(contracts / AMOUNT)
         if entries_done >= MAX_ENTRIES:
@@ -153,7 +179,6 @@ def run_cycle(exchange):
 
 
 def sleep_until_next_candle():
-    """Espera al cierre de la vela actual (alineado al timeframe de 15m)."""
     period_ms = exchange_public.parse_timeframe(TIMEFRAME) * 1000
     now_ms = time.time() * 1000
     next_ms = (int(now_ms // period_ms) + 1) * period_ms
@@ -165,6 +190,7 @@ def run_once():
     """Un solo ciclo y sale. Para GitHub Actions (SINGLE_CYCLE=1)."""
     print(f"[{now()}] Modo ciclo único (GitHub Actions).")
     exchange = get_trade_exchange()
+    verify_credentials(exchange)
     entered = run_cycle(exchange)
     if entered:
         print(f"[{now()}] Espera post-entrada: {WAIT_AFTER_ENTRY}s")
@@ -175,9 +201,10 @@ def main():
     """Bucle infinito. Para VPS / ejecución local."""
     print(f"[{now()}] Bot EMA 7/21 | {SYMBOL} {TIMEFRAME} | SL {SL_PCT:.1%} / TP {TP_PCT:.1%} | "
           f"máx {MAX_ENTRIES} entradas por dirección")
+    exchange = get_trade_exchange()
+    verify_credentials(exchange)
     while True:
         try:
-            exchange = get_trade_exchange()
             entered = run_cycle(exchange)
             if entered:
                 print(f"[{now()}] Espera post-entrada: {WAIT_AFTER_ENTRY}s")
@@ -185,6 +212,8 @@ def main():
         except KeyboardInterrupt:
             print(f"[{now()}] Bot detenido por el usuario.")
             break
+        except ccxt.AuthenticationError as e:
+            print(f"[{now()}] Autenticación rechazada: {e}")
         except ccxt.NetworkError as e:
             print(f"[{now()}] Error de red: {e}")
         except ccxt.ExchangeError as e:
