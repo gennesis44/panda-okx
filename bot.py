@@ -5,17 +5,16 @@ import ccxt
 import pandas as pd
 
 # ==================== CONFIGURACIÓN ====================
-DIAG_VERSION     = 'v3'
-SYMBOL           = 'DOGE/USD:DOGE'   # swap perpetuo DOGE (objetivo original)
+BOT_VERSION      = 'futuros-final'
 TIMEFRAME        = '15m'
-AMOUNT           = 3                 # contratos por entrada
+AMOUNT           = 3                 # contratos por entrada (10 DOGE/contrato)
 SL_PCT           = 0.010             # Stop Loss 1.0%
 TP_PCT           = 0.015             # Take Profit 1.5%
 MAX_ENTRIES      = 2                 # máx. entradas acumuladas por dirección
 WAIT_AFTER_ENTRY = 120               # 2 min de espera tras entrar
-SIGNAL_ON_CLOSE  = True              # True: cruce con velas CERRADAS
-TD_MODE          = 'cross'
-HEDGE_MODE       = False
+SIGNAL_ON_CLOSE  = True              # True: cruce con velas CERRADAS (sin repintado)
+TD_MODE          = 'cross'           # tu cuenta usa margen cruzado multi-divisa
+HEDGE_MODE       = False             # True solo si la cuenta OKX está en modo cobertura
 
 HOST_CANDIDATES = [
     'https://my.okx.com',      # <- host confirmado de tu cuenta
@@ -72,34 +71,67 @@ def detect_exchange():
         try:
             bal = ex.fetch_balance()
             doge = (bal.get('DOGE') or {}).get('free')
-            usd  = (bal.get('USD') or {}).get('free')
-            usdc = (bal.get('USDC') or {}).get('free')
-            print(f"[{now()}] OK: Autenticacion correcta")
-            print(f"[{now()}] Saldos trading -> DOGE: {doge} | USD: {usd} | USDC: {usdc}")
+            print(f"[{now()}] OK: Autenticacion correcta | Colateral DOGE: {doge}")
         except Exception as e:
             print(f"[{now()}] Autenticacion OK (aviso mercados: {str(e)[:80]})")
         return ex
     raise RuntimeError("Ningun host OKX reconoce la key. Ultimo fallo: " + str(ultimo))
 
 
+# ==================== INSTRUMENTO ====================
+def pick_future(exchange):
+    """Elige el futuro DOGE/USD activo con vencimiento MAS LEJANO
+    (menos expiraciones inesperadas, menos rolls)."""
+    exchange.load_markets()
+    candidatos = []
+    for m in exchange.markets.values():
+        if m.get('base') == 'DOGE' and m.get('future') and m.get('active'):
+            info = m.get('info') or {}
+            try:
+                exp = int(info.get('expTime') or 0)
+            except (TypeError, ValueError):
+                exp = 0
+            candidatos.append((exp, m['symbol']))
+    if not candidatos:
+        return None
+    candidatos.sort(reverse=True)
+    sym = candidatos[0][1]
+    return sym
+
+
+def resolve_symbol(exchange):
+    """Si hay posicion abierta en un instrumento DOGE, opera sobre ese contrato.
+    Si no, elige el futuro con vencimiento mas lejano."""
+    try:
+        positions = exchange.fetch_positions()
+        for p in positions:
+            if (p.get('contracts') or 0) > 0 and (p.get('symbol') or '').startswith('DOGE/'):
+                print(f"[{now()}] Instrumento operativo (posicion abierta): {p['symbol']}")
+                return p['symbol']
+    except Exception:
+        pass
+    sym = pick_future(exchange)
+    print(f"[{now()}] Instrumento operativo: {sym} (futuro con vencimiento mas lejano)")
+    return sym
+
+
 # ==================== SEÑAL ====================
-def get_signal(exchange, symbol=None):
-    sym = symbol or SYMBOL
-    ohlcv = exchange.fetch_ohlcv(sym, TIMEFRAME, limit=100)
+def get_signal(exchange, symbol):
+    ohlcv = exchange.fetch_ohlcv(symbol, TIMEFRAME, limit=100)
     df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
 
     df['ema7']  = df['close'].ewm(span=7,  adjust=False).mean()
     df['ema21'] = df['close'].ewm(span=21, adjust=False).mean()
 
     if SIGNAL_ON_CLOSE:
-        i_prev, i_curr = -3, -2
+        i_prev, i_curr = -3, -2      # dos ultimas velas CERRADAS
     else:
         i_prev, i_curr = -2, -1
 
     prev7, prev21 = df['ema7'].iloc[i_prev], df['ema21'].iloc[i_prev]
     curr7, curr21 = df['ema7'].iloc[i_curr], df['ema21'].iloc[i_curr]
 
-    ticker = exchange.fetch_ticker(sym)
+    ticker = exchange.fetch_ticker(symbol)
     price = ticker.get('last') or df['close'].iloc[-1]
 
     print(f"[{now()}] Precio: {price} | EMA7: {curr7:.5f} | EMA21: {curr21:.5f}")
@@ -112,8 +144,8 @@ def get_signal(exchange, symbol=None):
 
 
 # ==================== POSICIÓN ====================
-def get_position(exchange, symbol=None):
-    positions = exchange.fetch_positions([symbol or SYMBOL])
+def get_position(exchange, symbol):
+    positions = exchange.fetch_positions([symbol])
     for p in positions:
         contracts = p.get('contracts') or 0
         if contracts > 0:
@@ -121,29 +153,27 @@ def get_position(exchange, symbol=None):
     return None, 0
 
 
-def close_position(exchange, side, contracts, symbol=None):
-    sym = symbol or SYMBOL
+def close_position(exchange, side, contracts, symbol):
     close_side = 'sell' if side == 'long' else 'buy'
-    amount = exchange.amount_to_precision(sym, contracts)
+    amount = exchange.amount_to_precision(symbol, contracts)
     params = {'tdMode': TD_MODE, 'reduceOnly': True}
     if HEDGE_MODE:
         params['posSide'] = side
-    exchange.create_order(sym, 'market', close_side, amount, params=params)
+    exchange.create_order(symbol, 'market', close_side, amount, params=params)
     print(f"[{now()}] Posicion {side} cerrada ({amount} contratos). Flat.")
 
 
 # ==================== ENTRADA CON SL/TP ====================
-def open_entry(exchange, signal, ref_price, symbol=None):
-    sym = symbol or SYMBOL
+def open_entry(exchange, signal, ref_price, symbol):
     if signal == 'long':
         side, sl_raw, tp_raw = 'buy', ref_price * (1 - SL_PCT), ref_price * (1 + TP_PCT)
     else:
         side, sl_raw, tp_raw = 'sell', ref_price * (1 + SL_PCT), ref_price * (1 - TP_PCT)
 
-    sl = exchange.price_to_precision(sym, sl_raw)
-    tp = exchange.price_to_precision(sym, tp_raw)
+    sl = exchange.price_to_precision(symbol, sl_raw)
+    tp = exchange.price_to_precision(symbol, tp_raw)
 
-    market = exchange.market(sym)
+    market = exchange.market(symbol)
     ctval = float(market.get('contractSize') or 1)
     print(f"[{now()}] Tamano orden: {AMOUNT} contratos x {ctval} DOGE/contrato "
           f"= {AMOUNT * ctval} DOGE (~{AMOUNT * ctval * ref_price:.2f} USD)")
@@ -156,7 +186,7 @@ def open_entry(exchange, signal, ref_price, symbol=None):
     if HEDGE_MODE:
         params['posSide'] = 'long' if signal == 'long' else 'short'
 
-    order = exchange.create_order(sym, 'market', side, AMOUNT, params=params)
+    order = exchange.create_order(symbol, 'market', side, AMOUNT, params=params)
     print(f"[{now()}] Orden {side.upper()} enviada. ID: {order.get('id')}")
 
     entry = order.get('average')
@@ -164,7 +194,7 @@ def open_entry(exchange, signal, ref_price, symbol=None):
         for _ in range(5):
             time.sleep(1)
             try:
-                o = exchange.fetch_order(order['id'], sym)
+                o = exchange.fetch_order(order['id'], symbol)
                 if o.get('average'):
                     entry = o['average']
                     break
@@ -176,105 +206,61 @@ def open_entry(exchange, signal, ref_price, symbol=None):
     return entry
 
 
-# ==================== DIAGNÓSTICO v3 ====================
-def _clasifica(err):
-    e = err.lower()
-    if '50124' in err:
-        return 'KEY SIN PERMISO (50124)'
-    if '50123' in err:
-        return 'KEY SIN PERMISO CRIPTO (50123)'
-    if '51155' in err:
-        return 'CUENTA BLOQUEA (51155)'
-    codigos_fondos = ['51119', '51124', '51125', '51159', '51169', '51170',
-                      '51095', '51203', '51186', '51185']
-    if any(c in err for c in codigos_fondos) or any(k in e for k in
-            ['insufficient', 'margin', 'balance', 'funds', 'equity', 'leverage']):
-        return 'PERMISO OK (falta margen/fondos)'
-    return err[:100]
-
-
+# ==================== MODO PRUEBA (valida SL/TP en el futuro real) ====================
 def run_test(exchange):
-    """v3: (A) reconfirma spot DOGE/USD, (B) SONDA CLAVE: futuro con vencimiento,
-    (C) convert DOGE->USD (para sembrar margen si el futuro es operable)."""
+    sym = pick_future(exchange)
+    if not sym:
+        raise RuntimeError("No hay futuros DOGE activos.")
     exchange.load_markets()
-    print(f"[{now()}] ===== DIAGNOSTICO {DIAG_VERSION} =====")
+    market = exchange.market(sym)
+    ctval = float(market.get('contractSize') or 1)
 
-    print(f"[{now()}] --- SONDA A: SPOT DOGE/USD (vender 10 DOGE) ---")
+    price = exchange.fetch_ticker(sym).get('last')
+    print(f"[{now()}] TEST en {sym} | 1 contrato x {ctval} DOGE = {ctval} DOGE (~{ctval * price:.2f} USD)")
+
+    sl = exchange.price_to_precision(sym, price * (1 - SL_PCT))
+    tp = exchange.price_to_precision(sym, price * (1 + TP_PCT))
+    order = exchange.create_order(sym, 'market', 'buy', 1,
+                                  params={'tdMode': TD_MODE,
+                                          'stopLossPrice': float(sl),
+                                          'takeProfitPrice': float(tp)})
+    print(f"[{now()}] TEST: BUY enviada CON SL/TP adjuntos. ID: {order.get('id')} | SL: {sl} | TP: {tp}")
+    time.sleep(4)
+
+    # Verificar que los SL/TP quedaron anclados en el exchange
     try:
-        amt = exchange.amount_to_precision('DOGE/USD', 10)
-        o = exchange.create_order('DOGE/USD', 'market', 'sell', amt)
-        print(f"[{now()}] SONDA A OK: vendidos {amt} DOGE. ID: {o.get('id')}")
-        print(f"  -> Clasificacion: SPOT OPERABLE")
+        abiertas = exchange.fetch_open_orders(sym)
+        print(f"[{now()}] TEST: ordenes condicionales activas en el exchange: {len(abiertas)}")
+        for o in abiertas:
+            print(f"    -> tipo={o.get('type')} | stop={o.get('stopPrice')} | side={o.get('side')}")
     except Exception as e:
-        err = str(e)
-        print(f"[{now()}] SONDA A FALLO -> {err[:150]}")
-        print(f"  -> Clasificacion: {_clasifica(err)}")
+        print(f"[{now()}] TEST: aviso leyendo ordenes condicionales: {str(e)[:100]}")
 
-    print(f"[{now()}] --- SONDA B (CLAVE): FUTURO DOGE con vencimiento (buy 1) ---")
-    fut_sym = None
-    for m in exchange.markets.values():
-        if m.get('base') == 'DOGE' and m.get('future') and m.get('active'):
-            fut_sym = m['symbol']
-            break
-    fut_estado = 'SIN INSTRUMENTO'
-    if fut_sym:
-        print(f"[{now()}] Futuro: {fut_sym} | ctVal={exchange.market(fut_sym)['info'].get('ctVal')}")
-        try:
-            o = exchange.create_order(fut_sym, 'market', 'buy', 1, params={'tdMode': TD_MODE})
-            print(f"[{now()}] SONDA B OK: buy 1 contrato. ID: {o.get('id')}")
-            fut_estado = 'OPERABLE'
-            time.sleep(3)
-            side, contracts = get_position(exchange, fut_sym)
-            if side:
-                close_position(exchange, side, contracts, fut_sym)
-        except Exception as e:
-            err = str(e)
-            print(f"[{now()}] SONDA B FALLO -> {err[:150]}")
-            fut_estado = _clasifica(err)
+    side, contracts = get_position(exchange, sym)
+    print(f"[{now()}] TEST: posicion -> side={side}, contratos={contracts}")
+    if side == 'long':
+        close_position(exchange, side, contracts, sym)
+        print(f"[{now()}] TEST COMPLETO: apertura + SL/TP anclados + cierre validados en cuenta real.")
     else:
-        print(f"[{now()}] No hay futuros DOGE activos.")
-
-    print(f"[{now()}] --- SONDA C: CONVERT DOGE->USD (solo cotizacion, no ejecuta) ---")
-    try:
-        q = exchange.privatePostTradeConvertQuote({
-            'ccy1': 'DOGE', 'ccy2': 'USD', 'side': 'sell',
-            'rfqSz': '10', 'rfqSzCcy': 'DOGE',
-        })
-        px = q.get('pxE8') or q.get('px') or q.get('quotePx')
-        print(f"[{now()}] SONDA C OK: convert disponible. Cotizacion 10 DOGE -> USD (px={px})")
-        print(f"  -> Convert puede sembrar margen USD si el futuro es operable.")
-    except Exception as e:
-        print(f"[{now()}] SONDA C FALLO -> {str(e)[:150]}")
-
-    print(f"[{now()}] ================= LECTURA FINAL =================")
-    print(f"  SPOT DOGE/USD        : (ver SONDA A arriba)")
-    print(f"  FUTURO con vencimiento: {fut_estado}")
-    if fut_estado == 'OPERABLE' or 'PERMISO OK' in fut_estado:
-        print("  ==> CAMINO A: bot sobre FUTUROS (long/short).")
-        print("      Necesitamos margen USD: si SONDA C es OK, convertimos ~15 DOGE->USD;")
-        print("      si no, deposita USD o usa el convert manual de la app.")
-    elif 'CUENTA BLOQUEA' in fut_estado or '50124' in fut_estado:
-        print("  ==> Futuros tambien bloqueados. Ruta: crear la key desde PC")
-        print("      buscando la casilla Perpetuos/Futuros, o soporte OKX con el 50124.")
-        print("      Alternativa mientras: Plan B spot DOGE/USDC long-only (si USDC pasa).")
-    else:
-        print("  ==> Revisar salida de las sondas arriba.")
+        print(f"[{now()}] TEST: no se vio la posicion; revisar en OKX.")
 
 
 # ==================== CICLO ====================
-def run_cycle(exchange):
-    signal, price = get_signal(exchange)
+def run_cycle(exchange, symbol):
+    signal, price = get_signal(exchange, symbol)
     if signal is None:
         print(f"[{now()}] Sin cruces nuevos en este ciclo. Vigilando.")
         return False
 
-    side, contracts = get_position(exchange)
+    side, contracts = get_position(exchange, symbol)
 
+    # Cruce contrario con posicion abierta -> cerrar (flat) antes de girar
     if side and side != signal:
-        close_position(exchange, side, contracts)
+        close_position(exchange, side, contracts, symbol)
         side, contracts = None, 0
         time.sleep(2)
 
+    # Maximo 2 entradas acumuladas en la misma direccion
     if side == signal:
         entries_done = round(contracts / AMOUNT)
         if entries_done >= MAX_ENTRIES:
@@ -283,7 +269,7 @@ def run_cycle(exchange):
 
     cross = 'Golden Cross' if signal == 'long' else 'Death Cross'
     print(f"[{now()}] {cross} (7/21) detectado. Lanzando orden {signal.upper()}...")
-    open_entry(exchange, signal, price)
+    open_entry(exchange, signal, price, symbol)
     return True
 
 
@@ -298,23 +284,25 @@ def sleep_until_next_candle():
 
 # ==================== MODOS DE EJECUCIÓN ====================
 def run_once():
-    print(f"[{now()}] Modo ciclo unico (GitHub Actions) | diag {DIAG_VERSION}.")
+    print(f"[{now()}] Modo ciclo unico (GitHub Actions) | bot {BOT_VERSION}.")
     exchange = detect_exchange()
     if os.getenv('TEST_MODE') == '1':
         run_test(exchange)
         return
-    entered = run_cycle(exchange)
+    symbol = resolve_symbol(exchange)
+    entered = run_cycle(exchange, symbol)
     if entered:
         print(f"[{now()}] Espera post-entrada: {WAIT_AFTER_ENTRY}s")
         time.sleep(WAIT_AFTER_ENTRY)
 
 
 def main():
-    print(f"[{now()}] Bot EMA 7/21 | {SYMBOL} {TIMEFRAME} | SL {SL_PCT:.1%} / TP {TP_PCT:.1%}")
+    print(f"[{now()}] Bot EMA 7/21 futuros | {TIMEFRAME} | SL {SL_PCT:.1%} / TP {TP_PCT:.1%} | bot {BOT_VERSION}")
     exchange = detect_exchange()
     while True:
         try:
-            entered = run_cycle(exchange)
+            symbol = resolve_symbol(exchange)
+            entered = run_cycle(exchange, symbol)
             if entered:
                 print(f"[{now()}] Espera post-entrada: {WAIT_AFTER_ENTRY}s")
                 time.sleep(WAIT_AFTER_ENTRY)
