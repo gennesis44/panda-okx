@@ -15,7 +15,6 @@ jobs:
     timeout-minutes: 8
 
     # MAPA UNICO DE CREDENCIALES (vale para TODOS los pasos)
-    # izquierda: variables que lee bot.py | derecha: nombres REALES de tus secrets
     env:
       OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
       OKX_SECRET_KEY: ${{ secrets.OKX_API_SECRET }}
@@ -34,29 +33,25 @@ jobs:
       - name: Instalar dependencias
         run: pip install -U "ccxt>=4.4.0" pandas
 
-      - name: Verificar credenciales OKX (login real via my.okx.com)
+      - name: Sondeo de hosts OKX (cual reconoce la key)
         run: |
           python - <<'EOF'
           import ccxt, os
-          ex = ccxt.okx({
+          creds = {
               'apiKey':    (os.getenv('OKX_API_KEY') or '').strip(),
               'secret':    (os.getenv('OKX_SECRET_KEY') or '').strip(),
               'password':  (os.getenv('OKX_PASSWORD') or '').strip(),
-              'enableRateLimit': True,
-              'options': {'defaultType': 'swap'},
-              'urls': {'api': {'rest': 'https://aws.my.okx.com'}},
-          })
-          try:
-              bal = ex.fetch_balance()
-              usdt = (bal.get('USDT') or {}).get('free')
-              print(f"OK: Autenticacion correcta | USDT libre: {usdt}")
-          except Exception as e:
-              msg = str(e)
-              print(f"FALLO de autenticacion: {msg}")
-              if '50119' in msg:
-                  print("50119 con endpoint my.okx.com -> revisar key (demo/permisos).")
-              print("Checklist: key de TRADING REAL en my.okx.com, permiso Trade.")
-              raise SystemExit(1)
+          }
+          for host in ['https://www.okx.com', 'https://my.okx.com',
+                       'https://aws.okx.com', 'https://www.okx.eu']:
+              try:
+                  ex = ccxt.okx({**creds, 'enableRateLimit': True,
+                                 'options': {'defaultType': 'swap'},
+                                 'urls': {'api': {'rest': host}}})
+                  ex.private_get_account_balance()
+                  print(f"EXITO: {host} reconoce la API key")
+              except Exception as e:
+                  print(f"{host} -> {str(e)[:100]}")
           EOF
 
       - name: Ejecutar ciclo del bot
