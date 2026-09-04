@@ -1,4 +1,4 @@
-import os
+ import os
 import time
 
 import ccxt
@@ -28,20 +28,19 @@ def now():
 
 def get_trade_exchange():
     api_key  = os.getenv('OKX_API_KEY')
-    secret   = os.getenv('OKX_SECRET_KEY')
+    # Soporta tanto OKX_SECRET como OKX_SECRET_KEY para evitar fallos por nombre
+    secret   = os.getenv('OKX_SECRET') or os.getenv('OKX_SECRET_KEY')
     password = os.getenv('OKX_PASSWORD')
 
     faltantes = [n for n, v in [('OKX_API_KEY', api_key),
-                                ('OKX_SECRET_KEY', secret),
+                                ('OKX_SECRET / OKX_SECRET_KEY', secret),
                                 ('OKX_PASSWORD', password)] if not v]
     if faltantes:
         raise RuntimeError(
             f"Variables VACIAS: {', '.join(faltantes)}. "
-            "Revisa el env del workflow y los secrets "
-            "(OKX_API_KEY, OKX_API_SECRET, OKX_PASSPHRASE)."
+            "Revisa el env del workflow y los GitHub Secrets."
         )
 
-    # .strip(): defensa contra espacios/saltos pegados en los secrets
     return ccxt.okx({
         'apiKey':    api_key.strip(),
         'secret':    secret.strip(),
@@ -78,7 +77,7 @@ def get_signal():
     if SIGNAL_ON_CLOSE:
         i_prev, i_curr = -3, -2      # dos últimas velas CERRADAS
     else:
-        i_prev, i_curr = -2, -1      # vela en curso (comportamiento original)
+        i_prev, i_curr = -2, -1      # vela en curso
 
     prev7, prev21 = df['ema7'].iloc[i_prev], df['ema21'].iloc[i_prev]
     curr7, curr21 = df['ema7'].iloc[i_curr], df['ema21'].iloc[i_curr]
@@ -130,7 +129,6 @@ def open_entry(exchange, signal, ref_price):
 
     params = {
         'tdMode': TD_MODE,
-        # SL/TP adjuntos: OKX los ejecuta en servidor y se anulan solos al cerrar
         'stopLossPrice':   float(sl),
         'takeProfitPrice': float(tp),
     }
@@ -167,13 +165,11 @@ def run_cycle(exchange):
 
     side, contracts = get_position(exchange)
 
-    # Cruce contrario con posición abierta -> cerrar (flat) antes de girar
     if side and side != signal:
         close_position(exchange, side, contracts)
         side, contracts = None, 0
         time.sleep(2)
 
-    # Máximo 2 entradas acumuladas en la misma dirección
     if side == signal:
         entries_done = round(contracts / AMOUNT)
         if entries_done >= MAX_ENTRIES:
@@ -193,9 +189,7 @@ def sleep_until_next_candle():
     time.sleep(max(1.0, (next_ms - now_ms) / 1000))
 
 
-# ==================== MODOS DE EJECUCIÓN ====================
 def run_once():
-    """Un ciclo y sale. GitHub Actions (SINGLE_CYCLE=1)."""
     print(f"[{now()}] Modo ciclo unico (GitHub Actions).")
     exchange = get_trade_exchange()
     verify_credentials(exchange)
@@ -206,7 +200,6 @@ def run_once():
 
 
 def main():
-    """Bucle infinito. VPS / local."""
     print(f"[{now()}] Bot EMA 7/21 | {SYMBOL} {TIMEFRAME} | SL {SL_PCT:.1%} / TP {TP_PCT:.1%}")
     exchange = get_trade_exchange()
     verify_credentials(exchange)
