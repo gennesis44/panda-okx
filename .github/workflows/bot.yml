@@ -25,6 +25,19 @@ jobs:
       - name: Instalar dependencias
         run: pip install -U ccxt pandas
 
+      - name: Diagnostico de variables (SET/EMPTY, no muestra valores)
+        env:
+          OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
+          OKX_SECRET_KEY: ${{ secrets.OKX_API_SECRET }}
+          OKX_PASSWORD: ${{ secrets.OKX_PASSPHRASE }}
+        run: |
+          python - <<'EOF'
+          import os
+          for v in ['OKX_API_KEY', 'OKX_SECRET_KEY', 'OKX_PASSWORD']:
+              val = os.getenv(v)
+              print(f"{v}: {'SET (' + str(len(val)) + ' caracteres)' if val else '*** EMPTY ***'}")
+          EOF
+
       - name: Verificar credenciales OKX
         env:
           OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
