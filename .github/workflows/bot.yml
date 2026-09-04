@@ -34,28 +34,7 @@ jobs:
       - name: Instalar dependencias
         run: pip install -U "ccxt>=4.4.0" pandas
 
-      - name: Diagnostico de variables (SET/EMPTY + suciedad)
-        run: |
-          python - <<'EOF'
-          import os
-          print("--- Diagnostico de entorno ---")
-          for v in ['OKX_API_KEY', 'OKX_SECRET_KEY', 'OKX_PASSWORD']:
-              val = os.getenv(v) or ''
-              if not val:
-                  print(f"{v}: *** EMPTY *** (secret inexistente o vacio)")
-                  continue
-              avisos = []
-              if val != val.strip():
-                  avisos.append('ESPACIOS/SALTOS')
-              if val[0] in '\'"':
-                  avisos.append('COMILLA_INICIO')
-              if val[-1] in '\'"':
-                  avisos.append('COMILLA_FIN')
-              estado = 'OK' if not avisos else '[' + ', '.join(avisos) + ']'
-              print(f"{v}: SET ({len(val)} caracteres) {estado}")
-          EOF
-
-      - name: Verificar credenciales OKX (login real)
+      - name: Verificar credenciales OKX (login real via my.okx.com)
         run: |
           python - <<'EOF'
           import ccxt, os
@@ -65,6 +44,7 @@ jobs:
               'password':  (os.getenv('OKX_PASSWORD') or '').strip(),
               'enableRateLimit': True,
               'options': {'defaultType': 'swap'},
+              'urls': {'api': {'rest': 'https://aws.my.okx.com'}},
           })
           try:
               bal = ex.fetch_balance()
@@ -74,10 +54,8 @@ jobs:
               msg = str(e)
               print(f"FALLO de autenticacion: {msg}")
               if '50119' in msg:
-                  print("50119 = la API key no existe en OKX REAL:")
-                  print(" - key borrada/invalida o creada en DEMO -> crear una nueva en OKX")
-                  print(" - o valor del secret sucio (comillas/espacios) -> recrear secrets")
-              print("Checklist: key de TRADING REAL, permiso Trade, SIN whitelist de IP.")
+                  print("50119 con endpoint my.okx.com -> revisar key (demo/permisos).")
+              print("Checklist: key de TRADING REAL en my.okx.com, permiso Trade.")
               raise SystemExit(1)
           EOF
 
