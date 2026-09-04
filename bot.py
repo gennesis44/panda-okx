@@ -16,10 +16,8 @@ SIGNAL_ON_CLOSE  = True              # True: cruce con velas CERRADAS (sin repin
 TD_MODE          = 'cross'           # 'cross' o 'isolated'
 HEDGE_MODE       = False             # True solo si la cuenta OKX está en modo cobertura
 
-# Cuentas de my.okx.com viven en una instancia separada de www.okx.com.
-# El bot prueba los dominios oficiales y opera contra el que reconozca la key.
 HOST_CANDIDATES = [
-    'https://my.okx.com',      # <- host confirmado de tu cuenta (primero)
+    'https://my.okx.com',      # <- host confirmado de tu cuenta
     'https://www.okx.com',
     'https://aws.okx.com',
     'https://www.okx.eu',
@@ -56,13 +54,11 @@ def build_exchange(host):
 
 
 def detect_exchange():
-    """Prueba los dominios oficiales de OKX y devuelve el exchange del primer
-    host que reconozca la API key (verificado con login real)."""
     ultimo = None
     for host in HOST_CANDIDATES:
         try:
             ex = build_exchange(host)
-            ex.private_get_account_balance()  # endpoint privado: solo pasa con credenciales validas
+            ex.private_get_account_balance()
             print(f"[{now()}] HOST OKX detectado: {host}")
         except ccxt.AuthenticationError:
             print(f"[{now()}] {host} -> key rechazada (no existe en esta instancia)")
@@ -78,21 +74,16 @@ def detect_exchange():
             doge = (bal.get('DOGE') or {}).get('free')
             print(f"[{now()}] OK: Autenticacion correcta")
             print(f"[{now()}] Saldos (cuenta trading) -> USDT: {usdt} | DOGE: {doge}")
-            if not usdt and not doge:
-                print(f"[{now()}] AVISO: sin fondos visibles en cuenta TRADING.")
-                print(f"[{now()}] En my.okx.com: Activos -> Transferir -> mover a 'Trading'.")
         except Exception as e:
             print(f"[{now()}] Autenticacion OK (aviso cargando mercados: {str(e)[:80]})")
         return ex
     raise RuntimeError(
-        "Ningun host OKX reconoce la API key. "
-        "Verifica que la key es de TRADING REAL y esta activa. Ultimo fallo: " + str(ultimo)
+        "Ningun host OKX reconoce la API key. Ultimo fallo: " + str(ultimo)
     )
 
 
 # ==================== SEÑAL ====================
 def get_signal(exchange):
-    """Devuelve ('long' | 'short' | None, precio_actual)."""
     ohlcv = exchange.fetch_ohlcv(SYMBOL, TIMEFRAME, limit=100)
     df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
 
@@ -100,9 +91,9 @@ def get_signal(exchange):
     df['ema21'] = df['close'].ewm(span=21, adjust=False).mean()
 
     if SIGNAL_ON_CLOSE:
-        i_prev, i_curr = -3, -2      # dos últimas velas CERRADAS
+        i_prev, i_curr = -3, -2
     else:
-        i_prev, i_curr = -2, -1      # vela en curso
+        i_prev, i_curr = -2, -1
 
     prev7, prev21 = df['ema7'].iloc[i_prev], df['ema21'].iloc[i_prev]
     curr7, curr21 = df['ema7'].iloc[i_curr], df['ema21'].iloc[i_curr]
@@ -121,7 +112,6 @@ def get_signal(exchange):
 
 # ==================== POSICIÓN ====================
 def get_position(exchange):
-    """Devuelve (side, contratos). (None, 0) si está flat."""
     positions = exchange.fetch_positions([SYMBOL])
     for p in positions:
         contracts = p.get('contracts') or 0
@@ -131,7 +121,6 @@ def get_position(exchange):
 
 
 def close_position(exchange, side, contracts):
-    """Cierra la posición a mercado (flat)."""
     close_side = 'sell' if side == 'long' else 'buy'
     amount = exchange.amount_to_precision(SYMBOL, contracts)
     params = {'tdMode': TD_MODE, 'reduceOnly': True}
@@ -143,7 +132,6 @@ def close_position(exchange, side, contracts):
 
 # ==================== ENTRADA CON SL/TP ====================
 def open_entry(exchange, signal, ref_price):
-    """Abre entrada a mercado con SL (1%) y TP (1.5%) adjuntos."""
     if signal == 'long':
         side, sl_raw, tp_raw = 'buy', ref_price * (1 - SL_PCT), ref_price * (1 + TP_PCT)
     else:
@@ -159,7 +147,6 @@ def open_entry(exchange, signal, ref_price):
 
     params = {
         'tdMode': TD_MODE,
-        # SL/TP adjuntos: OKX los ejecuta en servidor y se anulan solos al cerrar
         'stopLossPrice':   float(sl),
         'takeProfitPrice': float(tp),
     }
@@ -186,39 +173,85 @@ def open_entry(exchange, signal, ref_price):
     return entry
 
 
-# ==================== MODO PRUEBA ====================
+# ==================== DIAGNÓSTICO DE PERMISOS ====================
 def run_test(exchange):
-    """Prueba controlada: orden minima con SL/TP, verificar posicion y cerrar."""
-    market = exchange.market(SYMBOL)
-    ctval = float(market.get('contractSize') or 1)
-    min_amt = (market.get('limits', {}).get('amount') or {}).get('min') or 1
-    amt = exchange.amount_to_precision(SYMBOL, min_amt)
+    """3 sondas para distinguir: permiso de perpetuos vs whitelist de cripto
+    vs instrumento inexistente. Solo sondas minimas e inofensivas."""
+    exchange.load_markets()
 
-    price = exchange.fetch_ticker(SYMBOL).get('last')
-    nocional = float(amt) * ctval
-    print(f"[{now()}] TEST -> {amt} contrato(s) x {ctval} DOGE = {nocional} DOGE (~{nocional * price:.2f} USD)")
+    print(f"[{now()}] --- Catalogo DOGE en esta plataforma ---")
+    encontrados = []
+    for m in exchange.markets.values():
+        if (m.get('base') == 'DOGE') and (m.get('swap') or m.get('future') or m.get('spot')):
+            info = m.get('info') or {}
+            tipo = info.get('instType') or ('SPOT' if m.get('spot') else '?')
+            print(f"  {m['symbol']} | tipo={tipo} | activo={m.get('active')} | "
+                  f"ctVal={info.get('ctVal')} | settle={info.get('settleCcy')}")
+            encontrados.append(m['symbol'])
+    if not encontrados:
+        print("  (ningun instrumento DOGE encontrado)")
 
-    sl = exchange.price_to_precision(SYMBOL, price * (1 - SL_PCT))
-    tp = exchange.price_to_precision(SYMBOL, price * (1 + TP_PCT))
-    order = exchange.create_order(SYMBOL, 'market', 'buy', amt,
-                                  params={'tdMode': TD_MODE,
-                                          'stopLossPrice': float(sl),
-                                          'takeProfitPrice': float(tp)})
-    print(f"[{now()}] TEST: BUY enviada. ID: {order.get('id')} | SL: {sl} | TP: {tp}")
-    time.sleep(4)
+    # SONDA 1: SPOT — vender 10 DOGE por USDT (~0.85 USD, inofensivo y util)
+    print(f"[{now()}] --- SONDA 1: SPOT (vender 10 DOGE) ---")
+    spot_ok = False
+    try:
+        m = exchange.market('DOGE/USDT')
+        min_amt = (m.get('limits', {}).get('amount') or {}).get('min') or 10
+        amt = exchange.amount_to_precision('DOGE/USDT', max(min_amt, 10))
+        o = exchange.create_order('DOGE/USDT', 'market', 'sell', amt)
+        print(f"[{now()}] SONDA SPOT: OK (vendidos {amt} DOGE -> USDT). ID: {o.get('id')}")
+        spot_ok = True
+    except Exception as e:
+        print(f"[{now()}] SONDA SPOT: FALLO -> {str(e)[:150]}")
 
-    side, contracts = get_position(exchange)
-    print(f"[{now()}] TEST: posicion -> side={side}, contratos={contracts}")
-    if side == 'long':
-        close_position(exchange, side, contracts)
-        print(f"[{now()}] TEST COMPLETO: apertura + SL/TP + cierre validados en cuenta real.")
+    # SONDA 2: PERPETUO INVERSO DOGE/USD:DOGE — buy 1 contrato
+    print(f"[{now()}] --- SONDA 2: SWAP DOGE/USD:DOGE (buy 1 contrato) ---")
+    try:
+        o = exchange.create_order(SYMBOL, 'market', 'buy', 1, params={'tdMode': TD_MODE})
+        print(f"[{now()}] SONDA SWAP USD: OK. ID: {o.get('id')}")
+        time.sleep(3)
+        side, contracts = get_position(exchange)
+        if side == 'long':
+            close_position(exchange, side, contracts)
+    except Exception as e:
+        print(f"[{now()}] SONDA SWAP USD: FALLO -> {str(e)[:150]}")
+
+    # SONDA 3: PERPETUO LINEAL DOGE/USDT:USDT — buy 1 contrato
+    print(f"[{now()}] --- SONDA 3: SWAP DOGE/USDT:USDT (buy 1 contrato) ---")
+    try:
+        o = exchange.create_order('DOGE/USDT:USDT', 'market', 'buy', 1,
+                                  params={'tdMode': TD_MODE})
+        print(f"[{now()}] SONDA SWAP USDT: OK. ID: {o.get('id')}")
+        time.sleep(3)
+        try:
+            pos = exchange.fetch_positions(['DOGE/USDT:USDT'])
+            for p in pos:
+                if (p.get('contracts') or 0) > 0:
+                    cside, cct = p.get('side'), p.get('contracts')
+                    camt = exchange.amount_to_precision('DOGE/USDT:USDT', cct)
+                    cparams = {'tdMode': TD_MODE, 'reduceOnly': True}
+                    exchange.create_order('DOGE/USDT:USDT', 'market',
+                                          'sell' if cside == 'long' else 'buy',
+                                          camt, params=cparams)
+                    print(f"[{now()}] Posicion {cside} de prueba cerrada. Flat.")
+        except Exception as e2:
+            print(f"[{now()}] Aviso cerrando posicion de prueba: {str(e2)[:100]}")
+    except Exception as e:
+        print(f"[{now()}] SONDA SWAP USDT: FALLO -> {str(e)[:150]}")
+
+    # INTERPRETACION AUTOMATICA
+    print(f"[{now()}] --- LECTURA DEL DIAGNOSTICO ---")
+    if not spot_ok:
+        print("  Spot tambien falla -> la key NO tiene DOGE en su whitelist de criptos")
+        print("  (o permiso general). Recrear la key anadiendo DOGE en 'Cripto'.")
     else:
-        print(f"[{now()}] TEST: no se vio la posicion; revisar en OKX si la orden se abrio.")
+        print("  Spot OK -> la key SI puede operar DOGE.")
+        print("  Si las sondas SWAP fallan con 50124 -> falta permiso de PERPETUOS")
+        print("  en la plataforma/key (revisar creacion de key o disponibilidad EU).")
 
 
 # ==================== CICLO ====================
 def run_cycle(exchange):
-    """Ejecuta un ciclo. Devuelve True si abrió posición."""
     signal, price = get_signal(exchange)
     if signal is None:
         print(f"[{now()}] Sin cruces nuevos en este ciclo. Vigilando.")
@@ -226,13 +259,11 @@ def run_cycle(exchange):
 
     side, contracts = get_position(exchange)
 
-    # Cruce contrario con posición abierta -> cerrar (flat) antes de girar
     if side and side != signal:
         close_position(exchange, side, contracts)
         side, contracts = None, 0
         time.sleep(2)
 
-    # Máximo 2 entradas acumuladas en la misma dirección
     if side == signal:
         entries_done = round(contracts / AMOUNT)
         if entries_done >= MAX_ENTRIES:
@@ -256,7 +287,6 @@ def sleep_until_next_candle():
 
 # ==================== MODOS DE EJECUCIÓN ====================
 def run_once():
-    """Un ciclo y sale. GitHub Actions (SINGLE_CYCLE=1)."""
     print(f"[{now()}] Modo ciclo unico (GitHub Actions).")
     exchange = detect_exchange()
     if os.getenv('TEST_MODE') == '1':
@@ -269,7 +299,6 @@ def run_once():
 
 
 def main():
-    """Bucle infinito. VPS / local."""
     print(f"[{now()}] Bot EMA 7/21 | {SYMBOL} {TIMEFRAME} | SL {SL_PCT:.1%} / TP {TP_PCT:.1%}")
     exchange = detect_exchange()
     while True:
