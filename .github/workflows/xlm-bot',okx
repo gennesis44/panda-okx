@@ -1,0 +1,45 @@
+name: xlm-bot-okx
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'     # cada 15 min
+  workflow_dispatch:           # lanzamiento manual
+    inputs:
+      test_mode:
+        description: 'Diagnostico XLM: catalogo + sonda 1 contrato (abrir y cerrar)'
+        type: boolean
+        required: false
+        default: false
+
+concurrency:
+  group: xlm-bot-okx
+  cancel-in-progress: true
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+
+    # MAPA UNICO DE CREDENCIALES (mismos secrets del bot DOGE — reutilizables)
+    # izquierda: variables que lee el .py | derecha: nombres REALES de tus secrets
+    env:
+      OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
+      OKX_SECRET_KEY: ${{ secrets.OKX_API_SECRET }}
+      OKX_PASSWORD: ${{ secrets.OKX_PASSPHRASE }}
+      SINGLE_CYCLE: '1'
+      TEST_MODE: ${{ github.event.inputs.test_mode == 'true' && '1' || '0' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instalar dependencias
+        run: pip install -U "ccxt>=4.4.0" pandas
+
+      - name: Ejecutar bot XLM
+        run: python xlm_bot.py
