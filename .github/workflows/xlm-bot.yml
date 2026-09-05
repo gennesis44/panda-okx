@@ -2,8 +2,8 @@ name: xlm-bot-okx
 
 on:
   schedule:
-    - cron: '*/15 * * * *'     # cada 15 min
-  workflow_dispatch:           # lanzamiento manual
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
     inputs:
       test_mode:
         description: 'Diagnostico XLM: catalogo + sonda 1 contrato (abrir y cerrar)'
@@ -20,8 +20,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 8
 
-    # MAPA UNICO DE CREDENCIALES (mismos secrets del bot DOGE — reutilizables)
-    # izquierda: variables que lee el .py | derecha: nombres REALES de tus secrets
     env:
       OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
       OKX_SECRET_KEY: ${{ secrets.OKX_API_SECRET }}
@@ -32,6 +30,13 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Diagnostico raiz (VER QUE VE EL RUNNER - borrar cuando funcione)
+        run: |
+          echo "=== RAIZ DEL REPO ==="
+          ls -la
+          echo "=== Buscando xlm_bot.py en todo el repo ==="
+          find . -name "*xlm*" -not -path "./.git/*"
 
       - name: Setup Python
         uses: actions/setup-python@v5
