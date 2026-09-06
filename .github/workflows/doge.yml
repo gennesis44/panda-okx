@@ -1,17 +1,25 @@
-# .github/workflows/doge.yml
 name: Bot DOGE
+
 on:
   schedule:
-    - cron: '*/15 * * * *'
+    - cron: '9 * * * *'
   workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: doge-bot
+  cancel-in-progress: false
 
 jobs:
   run-doge:
     runs-on: ubuntu-latest
+    timeout-minutes: 8
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
       - name: Install dependencies
@@ -19,7 +27,8 @@ jobs:
       - name: Run DOGE Bot
         run: python main-doge.py
         env:
-          SINGLE_CYCLE: 1
+          SINGLE_CYCLE: '1'
+          PYTHONUNBUFFERED: '1'
           OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
           OKX_API_SECRET: ${{ secrets.OKX_API_SECRET }}
           OKX_PASSPHRASE: ${{ secrets.OKX_PASSPHRASE }}
