@@ -10,55 +10,21 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 log = logging.getLogger(__name__)
 
 # ==================== CONFIGURACIÓN ====================
-BASE_ASSET  = 'DOGE'
-AMOUNT      = 100.0           # Contratos iniciales
-SL_PCT      = 0.010           # 1.0%
-TP_PCT      = 0.015           # 1.5%
+SYMBOL      = 'DOGE/USDT:USDT'  # USDT-margined perpetual (compatible con saldo EUR/USDT)
+AMOUNT      = 1.0               # 1 contrato
+SL_PCT      = 0.010             # 1.0%
+TP_PCT      = 0.015             # 1.5%
 TD_MODE     = 'cross'
-HOST        = 'https://my.okx.com'   # Instancia EEA real
+HOST        = 'https://my.okx.com'     # Instancia EEA real
 
 exchange = ccxt.okx({
     'apiKey':    os.getenv('OKX_API_KEY') or os.getenv('OKX_KEY', ''),
     'secret':    os.getenv('OKX_SECRET_KEY') or os.getenv('OKX_API_SECRET', ''),
     'password':  os.getenv('OKX_PASSWORD') or os.getenv('OKX_PASSPHRASE', ''),
     'enableRateLimit': True,
-    'options':   {'defaultType': 'future'},
+    'options':   {'defaultType': 'swap'},
     'urls':      {'api': {'rest': HOST}},
 })
-
-# ==================== INSTRUMENTO ====================
-def pick_future():
-    """Busca el futuro DOGE/USD activo con vencimiento más lejano."""
-    exchange.load_markets()
-    candidatos = []
-    for m in exchange.markets.values():
-        if m.get('base') == BASE_ASSET and m.get('future') and m.get('active'):
-            info = m.get('info') or {}
-            try:
-                exp = int(info.get('expTime') or 0)
-            except (TypeError, ValueError):
-                exp = 0
-            candidatos.append((exp, m['symbol']))
-    if not candidatos:
-        # Fallback a swap si no hay futuros standard
-        for m in exchange.markets.values():
-            if m.get('base') == BASE_ASSET and m.get('swap') and m.get('active'):
-                return m['symbol']
-        return 'DOGE/USD:DOGE'
-    candidatos.sort(reverse=True)
-    return candidatos[0][1]
-
-def resolve_symbol():
-    try:
-        for p in exchange.fetch_positions():
-            if (p.get('contracts') or 0) > 0 and (p.get('symbol') or '').startswith(f'{BASE_ASSET}/'):
-                log.info(f"Instrumento (posición activa): {p['symbol']}")
-                return p['symbol']
-    except Exception:
-        pass
-    sym = pick_future()
-    log.info(f"Instrumento seleccionado: {sym}")
-    return sym
 
 # ==================== INDICADORES ====================
 def ema(s: pd.Series, length: int) -> pd.Series:
@@ -150,7 +116,9 @@ def run_bot():
     bal = exchange.fetch_balance()
     log.info(f"Autenticacion OK en my.okx.com | Balance general conectado.")
 
-    symbol = resolve_symbol()
+    symbol = SYMBOL
+    exchange.load_markets()
+    log.info(f"Instrumento seleccionado: {symbol}")
 
     try:
         exchange.set_leverage(1, symbol, params={'mgnMode': TD_MODE})
@@ -172,7 +140,7 @@ def run_bot():
     pos = get_open_position(symbol)
     if not pos:
         if curr_7 > curr_21 and 30 < rsi_1h < 80 and trend_4h:
-            log.info("Señal LONG confirmada para DOGE. Ejecutando entrada atómica...")
+            log.info("Señal LONG confirmada para DOGE. Ejecutando entrada atómica de 1 contrato...")
             execute_order('LONG', symbol, price, AMOUNT)
         else:
             log.info("Sin condiciones de entrada LONG válidas para DOGE.")
