@@ -11,12 +11,12 @@ log = logging.getLogger(__name__)
 
 # ==================== CONFIGURACIÓN ====================
 BASE_ASSET  = 'XLM'
-AMOUNT      = 1
-SL_PCT      = 0.010
-TP_PCT      = 0.015
-MAX_ENTRIES = 2
+AMOUNT      = 1               # contratos por entrada (2 = entrada doble de golpe, si prefieres)
+SL_PCT      = 0.010           # 1.0%
+TP_PCT      = 0.015           # 1.5%
+MAX_ENTRIES = 2               # TOPE TOTAL: 2 contratos (~200 XLM)
 TD_MODE     = 'cross'
-SIGNAL_ON_CLOSE = True
+SIGNAL_ON_CLOSE = True        # velas CERRADAS: senal-evento
 TEST_MODE       = os.getenv('TEST_MODE') == '1'
 SINGLE_CYCLE    = os.getenv('SINGLE_CYCLE') == '1'
 
@@ -179,65 +179,31 @@ def execute_order(side: str, symbol: str, ref_price: float, amount: int):
     log.info(f"{side} ejecutada con SL/TP adjuntos. ordId: {d0.get('ordId')} | SL: {sl} | TP: {tp}")
     return True
 
-# ==================== DIAGNÓSTICO (SONDA) ====================
-def run_test():
-    log.info("=== DIAGNOSTICO XLM ===")
-    futs, swaps, spots = catalog_xlm()
-    if not futs:
-        log.error("No hay futuros XLM activos.")
-        return
-    sym = pick_future()
-    market = exchange.market(sym)
-    ctval = float(market.get('contractSize') or 1)
-    price = exchange.fetch_ticker(sym).get('last')
-    log.info(f"SONDA: {sym} | 1 contrato x {ctval} XLM (~${ctval * (price or 0):.2f})")
-    try:
-        o = exchange.create_order(sym, 'market', 'buy', 1, params={'tdMode': TD_MODE})
-        log.info(f"SONDA OK: buy 1 contrato. ID: {o.get('id')}")
-        time.sleep(3)
-        pos = get_open_position(sym)
-        if pos:
-            log.info(f"Posicion abierta: {pos['side']} x {pos['contracts']} — cerrando...")
-            close_position(sym)
-        log.info("DIAGNOSTICO: FUTUROS XLM OPERABLES.")
-    except Exception as e:
-        err = str(e)
-        log.error(f"SONDA FALLO -> {err[:150]}")
-        if '50124' in err:
-            log.error("Clasificacion: la key NO tiene permiso de futuros para XLM.")
-        elif '51001' in err:
-            log.error("Clasificacion: el futuro XLM no existe para esta cuenta.")
-        elif any(k in err.lower() for k in ['margin', 'balance', 'funds', 'insufficient', '51119', '51124']):
-            log.warning("Clasificacion: PERMISO OK — solo falta margen.")
-        else:
-            log.error(f"Clasificacion indeterminada: {err[:120]}")
-
-# ==================== SEÑAL MULTI-TIMEFRAME ====================
+# ==================== SEÑAL RELAJADA (3 filtros, velas cerradas) ====================
 def evaluate_multi_timeframe(symbol):
     try:
-        df_15m = calculate_indicators(fetch_data(symbol, '15m', limit=100))
-        df_1h  = calculate_indicators(fetch_data(symbol, '1h', limit=100))
-        df_4h  = calculate_indicators(fetch_data(symbol, '4h', limit=100))
+        df_1h = calculate_indicators(fetch_data(symbol, '1h', limit=100))
+        df_4h = calculate_indicators(fetch_data(symbol, '4h', limit=100))
 
         i_prev, i_curr = (-3, -2) if SIGNAL_ON_CLOSE else (-2, -1)
 
         prev_7, prev_21 = df_1h['EMA_7'].iloc[i_prev], df_1h['EMA_21'].iloc[i_prev]
         curr_7, curr_21 = df_1h['EMA_7'].iloc[i_curr], df_1h['EMA_21'].iloc[i_curr]
         rsi_1h          = df_1h['RSI_21'].iloc[i_curr]
-        macd_hist_1h    = df_1h['MACD_hist'].iloc[i_curr]
         price = exchange.fetch_ticker(symbol).get('last') or df_1h['close'].iloc[-1]
 
-        trend_4h     = df_4h['EMA_7'].iloc[-2] > df_4h['EMA_21'].iloc[-2]
-        momentum_15m = df_15m['MACD_hist'].iloc[-2] > 0
+        trend_4h = df_4h['EMA_7'].iloc[-2] > df_4h['EMA_21'].iloc[-2]
 
         log.info(f"Precio: {price} | 1H EMA7/21: {curr_7:.5f}/{curr_21:.5f} | "
-                 f"RSI: {rsi_1h:.1f} | MACDh: {macd_hist_1h:.4f} | 4H alcista: {trend_4h}")
+                 f"RSI: {rsi_1h:.1f} | 4H alcista: {trend_4h}")
 
         cross_up   = (prev_7 <= prev_21) and (curr_7 > curr_21)
         cross_down = (prev_7 >= prev_21) and (curr_7 < curr_21)
 
-        is_long  = cross_up   and (macd_hist_1h > 0) and (45 < rsi_1h < 75) and trend_4h and momentum_15m
-        is_short = cross_down and (macd_hist_1h < 0) and (25 < rsi_1h < 55) and (not trend_4h) and (not momentum_15m)
+        # RELAJADA: solo cruce nuevo + RSI amplio + tendencia 4H
+        # (se quitaron MACD 1H y momentum 15m para permitir mas entradas)
+        is_long  = cross_up   and (40 < rsi_1h < 80) and trend_4h
+        is_short = cross_down and (20 < rsi_1h < 60) and (not trend_4h)
 
         if is_long:
             return 'LONG', price
@@ -267,7 +233,7 @@ def run_cycle():
     if existing >= AMOUNT:
         entries_done = round(existing / AMOUNT)
         if entries_done >= MAX_ENTRIES:
-            log.info(f"Posicion {existing} contratos ({entries_done} entradas). Maximo. Esperando SL/TP.")
+            log.info(f"Posicion {existing} contratos ({entries_done} entradas). Maximo (2). Esperando SL/TP.")
             return
 
     signal, price = evaluate_multi_timeframe(symbol)
@@ -292,7 +258,7 @@ def run_once():
     log.info("Modo ciclo unico (GitHub Actions).")
     verify_setup()
     if TEST_MODE:
-        run_test()
+        catalog_xlm()
         return
     run_cycle()
 
@@ -301,9 +267,6 @@ def main_loop():
     verify_setup()
     while True:
         try:
-            if TEST_MODE:
-                run_test()
-                break
             run_cycle()
         except KeyboardInterrupt:
             log.info("Detenido por el usuario.")
