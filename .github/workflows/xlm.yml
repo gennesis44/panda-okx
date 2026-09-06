@@ -43,4 +43,4 @@ jobs:
         run: pip install -U "ccxt>=4.4.0" pandas
 
       - name: Ejecutar bot XLM
-        run: python xlm-bot-okx
+        run: python main.py
