@@ -1,4 +1,4 @@
-# main-doge.py — DOGE/USD OKX · XPERP (vencimiento lejano) · detonante: cruce EMA7 x EMA21 en vela de 15m
+# main-doge.py — DOGE/USD OKX · XPERP · cruce EMA7 x EMA21 en vela de 15m · sin huecos ni duplicados
 import os
 import time
 import logging
@@ -21,7 +21,8 @@ SIGNAL_ON_CLOSE = True        # senal-evento en vela CERRADA
 SINGLE_CYCLE    = os.getenv('SINGLE_CYCLE') == '1'
 
 TIMEFRAME     = '15m'         # vela de 15 minutos
-CYCLE_SECONDS = 20 * 60       # entra cada 20 minutos
+CYCLE_SECONDS = 20 * 60       # ciclo cada 20 minutos
+SCAN_CANDLES  = 2             # velas cerradas evaluadas por ciclo (cubre el hueco 20/15)
 
 HOST = 'https://my.okx.com'
 
@@ -34,7 +35,7 @@ exchange = ccxt.okx({
     'urls':      {'api': {'rest': HOST}},
 })
 
-# ==================== INSTRUMENTO (XPERP / futuro con vencimiento mas lejano) ====================
+# ==================== INSTRUMENTO (XPERP / vencimiento mas lejano) ====================
 def resolve_symbol():
     """Si hay posicion abierta, sigue ese contrato; si no, futuro/XPERP con vencimiento mas lejano."""
     exchange.load_markets()
@@ -112,7 +113,11 @@ def _post_trade_order(req):
     method = getattr(exchange, 'privatePostTradeOrder', None) or exchange.private_post_trade_order
     return method(req)
 
-def execute_order(side: str, symbol: str, ref_price: float, amount: float):
+def _cl_order_id(candle_ts: int) -> str:
+    """Id unico por vela: permite dedupe sin memoria entre corridas."""
+    return f"DGE{int(candle_ts)}"
+
+def execute_order(side: str, symbol: str, ref_price: float, amount: float, candle_ts: int):
     market = exchange.market(symbol)
     ctval = float(market.get('contractSize') or 1)
     log.info(f"Nocional: {amount} contratos x {ctval} DOGE = {amount*ctval} DOGE "
@@ -133,6 +138,7 @@ def execute_order(side: str, symbol: str, ref_price: float, amount: float):
         'side': oside,
         'ordType': 'optimal_limit_ioc',
         'sz': sz,
+        'clOrdId': _cl_order_id(candle_ts),   # <-- firma de la vela que disparo la entrada
         'attachAlgoOrds': [{
             'tpTriggerPx': tp, 'tpOrdPx': '-1',
             'slTriggerPx': sl, 'slOrdPx': '-1',
@@ -146,40 +152,59 @@ def execute_order(side: str, symbol: str, ref_price: float, amount: float):
     log.info(f"DOGE {side} ejecutada con SL/TP adjuntos. ordId: {d0.get('ordId')} | SL: {sl} | TP: {tp}")
     return True
 
-# ==================== DETONANTE: cruce EMA7 x EMA21 en UNA vela de 15m ====================
-_last_signal_ts = None   # evita re-procesar la MISMA vela en ciclos de 20 min
-
-def evaluate_signal(symbol):
-    global _last_signal_ts
+# ==================== DETONANTE: cruce EMA7 x EMA21 en vela(s) de 15m ====================
+def evaluate_signals(symbol):
+    """Escanea las ultimas SCAN_CANDLES velas cerradas (de mas nueva a mas vieja).
+    Devuelve (senal, precio, ts_vela) o (None, None, None)."""
     try:
         df = calculate_indicators(fetch_data(symbol, TIMEFRAME, limit=100))
-
-        i_prev, i_curr = (-3, -2) if SIGNAL_ON_CLOSE else (-2, -1)
-
-        prev_7, prev_21 = df['EMA_7'].iloc[i_prev], df['EMA_21'].iloc[i_prev]
-        curr_7, curr_21 = df['EMA_7'].iloc[i_curr], df['EMA_21'].iloc[i_curr]
         price = exchange.fetch_ticker(symbol).get('last') or df['close'].iloc[-1]
 
-        log.info(f"Precio: {price} | {TIMEFRAME} EMA7: {curr_7:.5f} / EMA21: {curr_21:.5f}")
+        log.info(f"Precio: {price} | {TIMEFRAME} EMA7: {df['EMA_7'].iloc[-2]:.5f} / "
+                 f"EMA21: {df['EMA_21'].iloc[-2]:.5f}")
 
-        # El cruce ocurre DENTRO de una sola vela de 15m
-        cross_up   = (prev_7 <= prev_21) and (curr_7 > curr_21)
-        cross_down = (prev_7 >= prev_21) and (curr_7 < curr_21)
+        if SIGNAL_ON_CLOSE:
+            offsets = [(-2, -3), (-3, -4)][:SCAN_CANDLES]   # (actual, previa) por vela cerrada
+        else:
+            offsets = [(-1, -2)]
 
-        candle_ts = df['timestamp'].iloc[i_curr]
-        if candle_ts == _last_signal_ts:
-            log.info("Cruce ya procesado en esta vela. Esperando el proximo.")
-            return None, None
+        for i_curr, i_prev in offsets:
+            prev_7, prev_21 = df['EMA_7'].iloc[i_prev], df['EMA_21'].iloc[i_prev]
+            curr_7, curr_21 = df['EMA_7'].iloc[i_curr], df['EMA_21'].iloc[i_curr]
 
-        if cross_up:
-            _last_signal_ts = candle_ts
-            return 'LONG', price
-        if cross_down:
-            _last_signal_ts = candle_ts
-            return 'SHORT', price
+            # El cruce ocurre DENTRO de una sola vela de 15m
+            cross_up   = (prev_7 <= prev_21) and (curr_7 > curr_21)
+            cross_down = (prev_7 >= prev_21) and (curr_7 < curr_21)
+
+            candle_ts = int(df['timestamp'].iloc[i_curr])
+            if cross_up:
+                return 'LONG', price, candle_ts
+            if cross_down:
+                return 'SHORT', price, candle_ts
     except Exception as e:
         log.error(f"Error evaluando senal {TIMEFRAME}: {e}")
-    return None, None
+    return None, None, None
+
+def candle_already_traded(symbol, candle_ts: int) -> bool:
+    """True si ya enviamos una entrada para ESTA vela (consulta por clOrdId, sin estado local)."""
+    cl = _cl_order_id(candle_ts)
+    try:
+        inst = exchange.market(symbol)['id']
+        resp = exchange.private_get_trade_order({'instId': inst, 'clOrdId': cl})
+        data = resp.get('data') or []
+        if data and str(data[0].get('sCode', '0')) == '0':
+            log.info(f"Vela ya operada (clOrdId {cl}). Entrada duplicada bloqueada.")
+            return True
+        return False
+    except ccxt.ExchangeError as e:
+        msg = str(e)
+        if '51603' in msg or 'does not exist' in msg.lower():
+            return False   # la orden nunca existio: vela sin operar
+        log.warning(f"No se pudo verificar duplicado ({msg}); se permite la entrada.")
+        return False
+    except Exception as e:
+        log.warning(f"No se pudo verificar duplicado ({e}); se permite la entrada.")
+        return False
 
 # ==================== ARRANQUE ====================
 def verify_setup():
@@ -203,9 +228,12 @@ def run_cycle():
             log.info(f"Posicion {existing} contratos ({entries_done} entradas). Maximo ({MAX_ENTRIES}). Esperando SL/TP.")
             return
 
-    signal, price = evaluate_signal(symbol)
+    signal, price, candle_ts = evaluate_signals(symbol)
     if not signal:
-        log.info("Sin cruce EMA7/EMA21 en 15m. Sin operacion.")
+        log.info("Sin cruce EMA7/EMA21 en las ultimas velas de 15m. Sin operacion.")
+        return
+
+    if candle_already_traded(symbol, candle_ts):
         return
 
     pos = get_open_position(symbol)
@@ -214,15 +242,15 @@ def run_cycle():
         close_position(symbol)
         time.sleep(2)
 
-    log.info(f"Senal confirmada: {signal}. Abriendo posicion...")
+    log.info(f"Senal confirmada: {signal} (vela {candle_ts}). Abriendo posicion...")
     try:
-        execute_order(signal, symbol, price, AMOUNT)
+        execute_order(signal, symbol, price, AMOUNT, candle_ts)
     except Exception as e:
         log.error(f"Entrada rechazada: {e}")
         close_position(symbol)
 
 def run_once():
-    log.info("Modo ciclo unico (GitHub Actions) | DOGE bot XPERP-15m.")
+    log.info("Modo ciclo unico (GitHub Actions) | DOGE bot XPERP-15m gapless.")
     verify_setup()
     run_cycle()
 
