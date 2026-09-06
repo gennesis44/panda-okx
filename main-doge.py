@@ -1,3 +1,4 @@
+# main-doge.py — DOGE/USD OKX · XPERP (vencimiento lejano) · detonante: cruce EMA7 x EMA21 en vela de 15m
 import os
 import time
 import logging
@@ -33,9 +34,9 @@ exchange = ccxt.okx({
     'urls':      {'api': {'rest': HOST}},
 })
 
-# ==================== INSTRUMENTO (PERPETUO) ====================
+# ==================== INSTRUMENTO (XPERP / futuro con vencimiento mas lejano) ====================
 def resolve_symbol():
-    """Perpetuo DOGE/USD activo. Si hay posicion abierta, sigue ese instrumento."""
+    """Si hay posicion abierta, sigue ese contrato; si no, futuro/XPERP con vencimiento mas lejano."""
     exchange.load_markets()
     try:
         for p in exchange.fetch_positions():
@@ -44,13 +45,21 @@ def resolve_symbol():
                 return p['symbol']
     except Exception:
         pass
-    # Perpetuo coin-margined DOGE/USD (ej. DOGE/USD:DOGE-USD-SWAP)
+    candidatos = []
     for m in exchange.markets.values():
-        if (m.get('base') == BASE_ASSET and m.get('swap') and m.get('active')
-                and m.get('settle') == BASE_ASSET):
-            log.info(f"Instrumento: {m['symbol']} (perpetuo {BASE_ASSET}-margined)")
-            return m['symbol']
-    raise RuntimeError("No se encontro el perpetuo DOGE/USD activo.")
+        if m.get('base') == BASE_ASSET and m.get('future') and m.get('active'):
+            info = m.get('info') or {}
+            try:
+                exp = int(info.get('expTime') or 0)
+            except (TypeError, ValueError):
+                exp = 0
+            candidatos.append((exp, m['symbol']))
+    if not candidatos:
+        raise RuntimeError("No se encontro futuro/XPERP DOGE/USD activo para esta cuenta.")
+    candidatos.sort(reverse=True)
+    sym = candidatos[0][1]
+    log.info(f"Instrumento: {sym} (vencimiento mas lejano)")
+    return sym
 
 # ==================== INDICADORES (solo EMAs) ====================
 def ema(s: pd.Series, length: int) -> pd.Series:
@@ -213,12 +222,12 @@ def run_cycle():
         close_position(symbol)
 
 def run_once():
-    log.info("Modo ciclo unico (GitHub Actions) | DOGE bot perpetuo-15m.")
+    log.info("Modo ciclo unico (GitHub Actions) | DOGE bot XPERP-15m.")
     verify_setup()
     run_cycle()
 
 def main_loop():
-    log.info(f"Iniciando bot {BASE_ASSET}-USD PERPETUO | TF {TIMEFRAME} | "
+    log.info(f"Iniciando bot {BASE_ASSET}-USD | TF {TIMEFRAME} | "
              f"SL {SL_PCT:.1%} / TP {TP_PCT:.1%} | ciclo cada {CYCLE_SECONDS//60} min")
     verify_setup()
     while True:
