@@ -238,7 +238,6 @@ def evaluate_multi_timeframe(symbol):
         log.info(f"Precio: {price} | 1H EMA7/21: {curr_7:.5f}/{curr_21:.5f} | "
                  f"RSI: {rsi_1h:.1f} | MACDh: {macd_hist_1h:.5f} | 4H alcista: {trend_4h}")
 
-        # Restricciones severas eliminadas: operabilidad basada en estado de tendencia limpio + RSI amplio
         is_long  = (curr_7 > curr_21) and (30 < rsi_1h < 80) and trend_4h
         is_short = (curr_7 < curr_21) and (20 < rsi_1h < 70) and (not trend_4h)
 
@@ -261,8 +260,9 @@ def verify_setup():
 def run_cycle():
     symbol = resolve_symbol()
 
+    # Apalancamiento ajustado a 1x
     try:
-        exchange.set_leverage(3, symbol, params={'mgnMode': TD_MODE})
+        exchange.set_leverage(1, symbol, params={'mgnMode': TD_MODE})
     except Exception as e:
         log.warning(f"No se pudo fijar apalancamiento (se usa el de OKX): {e}")
 
