@@ -220,15 +220,14 @@ def run_test():
         else:
             log.error(f"Clasificacion indeterminada: {err[:120]}")
 
-# ==================== SEÑAL MULTI-TIMEFRAME (Aligerada: 1H + 4H) ====================
+# ==================== SEÑAL MULTI-TIMEFRAME (Tendencia Flexible Long/Short) ====================
 def evaluate_multi_timeframe(symbol):
     try:
         df_1h  = calculate_indicators(fetch_data(symbol, '1h', limit=100))
         df_4h  = calculate_indicators(fetch_data(symbol, '4h', limit=100))
 
-        i_prev, i_curr = (-3, -2) if SIGNAL_ON_CLOSE else (-2, -1)
+        i_curr = -1 if not SIGNAL_ON_CLOSE else -2
 
-        prev_7, prev_21 = df_1h['EMA_7'].iloc[i_prev], df_1h['EMA_21'].iloc[i_prev]
         curr_7, curr_21 = df_1h['EMA_7'].iloc[i_curr], df_1h['EMA_21'].iloc[i_curr]
         rsi_1h          = df_1h['RSI_21'].iloc[i_curr]
         macd_hist_1h    = df_1h['MACD_hist'].iloc[i_curr]
@@ -237,14 +236,11 @@ def evaluate_multi_timeframe(symbol):
         trend_4h = df_4h['EMA_7'].iloc[-2] > df_4h['EMA_21'].iloc[-2]
 
         log.info(f"Precio: {price} | 1H EMA7/21: {curr_7:.5f}/{curr_21:.5f} | "
-                 f"RSI: {rsi_1h:.1f} | MACDh: {macd_hist_1h:.4f} | 4H alcista: {trend_4h}")
+                 f"RSI: {rsi_1h:.1f} | MACDh: {macd_hist_1h:.5f} | 4H alcista: {trend_4h}")
 
-        cross_up   = (prev_7 <= prev_21) and (curr_7 > curr_21)
-        cross_down = (prev_7 >= prev_21) and (curr_7 < curr_21)
-
-        # Filtros aligerados: se elimina el ruido de 15m y se amplían los rangos de RSI
-        is_long  = cross_up   and (macd_hist_1h > 0) and (30 < rsi_1h < 80) and trend_4h
-        is_short = cross_down and (macd_hist_1h < 0) and (20 < rsi_1h < 70) and (not trend_4h)
+        # Restricciones severas eliminadas: operabilidad basada en estado de tendencia limpio + RSI amplio
+        is_long  = (curr_7 > curr_21) and (30 < rsi_1h < 80) and trend_4h
+        is_short = (curr_7 < curr_21) and (20 < rsi_1h < 70) and (not trend_4h)
 
         if is_long:
             return 'LONG', price
