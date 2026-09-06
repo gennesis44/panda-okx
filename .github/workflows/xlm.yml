@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       test_mode:
-        description: 'Diagnostico XLM: catalogo + sonda 1 contrato (abrir y cerrar)'
+        description: 'Diagnostico XLM (catalogo + sonda 1 contrato)'
         type: boolean
         required: false
         default: false
@@ -31,12 +31,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Diagnostico raiz (VER QUE VE EL RUNNER - borrar cuando funcione)
-        run: |
-          echo "=== RAIZ DEL REPO ==="
-          ls -la
-          echo "=== Buscando xlm_bot.py en todo el repo ==="
-          find . -name "*xlm*" -not -path "./.git/*"
+      - name: Diagnostico raiz (temporal)
+        run: ls -la
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -47,4 +43,4 @@ jobs:
         run: pip install -U "ccxt>=4.4.0" pandas
 
       - name: Ejecutar bot XLM
-        run: python xlm_bot.py
+        run: python xlm-bot-okx
