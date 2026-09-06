@@ -1,0 +1,39 @@
+name: xlm-bot-okx
+
+on:
+  schedule:
+    - cron: '7 * * * *'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'prod = ciclo normal | test = sonda diagnostico'
+        required: false
+        default: 'prod'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: xlm-bot
+  cancel-in-progress: false
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      SINGLE_CYCLE: '1'
+      TEST_MODE: ${{ github.event.inputs.mode == 'test' && '1' || '' }}
+      PYTHONUNBUFFERED: '1'
+      OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
+      OKX_SECRET_KEY: ${{ secrets.OKX_SECRET_KEY }}
+      OKX_PASSWORD: ${{ secrets.OKX_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Dependencias
+        run: pip install -r requirements.txt
+      - name: Ciclo del bot
+        run: python main.py
