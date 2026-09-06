@@ -6,6 +6,7 @@ import pandas as pd
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
+# Configurado para MyOKX (my.okx.com) y par DOGE/USD
 SYMBOL = 'DOGE/USD:USD'
 LEVERAGE = 1
 SL_PCT = 0.01
@@ -30,7 +31,8 @@ def calculate_indicators(df):
     return df
 
 def run_bot():
-    exchange = ccxt.okx({
+    # Usamos ccxt.myokx para apuntar automáticamente a my.okx.com (EEA)
+    exchange = ccxt.myokx({
         'apiKey': os.environ.get('OKX_API_KEY'),
         'secret': os.environ.get('OKX_API_SECRET') or os.environ.get('OKX_SECRET_KEY'),
         'password': os.environ.get('OKX_PASSPHRASE') or os.environ.get('OKX_PASSWORD'),
@@ -39,7 +41,7 @@ def run_bot():
     })
 
     balance = exchange.fetch_balance()
-    logging.info("Autenticacion OK | Cuenta unificada / Margen Multidivisa conectado.")
+    logging.info("Autenticacion OK en my.okx.com | Cuenta unificada / Margen Multidivisa conectado.")
 
     try:
         exchange.set_leverage(LEVERAGE, SYMBOL)
@@ -61,14 +63,14 @@ def run_bot():
     macdh = df_1h['macd_hist'].iloc[-2]
     h4_alcista = df_4h['ema7'].iloc[-2] > df_4h['ema21'].iloc[-2]
 
-    logging.info(f"DOGE - Precio: {current_price} | 1H EMA7/21: {curr_7:.5f}/{curr_21:.5f} | RSI: {rsi_1h:.1f} | MACDh: {macdh:.5f} | 4H alcista: {h4_alcista}")
+    logging.info(f"DOGE/USD - Precio: {current_price} | 1H EMA7/21: {curr_7:.5f}/{curr_21:.5f} | RSI: {rsi_1h:.1f} | MACDh: {macdh:.5f} | 4H alcista: {h4_alcista}")
 
     positions = exchange.fetch_positions([SYMBOL])
     active_pos = [p for p in positions if float(p['contracts']) > 0]
 
     if not active_pos:
         if curr_7 > curr_21 and 30 < rsi_1h < 80 and h4_alcista:
-            logging.info("Senal LONG confirmada para DOGE. Ejecutando...")
+            logging.info("Senal LONG confirmada para DOGE/USD. Ejecutando...")
             amount = MIN_CONTRACTS
             sl_price = current_price * (1 - SL_PCT)
             tp_price = current_price * (1 + TP_PCT)
@@ -80,9 +82,9 @@ def run_bot():
             exchange.create_order(SYMBOL, 'take_profit_market', 'sell', amount, None, {'stopPrice': tp_price, 'reduceOnly': True})
             logging.info(f"SL: {sl_price:.5f} | TP: {tp_price:.5f}")
         else:
-            logging.info("Sin condiciones de entrada LONG validas para DOGE.")
+            logging.info("Sin condiciones de entrada LONG validas para DOGE/USD.")
     else:
-        logging.info("Posicion activa de DOGE detectada.")
+        logging.info("Posicion activa de DOGE/USD detectada.")
 
 if __name__ == '__main__':
     run_bot()
