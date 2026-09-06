@@ -35,7 +35,7 @@ exchange = ccxt.okx({
 def catalog_xlm():
     """Lista todos los instrumentos XLM reales de la plataforma."""
     exchange.load_markets()
-    print(f"[{time.strftime('%H:%M:%S')}] --- CATALOGO XLM ---")
+    print(f"[{time.strftime('%H:%M:%S')}] --- CATALOGO XLM ---", flush=True)
     futs, swaps, spots = [], [], []
     for m in exchange.markets.values():
         if m.get('base') != BASE_ASSET:
@@ -44,7 +44,7 @@ def catalog_xlm():
         itype = info.get('instType') or '?'
         estado = 'activo' if m.get('active') else 'INACTIVO'
         print(f"  {m['symbol']} | {itype} | {estado} | ctVal={info.get('ctVal')} | "
-              f"settle={info.get('settleCcy') or info.get('quoteCcy')}")
+              f"settle={info.get('settleCcy') or info.get('quoteCcy')}", flush=True)
         if m.get('active') and m.get('future'):
             futs.append(m['symbol'])
         elif m.get('active') and m.get('swap'):
@@ -265,6 +265,12 @@ def verify_setup():
 # ==================== CICLO ====================
 def run_cycle():
     symbol = resolve_symbol()
+
+    # NUEVO: fijar apalancamiento 3x en cross (antes usaba el valor de la web de OKX)
+    try:
+        exchange.set_leverage(3, symbol, params={'mgnMode': TD_MODE})
+    except Exception as e:
+        log.warning(f"No se pudo fijar apalancamiento (se usa el de OKX): {e}")
 
     existing = get_position_contracts(symbol)
     if existing >= AMOUNT:
