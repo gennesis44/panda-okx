@@ -1,4 +1,3 @@
-# main-doge.py — DOGE/USD futuros OKX · version relajada (idéntica al XLM validado)
 import os
 import time
 import logging
@@ -13,12 +12,15 @@ log = logging.getLogger(__name__)
 # ==================== CONFIGURACIÓN ====================
 BASE_ASSET  = 'DOGE'
 AMOUNT      = 1.0             # contratos por entrada
-SL_PCT      = 0.010           # 1.0%
-TP_PCT      = 0.015           # 1.5%
+SL_PCT      = 0.010           # 1.0% SL
+TP_PCT      = 0.015           # 1.5% TP
 MAX_ENTRIES = 2               # TOPE TOTAL: 2 contratos
 TD_MODE     = 'cross'
-SIGNAL_ON_CLOSE = True        # velas CERRADAS: senal-evento
+SIGNAL_ON_CLOSE = True        # senal-evento en vela CERRADA
 SINGLE_CYCLE    = os.getenv('SINGLE_CYCLE') == '1'
+
+TIMEFRAME     = '15m'         # vela de 15 minutos
+CYCLE_SECONDS = 20 * 60       # entra cada 20 minutos
 
 HOST = 'https://my.okx.com'
 
@@ -31,29 +33,10 @@ exchange = ccxt.okx({
     'urls':      {'api': {'rest': HOST}},
 })
 
-# ==================== INSTRUMENTO ====================
-def pick_future():
-    """Futuro DOGE/USD activo con vencimiento MAS LEJANO (instrumento probado en esta cuenta)."""
-    exchange.load_markets()
-    candidatos = []
-    for m in exchange.markets.values():
-        if m.get('base') == BASE_ASSET and m.get('future') and m.get('active'):
-            info = m.get('info') or {}
-            try:
-                exp = int(info.get('expTime') or 0)
-            except (TypeError, ValueError):
-                exp = 0
-            candidatos.append((exp, m['symbol']))
-    if not candidatos:
-        for m in exchange.markets.values():
-            if m.get('base') == BASE_ASSET and m.get('swap') and m.get('active'):
-                return m['symbol']
-        return None
-    candidatos.sort(reverse=True)
-    return candidatos[0][1]
-
+# ==================== INSTRUMENTO (PERPETUO) ====================
 def resolve_symbol():
-    """Si hay posicion abierta, sigue ese contrato; si no, el mas lejano."""
+    """Perpetuo DOGE/USD activo. Si hay posicion abierta, sigue ese instrumento."""
+    exchange.load_markets()
     try:
         for p in exchange.fetch_positions():
             if (p.get('contracts') or 0) > 0 and (p.get('symbol') or '').startswith(f'{BASE_ASSET}/'):
@@ -61,25 +44,17 @@ def resolve_symbol():
                 return p['symbol']
     except Exception:
         pass
-    sym = pick_future()
-    log.info(f"Instrumento: {sym} (futuro con vencimiento mas lejano)")
-    return sym
+    # Perpetuo coin-margined DOGE/USD (ej. DOGE/USD:DOGE-USD-SWAP)
+    for m in exchange.markets.values():
+        if (m.get('base') == BASE_ASSET and m.get('swap') and m.get('active')
+                and m.get('settle') == BASE_ASSET):
+            log.info(f"Instrumento: {m['symbol']} (perpetuo {BASE_ASSET}-margined)")
+            return m['symbol']
+    raise RuntimeError("No se encontro el perpetuo DOGE/USD activo.")
 
-# ==================== INDICADORES ====================
+# ==================== INDICADORES (solo EMAs) ====================
 def ema(s: pd.Series, length: int) -> pd.Series:
     return s.ewm(span=length, adjust=False).mean()
-
-def rsi(s: pd.Series, length: int = 21) -> pd.Series:
-    delta = s.diff()
-    gain = delta.clip(lower=0).ewm(alpha=1/length, adjust=False).mean()
-    loss = (-delta.clip(upper=0)).ewm(alpha=1/length, adjust=False).mean()
-    rs = gain / loss.replace(0, float('nan'))
-    return 100 - (100 / (1 + rs))
-
-def macd(s: pd.Series, fast=12, slow=26, signal=9):
-    line = ema(s, fast) - ema(s, slow)
-    sig = line.ewm(span=signal, adjust=False).mean()
-    return line, sig, line - sig
 
 def fetch_data(symbol, timeframe, limit=100):
     ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
@@ -88,8 +63,6 @@ def fetch_data(symbol, timeframe, limit=100):
 def calculate_indicators(df):
     df['EMA_7']  = ema(df['close'], 7)
     df['EMA_21'] = ema(df['close'], 21)
-    df['RSI_21'] = rsi(df['close'], 21)
-    df['MACD'], df['MACD_signal'], df['MACD_hist'] = macd(df['close'])
     return df
 
 # ==================== POSICIÓN ====================
@@ -164,37 +137,39 @@ def execute_order(side: str, symbol: str, ref_price: float, amount: float):
     log.info(f"DOGE {side} ejecutada con SL/TP adjuntos. ordId: {d0.get('ordId')} | SL: {sl} | TP: {tp}")
     return True
 
-# ==================== SEÑAL RELAJADA (3 filtros, velas cerradas) ====================
-def evaluate_multi_timeframe(symbol):
+# ==================== DETONANTE: cruce EMA7 x EMA21 en UNA vela de 15m ====================
+_last_signal_ts = None   # evita re-procesar la MISMA vela en ciclos de 20 min
+
+def evaluate_signal(symbol):
+    global _last_signal_ts
     try:
-        df_1h = calculate_indicators(fetch_data(symbol, '1h', limit=100))
-        df_4h = calculate_indicators(fetch_data(symbol, '4h', limit=100))
+        df = calculate_indicators(fetch_data(symbol, TIMEFRAME, limit=100))
 
         i_prev, i_curr = (-3, -2) if SIGNAL_ON_CLOSE else (-2, -1)
 
-        prev_7, prev_21 = df_1h['EMA_7'].iloc[i_prev], df_1h['EMA_21'].iloc[i_prev]
-        curr_7, curr_21 = df_1h['EMA_7'].iloc[i_curr], df_1h['EMA_21'].iloc[i_curr]
-        rsi_1h          = df_1h['RSI_21'].iloc[i_curr]
-        price = exchange.fetch_ticker(symbol).get('last') or df_1h['close'].iloc[-1]
+        prev_7, prev_21 = df['EMA_7'].iloc[i_prev], df['EMA_21'].iloc[i_prev]
+        curr_7, curr_21 = df['EMA_7'].iloc[i_curr], df['EMA_21'].iloc[i_curr]
+        price = exchange.fetch_ticker(symbol).get('last') or df['close'].iloc[-1]
 
-        trend_4h = df_4h['EMA_7'].iloc[-2] > df_4h['EMA_21'].iloc[-2]
+        log.info(f"Precio: {price} | {TIMEFRAME} EMA7: {curr_7:.5f} / EMA21: {curr_21:.5f}")
 
-        log.info(f"Precio: {price} | 1H EMA7/21: {curr_7:.5f}/{curr_21:.5f} | "
-                 f"RSI: {rsi_1h:.1f} | 4H alcista: {trend_4h}")
-
+        # El cruce ocurre DENTRO de una sola vela de 15m
         cross_up   = (prev_7 <= prev_21) and (curr_7 > curr_21)
         cross_down = (prev_7 >= prev_21) and (curr_7 < curr_21)
 
-        # RELAJADA: cruce nuevo + RSI amplio + tendencia 4H
-        is_long  = cross_up   and (40 < rsi_1h < 80) and trend_4h
-        is_short = cross_down and (20 < rsi_1h < 60) and (not trend_4h)
+        candle_ts = df['timestamp'].iloc[i_curr]
+        if candle_ts == _last_signal_ts:
+            log.info("Cruce ya procesado en esta vela. Esperando el proximo.")
+            return None, None
 
-        if is_long:
+        if cross_up:
+            _last_signal_ts = candle_ts
             return 'LONG', price
-        if is_short:
+        if cross_down:
+            _last_signal_ts = candle_ts
             return 'SHORT', price
     except Exception as e:
-        log.error(f"Error en evaluacion multi-temporalidad: {e}")
+        log.error(f"Error evaluando senal {TIMEFRAME}: {e}")
     return None, None
 
 # ==================== ARRANQUE ====================
@@ -216,12 +191,12 @@ def run_cycle():
     if existing >= AMOUNT:
         entries_done = round(existing / AMOUNT)
         if entries_done >= MAX_ENTRIES:
-            log.info(f"Posicion {existing} contratos ({entries_done} entradas). Maximo (2). Esperando SL/TP.")
+            log.info(f"Posicion {existing} contratos ({entries_done} entradas). Maximo ({MAX_ENTRIES}). Esperando SL/TP.")
             return
 
-    signal, price = evaluate_multi_timeframe(symbol)
+    signal, price = evaluate_signal(symbol)
     if not signal:
-        log.info("Sin senales claras en este ciclo.")
+        log.info("Sin cruce EMA7/EMA21 en 15m. Sin operacion.")
         return
 
     pos = get_open_position(symbol)
@@ -238,12 +213,13 @@ def run_cycle():
         close_position(symbol)
 
 def run_once():
-    log.info("Modo ciclo unico (GitHub Actions) | DOGE bot v3-relajado.")
+    log.info("Modo ciclo unico (GitHub Actions) | DOGE bot perpetuo-15m.")
     verify_setup()
     run_cycle()
 
 def main_loop():
-    log.info(f"Iniciando bot {BASE_ASSET}-USD futuros | SL {SL_PCT:.1%} / TP {TP_PCT:.1%}")
+    log.info(f"Iniciando bot {BASE_ASSET}-USD PERPETUO | TF {TIMEFRAME} | "
+             f"SL {SL_PCT:.1%} / TP {TP_PCT:.1%} | ciclo cada {CYCLE_SECONDS//60} min")
     verify_setup()
     while True:
         try:
@@ -254,7 +230,7 @@ def main_loop():
         except Exception as e:
             log.error(f"Error en el ciclo principal: {e}")
             time.sleep(60)
-        time.sleep(480)
+        time.sleep(CYCLE_SECONDS)
 
 if __name__ == "__main__":
     if SINGLE_CYCLE:
