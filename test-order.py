@@ -1,4 +1,3 @@
-# test-order.py — prueba unica de permisos en el perpetuo
 import os, logging, ccxt
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -9,24 +8,39 @@ ex = ccxt.okx({
     'secret':    os.getenv('OKX_SECRET_KEY') or os.getenv('OKX_API_SECRET'),
     'password':  os.getenv('OKX_PASSWORD') or os.getenv('OKX_PASSPHRASE'),
     'enableRateLimit': True,
-    'options': {'defaultType': 'swap'},
-    'urls': {'api': {'rest': 'https://my.okx.com'}},
+    'options':   {'defaultType': 'swap'},
+    'urls':      {'api': {'rest': 'https://my.okx.com'}},
 })
-
-symbol = 'DOGE/USD:DOGE'
 ex.load_markets()
-inst_id = ex.market(symbol)['id']
 
-d = ex.privatePostTradeOrder({'instId': inst_id, 'tdMode': 'cross', 'side': 'buy',
-                              'ordType': 'optimal_limit_ioc', 'sz': '1'})['data'][0]
-log.info(f"Apertura -> sCode={d['sCode']} | {d.get('sMsg')}")
+candidatos = [m for m in ex.markets.values()
+              if m.get('base') == 'DOGE' and m.get('active')
+              and (m.get('swap') or m.get('future'))]
 
-if d['sCode'] == '0':
+log.info(f"Probando: {[m['id'] for m in candidatos]}")
+
+for m in candidatos:
+    sym, inst = m['symbol'], m['id']
     try:
-        ex.create_order(symbol, 'market', 'sell', 1,
-                        params={'tdMode': 'cross', 'reduceOnly': True})
-        log.info("Cierre OK. Permisos de trading confirmados — bot 100% operativo.")
-    except Exception as e:
-        log.error(f"Cierra manualmente en OKX: {e}")
-else:
-    log.error(f"Sigue bloqueado: {d['sMsg']}")
+        d = ex.privatePostTradeOrder({'instId': inst, 'tdMode': 'cross', 'side': 'buy',
+                                      'ordType': 'optimal_limit_ioc', 'sz': '1'})['data'][0]
+        code, msg = str(d.get('sCode')), d.get('sMsg')
+        if code == '0':
+            log.info(f"PERMITIDO  -> {sym} ({inst})")
+            try:
+                pos = [p for p in ex.fetch_positions([sym]) if float(p.get('contracts') or 0) > 0]
+                if pos:
+                    ex.create_order(sym, 'market', 'sell',
+                                    ex.amount_to_precision(sym, pos[0]['contracts']),
+                                    params={'tdMode': 'cross', 'reduceOnly': True})
+                    log.info("           posicion de prueba cerrada")
+                else:
+                    log.info("           la IOC no se lleno; nada que cerrar")
+            except Exception as e:
+                log.error(f"           revisa posicion manualmente en OKX ({sym}): {e}")
+        else:
+            log.info(f"BLOQUEADO  -> {sym} ({inst}) | {code}: {msg}")
+    except ccxt.ExchangeError as e:
+        log.info(f"BLOQUEADO  -> {sym} ({inst}) | {e}")
+
+log.info("Fin de prueba.")
