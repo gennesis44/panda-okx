@@ -22,3 +22,4 @@ jobs:
           OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
           OKX_SECRET_KEY: ${{ secrets.OKX_SECRET_KEY }}
           OKX_PASSWORD: ${{ secrets.OKX_PASSWORD }}
+
