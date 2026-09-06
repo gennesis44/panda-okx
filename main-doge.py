@@ -32,8 +32,8 @@ def calculate_indicators(df):
 def run_bot():
     exchange = ccxt.okx({
         'apiKey': os.environ.get('OKX_API_KEY'),
-        'secret': os.environ.get('OKX_API_SECRET'),
-        'password': os.environ.get('OKX_PASSPHRASE'),
+        'secret': os.environ.get('OKX_API_SECRET') or os.environ.get('OKX_SECRET_KEY'),
+        'password': os.environ.get('OKX_PASSPHRASE') or os.environ.get('OKX_PASSWORD'),
         'enableRateLimit': True,
         'options': {'defaultType': 'future'}
     })
