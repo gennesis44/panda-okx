@@ -2,45 +2,45 @@ name: xlm-bot-okx
 
 on:
   schedule:
-    - cron: '*/15 * * * *'
+    # cada 10 min, desfasado del hora en punto (GitHub se congestion a :00)
+    - cron: '7,17,27,37,47,57 * * * *'
   workflow_dispatch:
     inputs:
-      test_mode:
-        description: 'Diagnostico XLM (catalogo + sonda 1 contrato)'
-        type: boolean
+      mode:
+        description: 'prod = ciclo normal | test = sonda diagnostico'
         required: false
-        default: false
+        default: 'prod'
+
+permissions:
+  contents: read
 
 concurrency:
-  group: xlm-bot-okx
-  cancel-in-progress: true
+  group: xlm-bot
+  cancel-in-progress: false   # NUNCA cancelar una run a mitad de trade
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
     timeout-minutes: 8
-
     env:
-      OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
-      OKX_SECRET_KEY: ${{ secrets.OKX_API_SECRET }}
-      OKX_PASSWORD: ${{ secrets.OKX_PASSPHRASE }}
       SINGLE_CYCLE: '1'
-      TEST_MODE: ${{ github.event.inputs.test_mode == 'true' && '1' || '0' }}
-
+      TEST_MODE: ${{ github.event.inputs.mode == 'test' && '1' || '' }}
+      PYTHONUNBUFFERED: '1'
+      OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
+      OKX_SECRET_KEY: ${{ secrets.OKX_SECRET_KEY }}
+      OKX_PASSWORD: ${{ secrets.OKX_PASSWORD }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Diagnostico raiz (temporal)
-        run: ls -la
-
-      - name: Setup Python
+      - name: Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+          cache: pip
 
-      - name: Instalar dependencias
-        run: pip install -U "ccxt>=4.4.0" pandas
+      - name: Dependencias
+        run: pip install -r requirements.txt
 
-      - name: Ejecutar bot XLM
+      - name: Ciclo del bot
         run: python main.py
