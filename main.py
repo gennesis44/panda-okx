@@ -220,10 +220,9 @@ def run_test():
         else:
             log.error(f"Clasificacion indeterminada: {err[:120]}")
 
-# ==================== SEÑAL MULTI-TIMEFRAME (evento, velas cerradas) ====================
+# ==================== SEÑAL MULTI-TIMEFRAME (Aligerada: 1H + 4H) ====================
 def evaluate_multi_timeframe(symbol):
     try:
-        df_15m = calculate_indicators(fetch_data(symbol, '15m', limit=100))
         df_1h  = calculate_indicators(fetch_data(symbol, '1h', limit=100))
         df_4h  = calculate_indicators(fetch_data(symbol, '4h', limit=100))
 
@@ -235,8 +234,7 @@ def evaluate_multi_timeframe(symbol):
         macd_hist_1h    = df_1h['MACD_hist'].iloc[i_curr]
         price = exchange.fetch_ticker(symbol).get('last') or df_1h['close'].iloc[-1]
 
-        trend_4h     = df_4h['EMA_7'].iloc[-2] > df_4h['EMA_21'].iloc[-2]
-        momentum_15m = df_15m['MACD_hist'].iloc[-2] > 0
+        trend_4h = df_4h['EMA_7'].iloc[-2] > df_4h['EMA_21'].iloc[-2]
 
         log.info(f"Precio: {price} | 1H EMA7/21: {curr_7:.5f}/{curr_21:.5f} | "
                  f"RSI: {rsi_1h:.1f} | MACDh: {macd_hist_1h:.4f} | 4H alcista: {trend_4h}")
@@ -244,8 +242,9 @@ def evaluate_multi_timeframe(symbol):
         cross_up   = (prev_7 <= prev_21) and (curr_7 > curr_21)
         cross_down = (prev_7 >= prev_21) and (curr_7 < curr_21)
 
-        is_long  = cross_up   and (macd_hist_1h > 0) and (45 < rsi_1h < 75) and trend_4h and momentum_15m
-        is_short = cross_down and (macd_hist_1h < 0) and (25 < rsi_1h < 55) and (not trend_4h) and (not momentum_15m)
+        # Filtros aligerados: se elimina el ruido de 15m y se amplían los rangos de RSI
+        is_long  = cross_up   and (macd_hist_1h > 0) and (30 < rsi_1h < 80) and trend_4h
+        is_short = cross_down and (macd_hist_1h < 0) and (20 < rsi_1h < 70) and (not trend_4h)
 
         if is_long:
             return 'LONG', price
@@ -266,7 +265,6 @@ def verify_setup():
 def run_cycle():
     symbol = resolve_symbol()
 
-    # NUEVO: fijar apalancamiento 3x en cross (antes usaba el valor de la web de OKX)
     try:
         exchange.set_leverage(3, symbol, params={'mgnMode': TD_MODE})
     except Exception as e:
