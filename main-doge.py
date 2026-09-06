@@ -6,8 +6,8 @@ import pandas as pd
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# Configurado para MyOKX (my.okx.com) y par DOGE/USD
-SYMBOL = 'DOGE/USD:USD'
+# Símbolo actualizado para contratos coin-margined en MyOKX (DOGE como colateral)
+SYMBOL = 'DOGE/USD:DOGE'
 LEVERAGE = 1
 SL_PCT = 0.01
 TP_PCT = 0.015
@@ -31,7 +31,7 @@ def calculate_indicators(df):
     return df
 
 def run_bot():
-    # Usamos ccxt.myokx para apuntar automáticamente a my.okx.com (EEA)
+    # Conexión oficial a my.okx.com mediante ccxt.myokx con compatibilidad para los 5 nombres de secretos
     exchange = ccxt.myokx({
         'apiKey': os.environ.get('OKX_API_KEY'),
         'secret': os.environ.get('OKX_API_SECRET') or os.environ.get('OKX_SECRET_KEY'),
@@ -63,14 +63,14 @@ def run_bot():
     macdh = df_1h['macd_hist'].iloc[-2]
     h4_alcista = df_4h['ema7'].iloc[-2] > df_4h['ema21'].iloc[-2]
 
-    logging.info(f"DOGE/USD - Precio: {current_price} | 1H EMA7/21: {curr_7:.5f}/{curr_21:.5f} | RSI: {rsi_1h:.1f} | MACDh: {macdh:.5f} | 4H alcista: {h4_alcista}")
+    logging.info(f"DOGE/USD:DOGE - Precio: {current_price} | 1H EMA7/21: {curr_7:.5f}/{curr_21:.5f} | RSI: {rsi_1h:.1f} | MACDh: {macdh:.5f} | 4H alcista: {h4_alcista}")
 
     positions = exchange.fetch_positions([SYMBOL])
     active_pos = [p for p in positions if float(p['contracts']) > 0]
 
     if not active_pos:
         if curr_7 > curr_21 and 30 < rsi_1h < 80 and h4_alcista:
-            logging.info("Senal LONG confirmada para DOGE/USD. Ejecutando...")
+            logging.info("Senal LONG confirmada para DOGE. Ejecutando...")
             amount = MIN_CONTRACTS
             sl_price = current_price * (1 - SL_PCT)
             tp_price = current_price * (1 + TP_PCT)
@@ -82,9 +82,9 @@ def run_bot():
             exchange.create_order(SYMBOL, 'take_profit_market', 'sell', amount, None, {'stopPrice': tp_price, 'reduceOnly': True})
             logging.info(f"SL: {sl_price:.5f} | TP: {tp_price:.5f}")
         else:
-            logging.info("Sin condiciones de entrada LONG validas para DOGE/USD.")
+            logging.info("Sin condiciones de entrada LONG validas para DOGE.")
     else:
-        logging.info("Posicion activa de DOGE/USD detectada.")
+        logging.info("Posicion activa de DOGE detectada.")
 
 if __name__ == '__main__':
     run_bot()
