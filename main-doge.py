@@ -6,12 +6,12 @@ import pandas as pd
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# Símbolo actualizado para contratos coin-margined en MyOKX (DOGE como colateral)
-SYMBOL = 'DOGE/USD:DOGE'
+# Símbolo actualizado a USDT-margined perpetual (estándar habilitado en my.okx.com)
+SYMBOL = 'DOGE/USDT:USDT'
 LEVERAGE = 1
 SL_PCT = 0.01
 TP_PCT = 0.015
-MIN_CONTRACTS = 100.0
+MIN_AMOUNT = 100.0  # Cantidad en DOGE para la orden
 
 def calculate_indicators(df):
     df['ema7'] = df['close'].ewm(span=7, adjust=False).mean()
@@ -31,7 +31,7 @@ def calculate_indicators(df):
     return df
 
 def run_bot():
-    # Conexión oficial a my.okx.com mediante ccxt.myokx con compatibilidad para los 5 nombres de secretos
+    # Conexión oficial a my.okx.com mediante ccxt.myokx
     exchange = ccxt.myokx({
         'apiKey': os.environ.get('OKX_API_KEY'),
         'secret': os.environ.get('OKX_API_SECRET') or os.environ.get('OKX_SECRET_KEY'),
@@ -63,7 +63,7 @@ def run_bot():
     macdh = df_1h['macd_hist'].iloc[-2]
     h4_alcista = df_4h['ema7'].iloc[-2] > df_4h['ema21'].iloc[-2]
 
-    logging.info(f"DOGE/USD:DOGE - Precio: {current_price} | 1H EMA7/21: {curr_7:.5f}/{curr_21:.5f} | RSI: {rsi_1h:.1f} | MACDh: {macdh:.5f} | 4H alcista: {h4_alcista}")
+    logging.info(f"DOGE/USDT:USDT - Precio: {current_price} | 1H EMA7/21: {curr_7:.5f}/{curr_21:.5f} | RSI: {rsi_1h:.1f} | MACDh: {macdh:.5f} | 4H alcista: {h4_alcista}")
 
     positions = exchange.fetch_positions([SYMBOL])
     active_pos = [p for p in positions if float(p['contracts']) > 0]
@@ -71,7 +71,7 @@ def run_bot():
     if not active_pos:
         if curr_7 > curr_21 and 30 < rsi_1h < 80 and h4_alcista:
             logging.info("Senal LONG confirmada para DOGE. Ejecutando...")
-            amount = MIN_CONTRACTS
+            amount = MIN_AMOUNT
             sl_price = current_price * (1 - SL_PCT)
             tp_price = current_price * (1 + TP_PCT)
 
