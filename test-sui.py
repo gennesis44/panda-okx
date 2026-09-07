@@ -1,10 +1,10 @@
-# test-sui.py — diagnostico de permisos y tamanos para SUI
+# test-sui.py — diagnostico completo: key, cuenta e instrumentos
 import os, logging, ccxt
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 log = logging.getLogger(__name__)
 
-BASE = 'SUI'   # cambia a 'HBAR' u otro token para probar con este mismo archivo
+BASE = 'SUI'
 
 ex = ccxt.okx({
     'apiKey':    os.getenv('OKX_API_KEY'),
@@ -17,6 +17,17 @@ ex = ccxt.okx({
 ex.load_markets()
 log.info(f"KEY EN USO termina en: ...{str(ex.apiKey)[-6:]}")
 
+# --- Que instrumentos ve LA CUENTA (independiente de la key) ---
+for t in ('FUTURES', 'SWAP'):
+    try:
+        resp = ex.private_get_account_instruments({'instType': t})
+        insts = sorted(i['instId'] for i in resp.get('data', [])
+                       if i['instId'].startswith('DOGE') or i['instId'].startswith('SUI'))
+        log.info(f"CUENTA ve {t}: {insts}")
+    except Exception as e:
+        log.warning(f"CUENTA {t}: no se pudo consultar ({e})")
+
+# --- Intento de orden por instrumento ---
 candidatos = [m for m in ex.markets.values()
               if m.get('base') == BASE and m.get('active')
               and (m.get('swap') or m.get('future'))]
