@@ -1,9 +1,11 @@
-name: Test SUI OKX
+name: SUI Bot OKX
 on:
+  schedule:
+    - cron: '*/20 * * * *'
   workflow_dispatch:
 
 jobs:
-  test:
+  sui-bot:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -11,8 +13,10 @@ jobs:
         with:
           python-version: '3.11'
       - run: pip install ccxt pandas
-      - run: python test-sui.py
+      - run: python main-sui.py
         env:
+          SINGLE_CYCLE: '1'
+          PYTHONUNBUFFERED: '1'
           OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
           OKX_SECRET_KEY: ${{ secrets.OKX_SECRET_KEY }}
           OKX_API_SECRET: ${{ secrets.OKX_API_SECRET }}
