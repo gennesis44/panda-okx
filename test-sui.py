@@ -4,7 +4,7 @@ import os, logging, ccxt
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 log = logging.getLogger(__name__)
 
-BASE = 'SUI'   # <-- cambia a 'HBAR' para probar el otro con este mismo archivo
+BASE = 'SUI'
 
 ex = ccxt.okx({
     'apiKey':    os.getenv('OKX_API_KEY'),
@@ -15,6 +15,7 @@ ex = ccxt.okx({
     'urls': {'api': {'rest': 'https://my.okx.com'}},
 })
 ex.load_markets()
+log.info(f"KEY EN USO termina en: ...{str(ex.key)[-6:]}")
 
 candidatos = [m for m in ex.markets.values()
               if m.get('base') == BASE and m.get('active')
