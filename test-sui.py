@@ -1,15 +1,15 @@
-# test-sui.py — diagnostico de permisos y tamanos para SUI (cambia BASE para probar otro token)
+# test-sui.py — diagnostico de permisos y tamanos para SUI
 import os, logging, ccxt
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 log = logging.getLogger(__name__)
 
-BASE = 'SUI'   # <-- cambia a 'HBAR' para probar el otro con el mismo script
+BASE = 'SUI'   # <-- cambia a 'HBAR' para probar el otro con este mismo archivo
 
 ex = ccxt.okx({
     'apiKey':    os.getenv('OKX_API_KEY'),
     'secret':    os.getenv('OKX_SECRET_KEY') or os.getenv('OKX_API_SECRET'),
-    'password':  os.getenv('OKX_PASSWORD') or getenv_FALLBACK := os.getenv('OKX_PASSPHRASE'),
+    'password':  os.getenv('OKX_PASSWORD') or os.getenv('OKX_PASSPHRASE'),
     'enableRateLimit': True,
     'options': {'defaultType': 'swap'},
     'urls': {'api': {'rest': 'https://my.okx.com'}},
@@ -33,7 +33,7 @@ for m in candidatos:
     etiqueta = f" | 1 contrato = {ctval} {BASE} (~${valor_1ct:.2f})"
 
     if valor_1ct > 10:
-        log.info(f"SKIP       -> {sym}: contrato demasiado grande para prueba con 30 EUR{etiqueta}")
+        log.info(f"SKIP       -> {sym}: contrato demasiado grande para 30 EUR{etiqueta}")
         continue
 
     try:
