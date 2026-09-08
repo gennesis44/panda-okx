@@ -12,10 +12,10 @@ log = logging.getLogger(__name__)
 
 # ==================== CONFIGURACIÓN ====================
 BASE_ASSET  = 'SUI'
-AMOUNT      = 1.0             # 1 contrato = 1 SUI (~$0.81)
+AMOUNT      = 2.0             # 1 contrato = 1 SUI (~$0.81)
 SL_PCT      = 0.015           # 1.5% SL (ajustado a volatilidad SUI)
 TP_PCT      = 0.025           # 2.5% TP (ratio 1:1.67)
-MAX_ENTRIES = 2               # TOPE TOTAL: 2 contratos
+MAX_ENTRIES = 1               # TOPE TOTAL: 2 contratos
 TD_MODE     = 'cross'
 SIGNAL_ON_CLOSE = True        # senal-evento en vela CERRADA
 SINGLE_CYCLE    = os.getenv('SINGLE_CYCLE') == '1'
