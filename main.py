@@ -1,3 +1,4 @@
+# main-xlm.py — XLM/USD OKX XPERP · cruce EMA7 x EMA21 en vela de 30m · gapless
 import os
 import time
 import logging
@@ -11,14 +12,18 @@ log = logging.getLogger(__name__)
 
 # ==================== CONFIGURACIÓN ====================
 BASE_ASSET  = 'XLM'
-AMOUNT      = 1               # contratos por entrada (2 = entrada doble de golpe, si prefieres)
-SL_PCT      = 0.010           # 1.0%
-TP_PCT      = 0.015           # 1.5%
+AMOUNT      = 1.0             # 1 contrato = 100 XLM (~$18.6) — VERIFICAR nocional en 1a corrida
+SL_PCT      = 0.010           # 1.0% SL
+TP_PCT      = 0.015           # 1.5% TP
 MAX_ENTRIES = 2               # TOPE TOTAL: 2 contratos (~200 XLM)
 TD_MODE     = 'cross'
-SIGNAL_ON_CLOSE = True        # velas CERRADAS: senal-evento
+SIGNAL_ON_CLOSE = True        # senal-evento en vela CERRADA
 TEST_MODE       = os.getenv('TEST_MODE') == '1'
 SINGLE_CYCLE    = os.getenv('SINGLE_CYCLE') == '1'
+
+TIMEFRAME     = '30m'         # vela unica de 30 minutos
+CYCLE_SECONDS = 20 * 60       # ciclo cada 20 minutos
+SCAN_CANDLES  = 2             # cubre el hueco 20/30 sin duplicar
 
 HOST = 'https://my.okx.com'
 
@@ -31,11 +36,10 @@ exchange = ccxt.okx({
     'urls':      {'api': {'rest': HOST}},
 })
 
-# ==================== INSTRUMENTO ====================
+# ==================== INSTRUMENTO (XPERP / vencimiento mas lejano) ====================
 def catalog_xlm():
     exchange.load_markets()
     print(f"[{time.strftime('%H:%M:%S')}] --- CATALOGO XLM ---", flush=True)
-    futs, swaps, spots = [], [], []
     for m in exchange.markets.values():
         if m.get('base') != BASE_ASSET:
             continue
@@ -44,16 +48,17 @@ def catalog_xlm():
         estado = 'activo' if m.get('active') else 'INACTIVO'
         print(f"  {m['symbol']} | {itype} | {estado} | ctVal={info.get('ctVal')} | "
               f"settle={info.get('settleCcy') or info.get('quoteCcy')}", flush=True)
-        if m.get('active') and m.get('future'):
-            futs.append(m['symbol'])
-        elif m.get('active') and m.get('swap'):
-            swaps.append(m['symbol'])
-        elif m.get('active') and m.get('spot'):
-            spots.append(m['symbol'])
-    return futs, swaps, spots
 
-def pick_future():
+def resolve_symbol():
+    """Si hay posicion abierta, sigue ese contrato; si no, XPERP con vencimiento mas lejano."""
     exchange.load_markets()
+    try:
+        for p in exchange.fetch_positions():
+            if (p.get('contracts') or 0) > 0 and (p.get('symbol') or '').startswith(f'{BASE_ASSET}/'):
+                log.info(f"Instrumento (posicion abierta): {p['symbol']}")
+                return p['symbol']
+    except Exception:
+        pass
     candidatos = []
     for m in exchange.markets.values():
         if m.get('base') == BASE_ASSET and m.get('future') and m.get('active'):
@@ -64,37 +69,15 @@ def pick_future():
                 exp = 0
             candidatos.append((exp, m['symbol']))
     if not candidatos:
-        return None
+        raise RuntimeError("No se encontro XPERP XLM/USD activo para esta cuenta.")
     candidatos.sort(reverse=True)
-    return candidatos[0][1]
-
-def resolve_symbol():
-    try:
-        for p in exchange.fetch_positions():
-            if (p.get('contracts') or 0) > 0 and (p.get('symbol') or '').startswith(f'{BASE_ASSET}/'):
-                log.info(f"Instrumento (posicion abierta): {p['symbol']}")
-                return p['symbol']
-    except Exception:
-        pass
-    sym = pick_future()
-    log.info(f"Instrumento: {sym} (futuro con vencimiento mas lejano)")
+    sym = candidatos[0][1]
+    log.info(f"Instrumento: {sym} (vencimiento mas lejano)")
     return sym
 
-# ==================== INDICADORES ====================
+# ==================== INDICADORES (solo EMAs) ====================
 def ema(s: pd.Series, length: int) -> pd.Series:
     return s.ewm(span=length, adjust=False).mean()
-
-def rsi(s: pd.Series, length: int = 14) -> pd.Series:
-    delta = s.diff()
-    gain = delta.clip(lower=0).ewm(alpha=1/length, adjust=False).mean()
-    loss = (-delta.clip(upper=0)).ewm(alpha=1/length, adjust=False).mean()
-    rs = gain / loss.replace(0, float('nan'))
-    return 100 - (100 / (1 + rs))
-
-def macd(s: pd.Series, fast=12, slow=26, signal=9):
-    line = ema(s, fast) - ema(s, slow)
-    sig = line.ewm(span=signal, adjust=False).mean()
-    return line, sig, line - sig
 
 def fetch_data(symbol, timeframe, limit=100):
     ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
@@ -103,8 +86,6 @@ def fetch_data(symbol, timeframe, limit=100):
 def calculate_indicators(df):
     df['EMA_7']  = ema(df['close'], 7)
     df['EMA_21'] = ema(df['close'], 21)
-    df['RSI_21'] = rsi(df['close'], 21)
-    df['MACD'], df['MACD_signal'], df['MACD_hist'] = macd(df['close'])
     return df
 
 # ==================== POSICIÓN ====================
@@ -145,7 +126,10 @@ def _post_trade_order(req):
     method = getattr(exchange, 'privatePostTradeOrder', None) or exchange.private_post_trade_order
     return method(req)
 
-def execute_order(side: str, symbol: str, ref_price: float, amount: int):
+def _cl_order_id(candle_ts: int) -> str:
+    return f"XLM{int(candle_ts)}"
+
+def execute_order(side: str, symbol: str, ref_price: float, amount: float, candle_ts: int):
     market = exchange.market(symbol)
     ctval = float(market.get('contractSize') or 1)
     log.info(f"Nocional: {amount} contratos x {ctval} XLM = {amount*ctval} XLM "
@@ -166,6 +150,7 @@ def execute_order(side: str, symbol: str, ref_price: float, amount: int):
         'side': oside,
         'ordType': 'optimal_limit_ioc',
         'sz': sz,
+        'clOrdId': _cl_order_id(candle_ts),
         'attachAlgoOrds': [{
             'tpTriggerPx': tp, 'tpOrdPx': '-1',
             'slTriggerPx': sl, 'slOrdPx': '-1',
@@ -176,56 +161,69 @@ def execute_order(side: str, symbol: str, ref_price: float, amount: int):
     d0 = data[0] if isinstance(data, list) and data else {}
     if str(d0.get('sCode', resp.get('code', '1'))) != '0':
         raise ccxt.ExchangeError(f"OKX rechazo la entrada: {d0.get('sMsg') or resp.get('msg')}")
-    log.info(f"{side} ejecutada con SL/TP adjuntos. ordId: {d0.get('ordId')} | SL: {sl} | TP: {tp}")
+    log.info(f"XLM {side} ejecutada con SL/TP adjuntos. ordId: {d0.get('ordId')} | SL: {sl} | TP: {tp}")
     return True
 
-# ==================== SEÑAL RELAJADA (3 filtros, velas cerradas) ====================
-def evaluate_multi_timeframe(symbol):
+# ==================== DETONANTE: cruce EMA7 x EMA21 en vela(s) de 30m ====================
+def evaluate_signals(symbol):
+    """Escanea las ultimas SCAN_CANDLES velas cerradas (de mas nueva a mas vieja)."""
     try:
-        df_1h = calculate_indicators(fetch_data(symbol, '1h', limit=100))
-        df_4h = calculate_indicators(fetch_data(symbol, '4h', limit=100))
+        df = calculate_indicators(fetch_data(symbol, TIMEFRAME, limit=100))
+        price = exchange.fetch_ticker(symbol).get('last') or df['close'].iloc[-1]
 
-        i_prev, i_curr = (-3, -2) if SIGNAL_ON_CLOSE else (-2, -1)
+        log.info(f"Precio: {price} | {TIMEFRAME} EMA7: {df['EMA_7'].iloc[-2]:.5f} / "
+                 f"EMA21: {df['EMA_21'].iloc[-2]:.5f}")
 
-        prev_7, prev_21 = df_1h['EMA_7'].iloc[i_prev], df_1h['EMA_21'].iloc[i_prev]
-        curr_7, curr_21 = df_1h['EMA_7'].iloc[i_curr], df_1h['EMA_21'].iloc[i_curr]
-        rsi_1h          = df_1h['RSI_21'].iloc[i_curr]
-        price = exchange.fetch_ticker(symbol).get('last') or df_1h['close'].iloc[-1]
+        offsets = [(-2, -3), (-3, -4)][:SCAN_CANDLES] if SIGNAL_ON_CLOSE else [(-1, -2)]
 
-        trend_4h = df_4h['EMA_7'].iloc[-2] > df_4h['EMA_21'].iloc[-2]
+        for i_curr, i_prev in offsets:
+            prev_7, prev_21 = df['EMA_7'].iloc[i_prev], df['EMA_21'].iloc[i_prev]
+            curr_7, curr_21 = df['EMA_7'].iloc[i_curr], df['EMA_21'].iloc[i_curr]
 
-        log.info(f"Precio: {price} | 1H EMA7/21: {curr_7:.5f}/{curr_21:.5f} | "
-                 f"RSI: {rsi_1h:.1f} | 4H alcista: {trend_4h}")
+            cross_up   = (prev_7 <= prev_21) and (curr_7 > curr_21)
+            cross_down = (prev_7 >= prev_21) and (curr_7 < curr_21)
 
-        cross_up   = (prev_7 <= prev_21) and (curr_7 > curr_21)
-        cross_down = (prev_7 >= prev_21) and (curr_7 < curr_21)
-
-        # RELAJADA: solo cruce nuevo + RSI amplio + tendencia 4H
-        # (se quitaron MACD 1H y momentum 15m para permitir mas entradas)
-        is_long  = cross_up   and (40 < rsi_1h < 80) and trend_4h
-        is_short = cross_down and (20 < rsi_1h < 60) and (not trend_4h)
-
-        if is_long:
-            return 'LONG', price
-        if is_short:
-            return 'SHORT', price
+            candle_ts = int(df['timestamp'].iloc[i_curr])
+            if cross_up:
+                return 'LONG', price, candle_ts
+            if cross_down:
+                return 'SHORT', price, candle_ts
     except Exception as e:
-        log.error(f"Error en evaluacion multi-temporalidad: {e}")
-    return None, None
+        log.error(f"Error evaluando senal {TIMEFRAME}: {e}")
+    return None, None, None
+
+def candle_already_traded(symbol, candle_ts: int) -> bool:
+    cl = _cl_order_id(candle_ts)
+    try:
+        inst = exchange.market(symbol)['id']
+        resp = exchange.private_get_trade_order({'instId': inst, 'clOrdId': cl})
+        data = resp.get('data') or []
+        if data and str(data[0].get('sCode', '0')) == '0':
+            log.info(f"Vela ya operada (clOrdId {cl}). Entrada duplicada bloqueada.")
+            return True
+        return False
+    except ccxt.ExchangeError as e:
+        msg = str(e)
+        if '51603' in msg or 'does not exist' in msg.lower():
+            return False
+        log.warning(f"No se pudo verificar duplicado ({msg}); se permite la entrada.")
+        return False
+    except Exception as e:
+        log.warning(f"No se pudo verificar duplicado ({e}); se permite la entrada.")
+        return False
 
 # ==================== ARRANQUE ====================
 def verify_setup():
     bal = exchange.fetch_balance()
-    doge = (bal.get('DOGE') or {}).get('free')
-    usd  = (bal.get('USD') or {}).get('free')
-    log.info(f"Autenticacion OK | Colateral -> DOGE: {doge} | USD: {usd}")
+    xlm = (bal.get('XLM') or {}).get('free')
+    log.info(f"Autenticacion OK | Colateral -> XLM: {xlm}")
 
 # ==================== CICLO ====================
 def run_cycle():
     symbol = resolve_symbol()
 
     try:
-        exchange.set_leverage(3, symbol, params={'mgnMode': TD_MODE})
+        exchange.set_leverage(1, symbol, params={'mgnMode': TD_MODE})
     except Exception as e:
         log.warning(f"No se pudo fijar apalancamiento (se usa el de OKX): {e}")
 
@@ -233,51 +231,12 @@ def run_cycle():
     if existing >= AMOUNT:
         entries_done = round(existing / AMOUNT)
         if entries_done >= MAX_ENTRIES:
-            log.info(f"Posicion {existing} contratos ({entries_done} entradas). Maximo (2). Esperando SL/TP.")
+            log.info(f"Posicion {existing} contratos ({entries_done} entradas). Maximo ({MAX_ENTRIES}). Esperando SL/TP.")
             return
 
-    signal, price = evaluate_multi_timeframe(symbol)
+    signal, price, candle_ts = evaluate_signals(symbol)
     if not signal:
-        log.info("Sin senales claras en este ciclo.")
+        log.info("Sin cruce EMA7/EMA21 en las ultimas velas de 30m. Sin operacion.")
         return
 
-    pos = get_open_position(symbol)
-    if pos and pos['side'] != ('long' if signal == 'LONG' else 'short'):
-        log.info("Cruce contrario: cerrando (flat) antes de girar.")
-        close_position(symbol)
-        time.sleep(2)
-
-    log.info(f"Senal confirmada: {signal}. Abriendo posicion...")
-    try:
-        execute_order(signal, symbol, price, AMOUNT)
-    except Exception as e:
-        log.error(f"Entrada rechazada: {e}")
-        close_position(symbol)
-
-def run_once():
-    log.info("Modo ciclo unico (GitHub Actions).")
-    verify_setup()
-    if TEST_MODE:
-        catalog_xlm()
-        return
-    run_cycle()
-
-def main_loop():
-    log.info(f"Iniciando bot {BASE_ASSET}-USD futuros ({HOST}) | SL {SL_PCT:.1%} / TP {TP_PCT:.1%}")
-    verify_setup()
-    while True:
-        try:
-            run_cycle()
-        except KeyboardInterrupt:
-            log.info("Detenido por el usuario.")
-            break
-        except Exception as e:
-            log.error(f"Error en el ciclo principal: {e}")
-            time.sleep(60)
-        time.sleep(480)
-
-if __name__ == "__main__":
-    if SINGLE_CYCLE:
-        run_once()
-    else:
-        main_loop()
+    if candle_already_traded
