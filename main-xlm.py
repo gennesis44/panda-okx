@@ -239,4 +239,47 @@ def run_cycle():
         log.info("Sin cruce EMA7/EMA21 en las ultimas velas de 30m. Sin operacion.")
         return
 
-    if candle_already_traded
+    if candle_already_traded(symbol, candle_ts):
+        return
+
+    pos = get_open_position(symbol)
+    if pos and pos['side'] != ('long' if signal == 'LONG' else 'short'):
+        log.info("Cruce contrario: cerrando (flat) antes de girar.")
+        close_position(symbol)
+        time.sleep(2)
+
+    log.info(f"Senal confirmada: {signal} (vela {candle_ts}). Abriendo posicion...")
+    try:
+        execute_order(signal, symbol, price, AMOUNT, candle_ts)
+    except Exception as e:
+        log.error(f"Entrada rechazada: {e}")
+        close_position(symbol)
+
+def run_once():
+    log.info("Modo ciclo unico (GitHub Actions) | XLM bot XPERP-30m gapless.")
+    verify_setup()
+    if TEST_MODE:
+        catalog_xlm()
+        return
+    run_cycle()
+
+def main_loop():
+    log.info(f"Iniciando bot {BASE_ASSET}-USD | TF {TIMEFRAME} | "
+             f"SL {SL_PCT:.1%} / TP {TP_PCT:.1%} | ciclo cada {CYCLE_SECONDS//60} min")
+    verify_setup()
+    while True:
+        try:
+            run_cycle()
+        except KeyboardInterrupt:
+            log.info("Detenido por el usuario.")
+            break
+        except Exception as e:
+            log.error(f"Error en el ciclo principal: {e}")
+            time.sleep(60)
+        time.sleep(CYCLE_SECONDS)
+
+if __name__ == "__main__":
+    if SINGLE_CYCLE:
+        run_once()
+    else:
+        main_loop()
