@@ -1,0 +1,22 @@
+name: okx-radar
+
+on:
+  workflow_dispatch:      # botón para correrlo manualmente
+  schedule:
+    - cron: "*/30 * * * *"   # cada 30 minutos (opcional; borra estas 2 líneas si no lo quieres)
+
+jobs:
+  radar:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Instalar dependencias
+        run: pip install requests pandas numpy
+
+      - name: Correr radar OKX
+        run: python -u okx_radar.py
