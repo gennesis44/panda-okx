@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 OKX radar 30m — estado del mercado para la tesis short sistémica.
-Pares: FET, XLM, DOGE, SUI (perpetuos USDT de OKX).
+Pares: FET, XLM, DOGE, SUI (perpetuos OKX, preferencia USDC).
 Solo endpoints públicos de OKX (no requiere API key).
 """
 
@@ -14,14 +14,10 @@ import requests
 
 BASE = "https://www.okx.com"
 
-# --- EDITA TU WATCHLIST (formato OKX: XXX-USDT-SWAP = perp) ---
-WATCHLIST = [
-    "FET-USDT-SWAP",
-    "XLM-USDT-SWAP",
-    "DOGE-USDT-SWAP",
-    "SUI-USDT-SWAP",
-]
-REFERENCE = "BTC-USDT-SWAP"  # quién lidera el régimen
+# --- CONFIG ---
+QUOTE_PREF = ["USDC", "USDT"]   # prueba USDC primero; si no existe, usa USDT
+WATCHLIST = ["FET", "XLM", "DOGE", "SUI"]
+REFERENCE = "BTC"               # quién lidera el régimen
 
 BAR = "30m"
 LIMIT = 100            # velas a pedir (~2 días)
@@ -39,10 +35,23 @@ def okx_get(path, **params):
     return j["data"]
 
 
+def resolve_inst(base):
+    """Devuelve el perp disponible para 'base', probando la moneda preferida primero."""
+    for q in QUOTE_PREF:
+        inst = f"{base}-{q}-SWAP"
+        try:
+            if okx_get("/api/v5/market/candles", instId=inst, bar=BAR, limit="1"):
+                return inst
+        except Exception:
+            pass
+        time.sleep(0.1)
+    return None
+
+
 def fetch_candles(inst):
     rows = okx_get("/api/v5/market/candles", instId=inst, bar=BAR, limit=str(LIMIT))
     if not rows:
-        raise RuntimeError(f"{inst}: sin velas (existe en OKX?)")
+        raise RuntimeError(f"{inst}: sin velas")
     df = pd.DataFrame(rows, columns=["ts", "o", "h", "l", "c", "vol",
                                      "volCcy", "volQuote", "confirm"])
     df = df.iloc[::-1].reset_index(drop=True)  # OKX manda descendente -> cronológico
@@ -110,10 +119,11 @@ def analyze(df, funding, ft):
         score += 1; tags.append(f"cruce bajista <={CROSS_LOOKBACK} velas")
     if faro and faro["bear"]:
         score += 1; tags.append("vela faro bajista")
-    if funding >= 0.0003:
-        tags.append("ATENCION: funding alto, riesgo short squeeze")
-    elif funding <= -0.0003:
-        tags.append("funding negativo: short concurrido")
+    if funding == funding:  # no NaN
+        if funding >= 0.0003:
+            tags.append("ATENCION: funding alto, riesgo short squeeze")
+        elif funding <= -0.0003:
+            tags.append("funding negativo: short concurrido")
 
     label = "SHORT OK" if score >= 3 else ("PARCIAL" if score >= 1 else "NO SHORT")
     return dict(label=label, score=score, price=price, live=live, ema7=e7,
@@ -153,21 +163,34 @@ def main():
     print(f"OKX radar {BAR} — {time.strftime('%Y-%m-%d %H:%M:%S')}"
           f"  (señales sobre velas cerradas)\n")
 
-    try:
-        btc = fetch_candles(REFERENCE)
-        lb = btc[btc["closed"]].iloc[-1]
-        side = "DEBAJO" if lb["c"] < lb["ema21"] else "ARRIBA"
-        print(f"[regimen] BTC: close {lb['c']:.0f} | EMA7 {lb['ema7']:.0f} / "
-              f"EMA21 {lb['ema21']:.0f} -> precio {side} de EMA21\n")
-    except Exception as e:
-        print(f"[regimen] BTC no disponible: {e}\n")
+    def build(base):
+        inst = resolve_inst(base)
+        if inst is None:
+            print(f"[!] {base}: sin perpetuo en OKX ({'/'.join(QUOTE_PREF)})")
+        elif not inst.startswith(f"{base}-{QUOTE_PREF[0]}-"):
+            print(f"[i] {base}: sin par {QUOTE_PREF[0]}, usando {inst} en su lugar")
+        return inst
+
+    ref_inst = build(REFERENCE)
+    if ref_inst:
+        try:
+            btc = fetch_candles(ref_inst)
+            lb = btc[btc["closed"]].iloc[-1]
+            side = "DEBAJO" if lb["c"] < lb["ema21"] else "ARRIBA"
+            print(f"[regimen] {ref_inst}: close {lb['c']:.0f} | "
+                  f"EMA7 {lb['ema7']:.0f} / EMA21 {lb['ema21']:.0f} "
+                  f"-> precio {side} de EMA21\n")
+        except Exception as e:
+            print(f"[regimen] no disponible: {e}\n")
 
     data = {}
-    for inst in WATCHLIST:
-        try:
-            data[inst] = fetch_candles(inst)
-        except Exception as e:
-            print(f"[!] {inst}: {e}")
+    for base in WATCHLIST:
+        inst = build(base)
+        if inst:
+            try:
+                data[inst] = fetch_candles(inst)
+            except Exception as e:
+                print(f"[!] {inst}: {e}")
         time.sleep(0.2)
 
     for inst, df in data.items():
