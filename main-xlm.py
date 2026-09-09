@@ -1,4 +1,4 @@
-# main-xlm.py — Ax2 · 15m · solo EMA7/21 · SL 1% / TP 1.5% · 1x · 1 contrato
+# main-xlm.py — Ax3 · 15m · solo EMA7/21 · SL 1% / TP 1.5% · 1x · 1 contrato
 import os
 import time
 import logging
@@ -10,19 +10,25 @@ import pandas as pd
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 log = logging.getLogger(__name__)
 
-# ==================== CONFIGURACIÓN (Ax2) ====================
+def _f(x):
+    try:
+        return float(x)
+    except (TypeError, ValueError):
+        return 0.0
+
+# ==================== CONFIGURACIÓN (Ax3) ====================
 BASE_ASSET   = 'XLM'
-AMOUNT       = 1        # 1 contrato = 100 XLM (minimo tecnico OKX, ~$18.6)
+AMOUNT       = 1        # 1 contrato = 100 XLM (minimo tecnico OKX)
 SL_PCT       = 0.010    # 1.0%
 TP_PCT       = 0.015    # 1.5%
-TIMEFRAME    = '15m'    # UNICA vela madre Ax2
+TIMEFRAME    = '15m'    # UNICA vela madre Ax3
 TD_MODE      = 'cross'
-LEVERAGE     = 1        # Ax2: 1x
+LEVERAGE     = 1        # Ax3: 1x
 SIGNAL_ON_CLOSE = True  # velas CERRADAS
 TEST_MODE       = os.getenv('TEST_MODE') == '1'
 SINGLE_CYCLE    = os.getenv('SINGLE_CYCLE') == '1'
 
-HOST = 'https://my.okx.com'   # instancia EEA — colateral de futuros: USDC
+HOST = 'https://my.okx.com'   # instancia EEA — colateral MM en USDC
 
 exchange = ccxt.okx({
     'apiKey':    os.getenv('OKX_API_KEY', ''),
@@ -84,7 +90,7 @@ def resolve_symbol():
     _log_contract_size(sym)
     return sym
 
-# ==================== INDICADOR Ax2: SOLO EMA ====================
+# ==================== INDICADOR Ax3: SOLO EMA ====================
 def ema(s: pd.Series, length: int) -> pd.Series:
     return s.ewm(span=length, adjust=False).mean()
 
@@ -112,7 +118,7 @@ def close_position(symbol):
     try:
         exchange.create_order(symbol, 'market', close_side, amount,
                               params={'tdMode': TD_MODE, 'reduceOnly': True})
-        log.warning(f"Posicion {side} cerrada (giro Ax2).")
+        log.warning(f"Posicion {side} cerrada (giro Ax3).")
     except Exception as e:
         log.error(f"FALLO GRAVE cerrando posicion: {e} — cerrar MANUALMENTE en OKX.")
 
@@ -155,11 +161,11 @@ def execute_order(side: str, symbol: str, ref_price: float, amount: int):
     log.info(f"{side} ejecutada con SL/TP adjuntos. ordId: {d0.get('ordId')} | SL: {sl} | TP: {tp}")
     return True
 
-# ==================== SEÑAL Ax2: SOLO EMA7/21 EN 15M ====================
+# ==================== SEÑAL Ax3: SOLO EMA7/21 EN 15M ====================
 def evaluate_signal(symbol):
     """Cruce EMA7/21 en las 2 ultimas velas de 15m CERRADAS.
-    Ventana doble: con cron cada 20 min, garantiza que NINGUN cruce se revisa dos veces
-    ni queda sin mirar (cada par de velas consecutivas se evalua exactamente una vez)."""
+    Ventana doble: con cron cada 20 min, ningun cruce se revisa dos veces
+    ni queda sin mirar."""
     try:
         df = fetch_data(symbol, TIMEFRAME, limit=60)
         df['EMA_7']  = ema(df['close'], 7)
@@ -180,19 +186,24 @@ def evaluate_signal(symbol):
         log.error(f"Error en evaluacion: {e}")
     return None, None
 
-# ==================== ARRANQUE ====================
+# ==================== ARRANQUE: DESGLOSE REAL DEL COLATERAL ====================
 def verify_setup():
-    bal = exchange.fetch_balance()
-    usdc = (bal.get('USDC') or {}).get('free')
-    doge = (bal.get('DOGE') or {}).get('free')
-    log.info(f"Autenticacion OK | Colateral futuros -> USDC: {usdc} | "
-             f"Spot DOGE: {doge} (bolsa, no margen)")
+    raw = exchange.privateGetAccountBalance()
+    details = ((raw or {}).get('data') or [{}])[0].get('details') or []
+    total = 0.0
+    for d in details:
+        eq_usd = _f(d.get('eqUsd'))
+        total += eq_usd
+        avail = d.get('availEq') or d.get('availBal') or '0'
+        log.info(f"Trading | {d.get('ccy')}: unidades={d.get('eq')} | "
+                 f"libre={avail} | valor=${eq_usd:.2f}")
+    log.info(f"Colateral total (valor USD): ~{total:.2f}  <- lo que ve tu app de futuros")
     try:
-        if float(usdc or 0) < 19:
-            log.warning("USDC insuficiente para 1 contrato a 1x (~$18.6). "
-                        "Transferir desde Financiera -> Trading.")
-    except (TypeError, ValueError):
-        pass
+        fund = exchange.privateGetAssetBalances()
+        for d in (fund or {}).get('data') or []:
+            log.info(f"Financiera | {d.get('ccy')}: {_f(d.get('availBal')):.6f}")
+    except Exception as e:
+        log.warning(f"No se pudo leer Financiera: {e}")
 
 # ==================== CICLO ====================
 def run_cycle():
@@ -203,7 +214,16 @@ def run_cycle():
     except Exception as e:
         log.warning(f"No se pudo fijar apalancamiento (se usa el de OKX): {e}")
 
-    # Ax2: evaluar PRIMERO, decidir DESPUES (permite girar en cruce contrario)
+    # Verdad de OKX: cuantos contratos permite abrir el colateral REAL
+    try:
+        market = exchange.market(symbol)
+        ms = exchange.privateGetAccountMaxSize({'instId': market['id'], 'tdMode': TD_MODE})
+        d0 = (ms.get('data') or [{}])[0]
+        log.info(f"Capacidad OKX: maxBuy={d0.get('maxBuySz')} | "
+                 f"maxSell={d0.get('maxSellSz')} contratos")
+    except Exception as e:
+        log.warning(f"No se pudo consultar capacidad: {e}")
+
     signal, price = evaluate_signal(symbol)
     if not signal:
         log.info("Sin cruces EMA7/21 en 15m. Vigilando.")
@@ -226,7 +246,7 @@ def run_cycle():
         log.error(f"Entrada rechazada: {e}")
 
 def run_once():
-    log.info("Modo ciclo unico (GitHub Actions) | Ax2: 15m, EMA7/21, 1x, 1 contrato.")
+    log.info("Modo ciclo unico (GitHub Actions) | Ax3: 15m, EMA7/21, 1x, 1 contrato.")
     verify_setup()
     if TEST_MODE:
         catalog_xlm()
@@ -234,7 +254,7 @@ def run_once():
     run_cycle()
 
 def main_loop():
-    log.info(f"Iniciando bot {BASE_ASSET} Ax2 | {TIMEFRAME} | SL {SL_PCT:.1%} / TP {TP_PCT:.1%} | {LEVERAGE}x")
+    log.info(f"Iniciando bot {BASE_ASSET} Ax3 | {TIMEFRAME} | SL {SL_PCT:.1%} / TP {TP_PCT:.1%} | {LEVERAGE}x")
     verify_setup()
     while True:
         try:
