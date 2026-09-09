@@ -1,0 +1,24 @@
+name: FET Bot OKX
+on:
+  schedule:
+    - cron: '*/20 * * * *'
+  workflow_dispatch:
+
+jobs:
+  fet-bot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install ccxt pandas
+      - run: python main-fet.py
+        env:
+          SINGLE_CYCLE: '1'
+          PYTHONUNBUFFERED: '1'
+          OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
+          OKX_SECRET_KEY: ${{ secrets.OKX_SECRET_KEY }}
+          OKX_API_SECRET: ${{ secrets.OKX_API_SECRET }}
+          OKX_PASSWORD: ${{ secrets.OKX_PASSWORD }}
+          OKX_PASSPHRASE: ${{ secrets.OKX_PASSPHRASE }}
