@@ -18,7 +18,7 @@ jobs:
 
       - name: Ejecutar reporte
         env:
-          OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
-          OKX_SECRET_KEY: ${{ secrets.OKX_SECRET_KEY }}
+          OKX_API_KEY: ${{ secrets.OKX_HY_KEY }}
+          OKX_SECRET_KEY: ${{ secrets.OKX_HY_PASS }}
           OKX_HY_PASSWORD: ${{ secrets.OKX_HY_PASSWORD }}
         run: python main-hy.py
