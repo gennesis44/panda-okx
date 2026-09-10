@@ -4,7 +4,14 @@ import time
 import ccxt
 from collections import defaultdict
 
-# ── 1. CREDENCIALES: passphrase alineada con el secret OKX_HY_PASSWORD ──
+# ════════════════════════════════════════════════════════════════
+#  main-hy.py — Historial de futuros OKX (DOGE / FET / SUI / XLM)
+#  Variables de entorno esperadas (las inyecta main-hy.yml):
+#    OKX_API_KEY       ← secret OKX_HY_KEY      (API Key de OKX)
+#    OKX_SECRET_KEY    ← secret OKX_HY_PASS     (Secret Key de OKX)
+#    OKX_HY_PASSWORD   ← secret OKX_HY_PASSWORD (Passphrase inventada)
+# ════════════════════════════════════════════════════════════════
+
 API_KEY    = os.environ.get('OKX_API_KEY', '')
 SECRET_KEY = os.environ.get('OKX_SECRET_KEY', '')
 PASSPHRASE = os.environ.get('OKX_HY_PASSWORD') or os.environ.get('OKX_PASSWORD') or ''
@@ -14,16 +21,17 @@ def bordes_sospechosos(v):
     return v != v.strip() or v[:1] in ('"', "'") or v[-1:] in ('"', "'")
 
 print("== DIAGNÓSTICO DE CREDENCIALES (solo longitudes, nunca valores) ==")
-print(f"  OKX_API_KEY      presente (len={len(API_KEY)})"    if API_KEY    else "  OKX_API_KEY      VACÍA")
-print(f"  OKX_SECRET_KEY   presente (len={len(SECRET_KEY)})" if SECRET_KEY else "  OKX_SECRET_KEY   VACÍA")
-print(f"  PASSPHRASE       presente (len={len(PASSPHRASE)})" if PASSPHRASE else "  PASSPHRASE       VACÍA — revisa secret OKX_HY_PASSWORD y el env: del .yml")
-if PASSPHRASE and bordes_sospechosos(PASSPHRASE):
-    print("  ⚠ PASSPHRASE con espacios/comillas en los bordes — revisa cómo la pegaste en el secret")
+print(f"  OKX_API_KEY     (←OKX_HY_KEY)      " + (f"presente (len={len(API_KEY)})" if API_KEY else "VACÍA"))
+print(f"  OKX_SECRET_KEY  (←OKX_HY_PASS)     " + (f"presente (len={len(SECRET_KEY)})" if SECRET_KEY else "VACÍA"))
+print(f"  PASSPHRASE      (←OKX_HY_PASSWORD) " + (f"presente (len={len(PASSPHRASE)})" if PASSPHRASE else "VACÍA"))
+for nombre, val in [('OKX_API_KEY', API_KEY), ('OKX_SECRET_KEY', SECRET_KEY), ('PASSPHRASE', PASSPHRASE)]:
+    if val and bordes_sospechosos(val):
+        print(f"  ⚠ {nombre}: espacios/comillas en los bordes — revisa cómo se pegó el secret")
 
 if not (API_KEY and SECRET_KEY and PASSPHRASE):
     sys.exit("\nABORTADO: falta credencial. No se envió nada a OKX.")
 
-# ── 2. EXCHANGE ──
+# ── EXCHANGE ──
 exchange = ccxt.okx({
     'apiKey':    API_KEY,
     'secret':    SECRET_KEY,
@@ -35,7 +43,7 @@ exchange.apiKey   = API_KEY
 exchange.secret   = SECRET_KEY
 exchange.password = PASSPHRASE
 
-# ── 3. TEST DE AUTENTICACIÓN ÚNICO ──
+# ── TEST DE AUTENTICACIÓN ÚNICO ──
 print("\n== TEST DE AUTENTICACIÓN (account/config) ==")
 try:
     cfg = exchange.privateGetAccountConfig()
@@ -43,11 +51,16 @@ try:
 except Exception as e:
     msg = str(e)
     print("  ✗ FALLO DE AUTENTICACIÓN:", msg[:300])
-    print("\nGUÍA DE CÓDIGOS OKX:")
-    print("  50111 → API key no existe (mal copiada en el secret)")
-    print("  50112 → API key congelada (revisar en OKX app)")
-    print("  50113 → Passphrase incorrecta (revisar secret OKX_HY_PASSWORD)")
-    print("  50114 → IP restringida (quitar whitelist de IP en la clave)")
+    print("\nGUÍA DE CÓDIGOS OKX (según respuesta real del servidor):")
+    print("  50105 → PASSPHRASE incorrecta → revisa secret OKX_HY_PASSWORD")
+    print("           (debe ser la frase inventada al crear ESTA clave,")
+    print("            sin ñ ni tildes; regenera el valor en el secret si duda)")
+    print("  50111 → API Key no existe → revisa secret OKX_HY_KEY")
+    print("  50112 → API Key congelada → revisa la clave en la app OKX")
+    print("  50113 → API Key inválida → revisa secret OKX_HY_KEY")
+    print("  50114 → IP restringida → quita la whitelist de IP de la clave")
+    print("  50112+50105 juntos → los secrets mezclan valores de claves distintas:")
+    print("           los 3 secrets deben venir de la MISMA clave API")
     sys.exit(1)
 
 BASES = {'DOGE', 'FET', 'SUI', 'XLM'}
