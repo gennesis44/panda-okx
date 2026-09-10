@@ -7,18 +7,32 @@ jobs:
   reporte:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Descargar repositorio
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - name: Configurar Python
+        uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
       - name: Instalar dependencias
         run: pip install ccxt
 
+      - name: Verificar archivos del repo
+        run: ls -la
+
       - name: Ejecutar reporte
         env:
           OKX_API_KEY: ${{ secrets.OKX_HY_KEY }}
           OKX_SECRET_KEY: ${{ secrets.OKX_HY_PASS }}
           OKX_HY_PASSWORD: ${{ secrets.OKX_HY_PASSWORD }}
-        run: python main-hy.py
+        run: |
+          if [ -f main-hy.py ]; then
+            python main-hy.py
+          elif [ -f main_hy.py ]; then
+            python main_hy.py
+          else
+            echo "ERROR: no existe main-hy.py ni main_hy.py en la raiz"
+            ls -la
+            exit 1
+          fi
