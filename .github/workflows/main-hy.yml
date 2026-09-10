@@ -20,5 +20,5 @@ jobs:
         env:
           OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
           OKX_SECRET_KEY: ${{ secrets.OKX_SECRET_KEY }}
-          OKX_PASSWORD: ${{ secrets.OKX_HY_PASSWORD }}
+          OKX_HY_PASSWORD: ${{ secrets.OKX_HY_PASSWORD }}
         run: python main-hy.py
