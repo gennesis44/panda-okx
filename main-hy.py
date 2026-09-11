@@ -1,24 +1,15 @@
 import os
 import sys
 import time
-import datetime
 import ccxt
 from collections import defaultdict
-
-# ════════════════════════════════════════════════════════════════
-#  main-hy.py — Historial de futuros OKX (DOGE / FET / SUI / XLM)
-#  Variables (inyectadas por main-hy.yml):
-#    OKX_API_KEY      ← secret OKX_HY_KEY
-#    OKX_SECRET_KEY   ← secret OKX_HY_PASS
-#    OKX_HY_PASSWORD  ← secret OKX_HY_PASSWORD
-# ════════════════════════════════════════════════════════════════
 
 API_KEY    = os.environ.get('OKX_API_KEY', '')
 SECRET_KEY = os.environ.get('OKX_SECRET_KEY', '')
 PASSPHRASE = os.environ.get('OKX_HY_PASSWORD') or os.environ.get('OKX_PASSWORD') or ''
 
 if not (API_KEY and SECRET_KEY and PASSPHRASE):
-    sys.exit("ABORTADO: falta credencial (OKX_API_KEY / OKX_SECRET_KEY / OKX_HY_PASSWORD)")
+    sys.exit("ABORTADO: falta credencial")
 
 exchange = ccxt.okx({
     'apiKey':    API_KEY,
@@ -34,7 +25,6 @@ try:
     print("  ✓ OK · UID:", cfg['data'][0].get('uid', '?'))
 except Exception as e:
     print("  ✗ FALLO:", str(e)[:300])
-    print("  50105 → passphrase incorrecta · 50111/50113 → API key inválida · 50114 → IP restringida")
     sys.exit(1)
 
 BASES = {'DOGE', 'FET', 'SUI', 'XLM'}
@@ -51,7 +41,6 @@ def descubrir():
     return candidatos
 
 def paginar(endpoint, key, extra_params, max_pages=100):
-    """Pagina un endpoint privado OKX hacia el pasado usando 'after'."""
     out, after, err = [], None, None
     for _ in range(max_pages):
         params = dict(extra_params)
@@ -72,41 +61,25 @@ def paginar(endpoint, key, extra_params, max_pages=100):
         time.sleep(0.25)
     return out, err
 
-def fetch_bills_all():
-    """Bills recientes (7 días) + archivo (3 meses), deduplicados por billId."""
-    recientes, e1 = paginar('privateGetAccountBills', 'billId', {}, max_pages=60)
-    archivo,   e2 = paginar('privateGetAccountBillsArchive', 'billId', {}, max_pages=100)
-    vistos, merged = set(), []
-    for b in recientes + archivo:
-        bid = b.get('billId')
-        if bid in vistos:
-            continue
-        vistos.add(bid)
-        merged.append(b)
-    return merged, (e1 or e2)
-
 try:
     candidatos = descubrir()
 
-    # ── 1. ÓRDENES → mapa ordId → reduceOnly (fuente de verdad open/close en modo net) ──
+    # ── ÓRDENES → mapa ordId → reduceOnly ──
     reduce_map = {}
-    errores_ord = []
     for iid, it in candidatos.items():
         orders, err = paginar('privateGetTradeOrdersHistory', 'ordId',
-                              {'instType': it, 'instId': iid}, max_pages=60)
-        if err:
-            errores_ord.append((iid, err))
+                              {'instType': it, 'instId': iid})
         for o in orders:
             reduce_map[o['ordId']] = str(o.get('reduceOnly', '')).lower()
 
-    # ── 2. FILLS clasificados vía reduceOnly ──
-    S = defaultdict(lambda: {'fills': 0, 'clases': defaultdict(int), 'ord_entrada': set(),
-                             'pnl': 0.0, 'fees_bills': 0.0, 'funding': 0.0, 'penal': 0.0})
-    bills_otros = defaultdict(list)
+    # ── FILLS ──
+    S = defaultdict(lambda: {'fills': 0, 'ord_entrada': set(), 'pnl': 0.0,
+                             'fees_bills': 0.0, 'funding': 0.0, 'penal': 0.0,
+                             'trades': defaultdict(float)})   # ordId cierre → PnL del trade
 
     for iid, it in candidatos.items():
         fills, err = paginar('privateGetTradeFillsHistory', 'billId',
-                             {'instType': it, 'instId': iid}, max_pages=60)
+                             {'instType': it, 'instId': iid})
         if err:
             print(f"  ⚠ fills {iid}: {err}")
         for f in fills:
@@ -114,37 +87,35 @@ try:
             s['fills'] += 1
             side = f.get('side')
             ro = reduce_map.get(f.get('ordId'))
-            if ro is not None:
-                cls = ('OPEN ' if ro != 'true' else 'CLOSE ') + ('LONG' if side == 'buy' else 'SHORT')
-            else:
-                cls = 'SIN MARCA'
-            s['clases'][cls] += 1
-            if cls.startswith('OPEN'):
+            es_apertura = (ro != 'true') if ro is not None else None
+            if es_apertura:
                 s['ord_entrada'].add(f.get('ordId'))
-            if f.get('fillPnl'):
-                s['pnl'] += float(f['fillPnl'])
+            pnl = float(f['fillPnl']) if f.get('fillPnl') else 0.0
+            s['pnl'] += pnl
+            # cada ORDEN de cierre = 1 trade terminado; acumula su PnL
+            if ro == 'true' and f.get('ordId'):
+                s['trades'][f['ordId']] += pnl
 
-    # ── 3. BILLS (7 días + 3 meses): fees, funding, penalización ──
-    bills, err_b = fetch_bills_all()
-    if err_b:
-        print("  ⚠ bills:", err_b)
-    for b in bills:
+    # ── BILLS: comisiones, funding, liquidación ──
+    bills, err_b = paginar('privateGetAccountBills', 'billId', {}, max_pages=60)
+    arch,  err_a = paginar('privateGetAccountBillsArchive', 'billId', {}, max_pages=100)
+    vistos = set()
+    for b in bills + arch:
+        bid = b.get('billId')
+        if bid in vistos:
+            continue
+        vistos.add(bid)
         inst = b.get('instId') or ''
         fee  = float(b.get('fee') or 0)
-        if inst in candidatos:
-            s = S[inst]
+        if inst in S:
             t = b.get('type')
-            if t == '2':   s['fees_bills'] += -fee
-            elif t == '8': s['funding']    += -fee
-            elif t == '9': s['penal']      += -fee
-        elif inst.split('-')[0].upper() in BASES:
-            bills_otros[inst].append(b)
+            if t == '2':   S[inst]['fees_bills'] += -fee
+            elif t == '8': S[inst]['funding']    += -fee
+            elif t == '9': S[inst]['penal']      += -fee
 
-    # ══ REPORTE ══
-    print(f"\n{'INSTRUMENTO':<26}{'FILLS':>6}{'ENTRADAS':>9}{'(L/S)':>9}{'CIERRES':>9}"
-          f"{'FUNDING':>10}{'PEN.LIQ':>9}{'PnL':>12}{'COMIS.':>10}")
-    print("-" * 100)
-    tot_ent = 0
+    # ══ REPORTE DETALLADO ══
+    print(f"\n{'INSTRUMENTO':<26}{'FILLS':>6}{'ENTRADAS':>9}{'PnL':>12}{'COMIS.':>10}")
+    print("-" * 66)
     for base in sorted(BASES):
         filas = sorted([i for i in S if i.split('-')[0].upper() == base])
         if not filas:
@@ -152,32 +123,32 @@ try:
             continue
         for iid in filas:
             s = S[iid]
-            ol = s['clases'].get('OPEN LONG', 0)
-            os_ = s['clases'].get('OPEN SHORT', 0)
-            cl = s['clases'].get('CLOSE LONG', 0) + s['clases'].get('CLOSE SHORT', 0)
-            sm = s['clases'].get('SIN MARCA', 0)
-            ent = len(s['ord_entrada'])
-            tot_ent += ent
-            extra = f" [{sm} sin marca]" if sm else ""
-            print(f"{iid:<26}{s['fills']:>6}{ent:>9}({ol:>3}/{os_:<3}){cl:>9}"
-                  f"{s['funding']:>10.4f}{s['penal']:>9.4f}{s['pnl']:>+12.4f}{s['fees_bills']:>10.4f}{extra}")
+            print(f"{iid:<26}{s['fills']:>6}{len(s['ord_entrada']):>9}"
+                  f"{s['pnl']:>+12.4f}{s['fees_bills']:>10.4f}")
 
-    print("-" * 100)
-    print(f"ENTRADAS TOTALES (órdenes de apertura únicas): {tot_ent}")
-
-    if errores_ord:
-        print("\n=== AVISOS ORDERS-HISTORY (afecta conteo de entradas) ===")
-        for iid, e in errores_ord:
-            print(f"  {iid}: {e}")
-
-    if bills_otros:
-        print("\n=== BILLS FUERA DEL LISTADO (identificación) ===")
-        for inst, bs in sorted(bills_otros.items()):
-            print(f"  {inst}: {len(bs)} bill(s)")
-            for b in bs[:5]:
-                ts = datetime.datetime.fromtimestamp(int(b['ts'])/1000, tz=datetime.timezone.utc)
-                print(f"     tipo={b.get('type')} subType={b.get('subType','')} "
-                      f"fee={b.get('fee')} {b.get('ccy','')} · {ts:%Y-%m-%d}")
+    # ══ TABLA SOLICITADA: PAR · GANADA · PERDIDA · % ══
+    print("\nPAR --------- GANADA -------- PERDIDA -------- % ------- PnL_NETO")
+    print("-" * 66)
+    tg = tp = 0
+    tpnl = 0.0
+    for base in sorted(BASES):
+        insts = [i for i in S if i.split('-')[0].upper() == base]
+        g = p = 0
+        pnl_par = 0.0
+        for i in insts:
+            pnl_par += S[i]['pnl']
+            for tp_ in S[i]['trades'].values():
+                if tp_ > 0:  g += 1
+                elif tp_ < 0: p += 1
+        total = g + p
+        pct = f"{(g / total * 100):.0f}%" if total else "—"
+        pnl_str = f"{pnl_par:+.4f}" if insts else "—"
+        print(f"{base:<10}{g:>11}{p:>16}{pct:>11}{pnl_str:>13}")
+        tg += g; tp += p; tpnl += pnl_par if insts else 0.0
+    print("-" * 66)
+    tt = tg + tp
+    tpct = f"{(tg / tt * 100):.0f}%" if tt else "—"
+    print(f"{'TOTAL':<10}{tg:>11}{tp:>16}{tpct:>11}{tpnl:>+13.4f}")
 
 except Exception as e:
     print(f"Error: {e}")
