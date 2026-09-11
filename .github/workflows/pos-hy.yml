@@ -1,0 +1,24 @@
+name: Posiciones Abiertas
+
+on:
+  workflow_dispatch:
+
+jobs:
+  posiciones:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Instalar dependencias
+        run: pip install ccxt
+
+      - name: Consultar posiciones
+        env:
+          OKX_API_KEY: ${{ secrets.OKX_HY_KEY }}
+          OKX_SECRET_KEY: ${{ secrets.OKX_HY_PASS }}
+          OKX_HY_PASSWORD: ${{ secrets.OKX_HY_PASSWORD }}
+        run: python pos-hy.py
