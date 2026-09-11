@@ -19,7 +19,8 @@ exchange = ccxt.okx({
 
 print("== POSICIONES ABIERTAS ==")
 try:
-    data = exchange.privateGetAccountPositions({'instType': 'ANY'}).get('data', [])
+    # Sin 'instType': OKX devuelve TODAS las posiciones de la cuenta
+    data = exchange.privateGetAccountPositions({}).get('data', [])
     abiertas = [p for p in data if float(p.get('pos') or 0) != 0]
     if not abiertas:
         print("  ✓ NINGUNA posición abierta. No hay nada que cerrar.")
