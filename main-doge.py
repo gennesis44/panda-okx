@@ -1,4 +1,4 @@
-# main-doge.py — Ax3.1-parity · DOGE/USD XPERP · cruce EMA7x21 · vela 15m gapless · SL1/TP1.5
+# main-doge.py — Ax2-D · 15m detonante + 4H brujula + cooldown · SL 1% / TP 1.5% · 1x · hasta 2 contratos
 import os
 import time
 import logging
@@ -16,20 +16,21 @@ def _f(x):
     except (TypeError, ValueError):
         return 0.0
 
-# ==================== CONFIGURACIÓN ====================
+# ==================== CONFIGURACIÓN (Ax2-D) ====================
 BASE_ASSET  = 'DOGE'
-AMOUNT      = 1.0             # contratos por entrada (Tamano real se imprime en cada ciclo)
-SL_PCT      = 0.010           # 1.0% SL
-TP_PCT      = 0.015           # 1.5% TP
-MAX_ENTRIES = 2               # TOPE TOTAL: 2 contratos (escala en pasos de AMOUNT)
+AMOUNT      = 1.0             # contratos por entrada (10 DOGE, ~$0.87)
+MAX_ENTRIES = 2               # TOPE TOTAL: 2 contratos
+SL_PCT      = 0.010           # 1.0%
+TP_PCT      = 0.015           # 1.5%
+TIMEFRAME    = '15m'          # vela madre: detonante
+TF_FILTER    = '4h'           # brujula: solo direccion (gate)
 TD_MODE     = 'cross'
 SIGNAL_ON_CLOSE = True
+COOLDOWN_MIN = 60             # tras LOSS: sin nuevas entradas en este par durante 60 min
 TEST_MODE       = os.getenv('TEST_MODE') == '1'
 SINGLE_CYCLE    = os.getenv('SINGLE_CYCLE') == '1'
 
-TIMEFRAME     = '15m'
-CYCLE_SECONDS = 20 * 60
-SCAN_CANDLES  = 2
+TIMEFRAME_CYCLE = 20 * 60     # 20 min
 
 HOST = 'https://my.okx.com'
 
@@ -90,18 +91,13 @@ def resolve_symbol():
     _log_contract_size(sym)
     return sym
 
-# ==================== INDICADORES ====================
+# ==================== INDICADORES: SOLO EMA ====================
 def ema(s: pd.Series, length: int) -> pd.Series:
     return s.ewm(span=length, adjust=False).mean()
 
-def fetch_data(symbol, timeframe, limit=100):
+def fetch_data(symbol, timeframe, limit=60):
     ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
     return pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-
-def calculate_indicators(df):
-    df['EMA_7']  = ema(df['close'], 7)
-    df['EMA_21'] = ema(df['close'], 21)
-    return df
 
 # ==================== POSICIÓN ====================
 def get_open_position(symbol):
@@ -132,7 +128,7 @@ def close_position(symbol):
     try:
         exchange.create_order(symbol, 'market', close_side, amount,
                               params={'tdMode': TD_MODE, 'reduceOnly': True})
-        log.warning(f"Posicion {side} cerrada (fail-safe o giro).")
+        log.warning(f"Posicion {side} cerrada (giro).")
     except Exception as e:
         log.error(f"FALLO GRAVE cerrando posicion: {e} — cerrar MANUALMENTE en OKX.")
 
@@ -179,28 +175,62 @@ def execute_order(side: str, symbol: str, ref_price: float, amount: float, candl
     log.info(f"DOGE {side} ejecutada con SL/TP adjuntos. ordId: {d0.get('ordId')} | SL: {sl} | TP: {tp}")
     return True
 
-# ==================== DETONANTE ====================
-def evaluate_signals(symbol):
+# ==================== COOLDOWN POST-PÉRDIDA (anti-sierra) ====================
+def cooldown_active(symbol):
+    """True si el ultimo trade cerrado del par fue LOSS hace menos de COOLDOWN_MIN."""
     try:
-        df = calculate_indicators(fetch_data(symbol, TIMEFRAME, limit=100))
+        market_id = exchange.market(symbol)['id']
+        hist = exchange.privateGetTradeFillsHistory({'instType': 'FUTURES', 'instId': market_id, 'limit': '3'})
+        for fill in (hist.get('data') or []):
+            if str(fill.get('reduceOnly', '0')) == 'true' or fill.get('subType') in ('3', '4', '5', '6'):
+                ts_ms = int(fill.get('ts') or 0)
+                age_min = (time.time() * 1000 - ts_ms) / 60000.0
+                pnl = _f(fill.get('pnl'))
+                if pnl < 0 and age_min < COOLDOWN_MIN:
+                    log.info(f"COOLDOWN: ultima perdida hace {age_min:.0f} min (< {COOLDOWN_MIN}). "
+                             f"Sin nuevas entradas en este par.")
+                    return True
+                return False
+        return False
+    except Exception as e:
+        log.warning(f"No se pudo verificar cooldown ({e}); se permite la entrada.")
+        return False
+
+# ==================== SEÑAL Ax2-D: CRUCE 15m + GATE 4H ====================
+def evaluate_signals(symbol):
+    """Detonante: cruce EMA7/21 en velas de 15m CERRADAS (ventana doble).
+    Brujula: la ultima vela 4H CERRADA define direccion permitida."""
+    try:
+        df_4h = fetch_data(symbol, TF_FILTER, limit=30)
+        e7h, e21h = ema(df_4h['close'], 7), ema(df_4h['close'], 21)
+        trend_4h = e7h.iloc[-2] > e21h.iloc[-2]
+
+        df = fetch_data(symbol, TIMEFRAME, limit=60)
+        df['EMA_7']  = ema(df['close'], 7)
+        df['EMA_21'] = ema(df['close'], 21)
         price = exchange.fetch_ticker(symbol).get('last') or df['close'].iloc[-1]
 
-        log.info(f"Precio: {price} | {TIMEFRAME} EMA7: {df['EMA_7'].iloc[-2]:.5f} / "
-                 f"EMA21: {df['EMA_21'].iloc[-2]:.5f}")
+        e7, e21 = df['EMA_7'], df['EMA_21']
+        log.info(f"Precio: {price} | {TIMEFRAME} EMA7/21: {e7.iloc[-2]:.5f}/{e21.iloc[-2]:.5f} | "
+                 f"4H: {'ALCISTA' if trend_4h else 'BAJISTA'} (gate {'LONG' if trend_4h else 'SHORT'})")
 
-        offsets = [(-2, -3), (-3, -4)][:SCAN_CANDLES] if SIGNAL_ON_CLOSE else [(-1, -2)]
+        offsets = [(-2, -3), (-3, -4)][:2] if SIGNAL_ON_CLOSE else [(-1, -2)]
 
         for i_curr, i_prev in offsets:
-            prev_7, prev_21 = df['EMA_7'].iloc[i_prev], df['EMA_21'].iloc[i_prev]
-            curr_7, curr_21 = df['EMA_7'].iloc[i_curr], df['EMA_21'].iloc[i_curr]
+            prev_7, prev_21 = e7.iloc[i_prev], e21.iloc[i_prev]
+            curr_7, curr_21 = e7.iloc[i_curr], e21.iloc[i_curr]
 
             candle_ts = int(df['timestamp'].iloc[i_curr])
             if prev_7 <= prev_21 and curr_7 > curr_21:
-                return 'LONG', price, candle_ts
+                if trend_4h:
+                    return 'LONG', price, candle_ts
+                log.info("Cruce alcista VETADO: 4H bajista.")
             if prev_7 >= prev_21 and curr_7 < curr_21:
-                return 'SHORT', price, candle_ts
+                if not trend_4h:
+                    return 'SHORT', price, candle_ts
+                log.info("Cruce bajista VETADO: 4H alcista.")
     except Exception as e:
-        log.error(f"Error evaluando senal {TIMEFRAME}: {e}")
+        log.error(f"Error evaluando senal: {e}")
     return None, None, None
 
 def candle_already_traded(symbol, candle_ts: int) -> bool:
@@ -223,13 +253,13 @@ def candle_already_traded(symbol, candle_ts: int) -> bool:
         log.warning(f"No se pudo verificar duplicado ({e}); se permite la entrada.")
         return False
 
-# ==================== CAPACIDAD (paridad Ax3.1) ====================
+# ==================== CAPACIDAD (Ax3.1, need CORREGIDO) ====================
 def capacity_report(symbol):
     try:
         market = exchange.market(symbol)
         ctval = float(market.get('contractSize') or 1)
         price = exchange.fetch_ticker(symbol).get('last') or 0
-        need = ctval * AMOUNT / 1   # leverage 1x
+        need = ctval * AMOUNT * price   # leverage 1x — CORREGIDO
     except Exception as e:
         log.warning(f"Capacidad: nocional no calculable: {e}")
         return
@@ -276,9 +306,13 @@ def run_cycle():
         log.info(f"Posicion {existing} contratos. Tope {MAX_ENTRIES}. Esperando SL/TP.")
         return
 
+    if cooldown_active(symbol):
+        log.info("Vigilando (cooldown activo).")
+        return
+
     signal, price, candle_ts = evaluate_signals(symbol)
     if not signal:
-        log.info("Sin cruce EMA7/EMA21 en las ultimas velas de 15m. Sin operacion.")
+        log.info("Sin cruces EMA7/21 en 15m alineados con 4H. Sin operacion.")
         return
 
     if candle_already_traded(symbol, candle_ts):
@@ -286,18 +320,18 @@ def run_cycle():
 
     pos = get_open_position(symbol)
     if pos and pos['side'] != ('long' if signal == 'LONG' else 'short'):
-        log.info("Cruce contrario: cerrando (flat) antes de girar.")
+        log.info("Cruce contrario ALINEADO con 4H: cerrando y girando.")
         close_position(symbol)
         time.sleep(2)
 
-    log.info(f"Senal confirmada: {signal} (vela {candle_ts}). Abriendo {AMOUNT} contrato(s)...")
+    log.info(f"Senal {signal} (4H a favor, vela {candle_ts}). Abriendo {AMOUNT} contrato(s)...")
     try:
         execute_order(signal, symbol, price, AMOUNT, candle_ts)
     except Exception as e:
         log.error(f"Entrada rechazada: {e}")
 
 def run_once():
-    log.info("Modo ciclo unico (GitHub Actions) | DOGE bot XPERP-15m gapless (Ax3.1-parity).")
+    log.info("Modo ciclo unico (GitHub Actions) | DOGE Ax2-D: 15m + gate 4H + cooldown 60m.")
     verify_setup()
     if TEST_MODE:
         catalog_doge()
@@ -305,8 +339,8 @@ def run_once():
     run_cycle()
 
 def main_loop():
-    log.info(f"Iniciando bot {BASE_ASSET}-USD | TF {TIMEFRAME} | "
-             f"SL {SL_PCT:.1%} / TP {TP_PCT:.1%} | ciclo cada {CYCLE_SECONDS//60} min")
+    log.info(f"Iniciando bot {BASE_ASSET} Ax2-D | {TIMEFRAME}+{TF_FILTER} | "
+             f"SL {SL_PCT:.1%} / TP {TP_PCT:.1%} | cooldown {COOLDOWN_MIN}m")
     verify_setup()
     while True:
         try:
@@ -317,10 +351,10 @@ def main_loop():
         except Exception as e:
             log.error(f"Error en el ciclo principal: {e}")
             time.sleep(60)
-        time.sleep(CYCLE_SECONDS)
+        time.sleep(TIMEFRAME_CYCLE)
 
 if __name__ == "__main__":
     if SINGLE_CYCLE:
         run_once()
-    else: 
+    else:
         main_loop()
