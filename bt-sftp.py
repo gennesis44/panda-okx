@@ -2,11 +2,7 @@ import time
 import ccxt
 
 # ════════════════════════════════════════════════════════════════
-#  bt-sftp.py — Backtest SISTEMA COMPLETO sobre velas reales OKX
-#  Señal: cruce MA (SMA) · SL: 1.5×ATR(14) · TP: 2R (sens. 1.5/3R)
-#  Fees: 0.05%/lado. Ambigüedad intrabar (SL y TP en misma vela)
-#  se resuelve como SL (peor caso). Público, sin claves.
-#  PnL en R = unidades de riesgo → riesgo 1%/trade ⇒ R ≈ % capital
+#  bt-sftp.py v2 — fix: ATR=0 (vela sin rango) ya no abre posición
 # ════════════════════════════════════════════════════════════════
 
 FEE_LADO = 0.0005
@@ -15,7 +11,7 @@ TP_MULT  = 2.0
 TP_SENS  = [1.5, 2.0, 3.0]
 
 OBJETIVOS = [
-    ('BTC-USDT-SWAP',            ['4H', '1H']),
+    ('BTC-USDT-SWAP',            ['4H']),
     ('DOGE-USD_UM_XPERP-310404', ['4H']),
     ('SUI-USD_UM_XPERP-310404',  ['4H']),
     ('XLM-USD_UM_XPERP-310704',  ['4H']),
@@ -39,7 +35,7 @@ def velas(instId, bar, total):
         if len(data) < 100: break
         time.sleep(0.15)
     out.reverse()
-    return [(float(r[1]), float(r[2]), float(r[3]), float(r[4])) for r in out]  # o,h,l,c
+    return [(float(r[1]), float(r[2]), float(r[3]), float(r[4])) for r in out]
 
 def sma(v, n):
     out = [None]*len(v); acc = 0.0
@@ -70,31 +66,36 @@ def simular(c, h, l, mf, ms, atrs, sl_mult, tp_mult):
         if pos is not None:
             tipo, px = None, None
             if pos['side'] == 'long':
-                if l[i] <= pos['sl']:                    tipo, px = 'SL', pos['sl']
-                elif h[i] >= pos['tp']:                  tipo, px = 'TP', pos['tp']
-                elif abajo:                              tipo, px = 'SEN', c[i]
+                if l[i] <= pos['sl']:   tipo, px = 'SL', pos['sl']
+                elif h[i] >= pos['tp']: tipo, px = 'TP', pos['tp']
+                elif abajo:             tipo, px = 'SEN', c[i]
             else:
-                if h[i] >= pos['sl']:                    tipo, px = 'SL', pos['sl']
-                elif l[i] <= pos['tp']:                  tipo, px = 'TP', pos['tp']
-                elif arriba:                             tipo, px = 'SEN', c[i]
+                if h[i] >= pos['sl']:   tipo, px = 'SL', pos['sl']
+                elif l[i] <= pos['tp']: tipo, px = 'TP', pos['tp']
+                elif arriba:            tipo, px = 'SEN', c[i]
             if tipo:
                 bruto = (px-pos['entry'])/pos['entry'] if pos['side']=='long' else (pos['entry']-px)/pos['entry']
                 neto = bruto - 2*FEE_LADO
-                trades.append((neto, neto/(pos['r_pct']), tipo))
+                rU = neto/pos['r_pct'] if pos['r_pct'] > 0 else 0.0   # ← guard
+                trades.append((neto, rU, tipo))
                 pos = None
 
-        if pos is None and atrs[i] is not None:
+        # FIX: ATR=0 (vela sin rango) → no abrir; también exige r_pct > 0
+        if pos is None and atrs[i] is not None and atrs[i] > 0:
             if arriba:
                 rd = sl_mult*atrs[i]
-                pos = {'side':'long', 'entry':c[i], 'sl':c[i]-rd, 'tp':c[i]+tp_mult*rd, 'r_pct':rd/c[i]}
+                if rd/c[i] > 0:
+                    pos = {'side':'long', 'entry':c[i], 'sl':c[i]-rd, 'tp':c[i]+tp_mult*rd, 'r_pct':rd/c[i]}
             elif abajo:
                 rd = sl_mult*atrs[i]
-                pos = {'side':'short', 'entry':c[i], 'sl':c[i]+rd, 'tp':c[i]-tp_mult*rd, 'r_pct':rd/c[i]}
+                if rd/c[i] > 0:
+                    pos = {'side':'short', 'entry':c[i], 'sl':c[i]+rd, 'tp':c[i]-tp_mult*rd, 'r_pct':rd/c[i]}
 
     if pos:
         bruto = (c[-1]-pos['entry'])/pos['entry'] if pos['side']=='long' else (pos['entry']-c[-1])/pos['entry']
         neto = bruto - 2*FEE_LADO
-        trades.append((neto, neto/(pos['r_pct']), 'FIN'))
+        rU = neto/pos['r_pct'] if pos['r_pct'] > 0 else 0.0
+        trades.append((neto, rU, 'FIN'))
     return trades
 
 def stats(trades):
@@ -113,7 +114,7 @@ def stats(trades):
     return n, g, p, tp, sl, sen, pnl, pnlR, mx
 
 print("="*78)
-print(f"BT SISTEMA COMPLETO · CRUCE MA × SL({SL_MULT}×ATR14) × TP({TP_MULT}R) · fees {2*FEE_LADO*100:.2f}%/trade")
+print(f"BT SISTEMA COMPLETO v2 · CRUCE MA × SL({SL_MULT}×ATR14) × TP({TP_MULT}R) · fees {2*FEE_LADO*100:.2f}%/trade")
 print("Ambigüedad intrabar → SL (peor caso) · PnL_R = unidades de riesgo (1R = 1% capital)")
 print("="*78)
 
@@ -126,8 +127,7 @@ for instId, bars in OBJETIVOS:
             print(f"  ✗ descarga: {str(e)[:100]}"); continue
         if len(v) < 250:
             print(f"  ✗ velas insuficientes ({len(v)}) — omitido"); continue
-        o = [x[0] for x in v]; h = [x[1] for x in v]
-        l = [x[2] for x in v]; c = [x[3] for x in v]
+        h = [x[1] for x in v]; l = [x[2] for x in v]; c = [x[3] for x in v]
         atrs = atr_series(h, l, c)
         print(f"  ✓ {len(v)} velas · precio actual {c[-1]:,.4g}\n")
 
@@ -136,7 +136,7 @@ for instId, bars in OBJETIVOS:
             mf, ms = sma(c, f), sma(c, s)
             tr = simular(c, h, l, mf, ms, atrs, SL_MULT, TP_MULT)
             filas.append((f, s, stats(tr)))
-        filas.sort(key=lambda x: -x[2][7])   # por PnL_R
+        filas.sort(key=lambda x: -x[2][7])
 
         print(f"  {'MA':<8}{'TR':>4}{'GAN':>5}{'PER':>5}{'%':>5}{'TP/SL/SEN':>12}{'PnL%':>10}{'PnL_R':>9}{'RACHA':>7}")
         print("  " + "-"*64)
