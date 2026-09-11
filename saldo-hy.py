@@ -17,22 +17,39 @@ exchange = ccxt.okx({
     'urls':      {'api': {'rest': 'https://my.okx.com'}},
 })
 
-print("== SALDO DISPONIBLE (margen unificado) ==")
+print("== PATRIMONIO DE LA CUENTA (margen unificado) ==")
 try:
-    data = exchange.privateGetAccountBalance({'ccy': 'USDT'}).get('data', [])
-    if data:
-        d = data[0]
-        det = d.get('details', [{}])[0]
-        print(f"  USDT equity:     {float(det.get('eq') or 0):>12.4f}")
-        print(f"  USDT disponible: {float(det.get('availBal') or 0):>12.4f}")
-        print(f"  USDT congelado:  {float(det.get('frozenBal') or 0):>12.4f}")
-    print("\n== TODAS LAS MONEDAS CON SALDO ==")
-    data2 = exchange.privateGetAccountBalance().get('data', [])
-    for c in data2[0].get('details', []):
-        eq = float(c.get('eq') or 0)
-        if eq != 0:
-            print(f"  {c.get('ccy',''):<8} equity={eq:>14.6g}  disp={float(c.get('availBal') or 0):>12.4f}")
-    print("\n  → Si hay USDC/DOGE/etc sobrantes, conviértelos a USDT desde la app (Convertir).")
+    data = exchange.privateGetAccountBalance({}).get('data', [])
+    if not data or not data[0].get('details'):
+        print("  La cuenta no devuelve detalles de balance (¿vacía por completo?)")
+        sys.exit(0)
+
+    root = data[0]
+    print(f"  Equity total de la cuenta: {float(root.get('totalEq') or 0):,.2f} USD\n")
+
+    filas = []
+    for c in root.get('details', []):
+        eq  = float(c.get('eq') or 0)
+        if eq == 0:
+            continue
+        filas.append((
+            c.get('ccy', '?'),
+            eq,
+            float(c.get('availBal') or 0) + float(c.get('availEq') or 0),
+            float(c.get('frozenBal') or 0),
+        ))
+
+    if not filas:
+        print("  ✓ No hay ninguna moneda con saldo distinto de cero.")
+        print("  → La cuenta está VACÍA: para arrancar en vivo hay que INYECTAR capital.")
+    else:
+        print(f"  {'MONEDA':<8}{'EQUITY':>16}{'DISPONIBLE':>16}{'CONGELADO':>14}")
+        print("  " + "-" * 56)
+        for ccy, eq, disp, frz in sorted(filas, key=lambda x: -x[1]):
+            print(f"  {ccy:<8}{eq:>16,.6g}{disp:>16,.6g}{frz:>14,.6g}")
+        print("\n  USDT/USDC disponible = capital arrancable directo.")
+        print("  Otras monedas: convertir a USDT en la app (Convertir) si quieres sumarlas.")
+
 except Exception as e:
     print("  ✗ FALLO:", str(e)[:300])
     sys.exit(1)
