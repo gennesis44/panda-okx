@@ -1,0 +1,23 @@
+name: catalog-xlm
+on:
+  workflow_dispatch:
+jobs:
+  catalog:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - run: pip install ccxt pandas
+      - run: python main-xlm.py
+        env:
+          OKX_API_KEY:    ${{ secrets.OKX_API_KEY }}
+          OKX_SECRET_KEY: ${{ secrets.OKX_SECRET_KEY }}
+          OKX_PASSWORD:   ${{ secrets.OKX_PASSWORD }}
+          TEST_MODE: '1'
+          SINGLE_CYCLE: '1'
