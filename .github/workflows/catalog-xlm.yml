@@ -1,6 +1,7 @@
 name: catalog-xlm
 on:
   workflow_dispatch:
+
 jobs:
   catalog:
     runs-on: ubuntu-latest
