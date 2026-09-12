@@ -300,4 +300,136 @@ def evaluate_signal(symbol):
 
         df = fetch_data(symbol, TIMEFRAME, limit=60)
         if len(df) < 25:
-            log.error(f"{TIMEFRAME} insuficiente ({len(df
+            log.error(f"{TIMEFRAME} insuficiente ({len(df)} velas). Sin senal.")
+            return None, None, None
+        df['EMA_7']  = ema(df['close'], 7)
+        df['EMA_21'] = ema(df['close'], 21)
+        price = exchange.fetch_ticker(symbol).get('last') or df['close'].iloc[-1]
+
+        e7, e21 = df['EMA_7'], df['EMA_21']
+        log.info(f"Precio: {price} | {TIMEFRAME} EMA7/21: {e7.iloc[-2]:.5f}/{e21.iloc[-2]:.5f} | "
+                 f"4H: {'ALCISTA' if trend_4h else 'BAJISTA'} (gate {'LONG' if trend_4h else 'SHORT'})")
+
+        for i_curr in (-2, -3):
+            i_prev = i_curr - 1
+            candle_ts = int(df['timestamp'].iloc[i_curr])
+            if e7.iloc[i_prev] <= e21.iloc[i_prev] and e7.iloc[i_curr] > e21.iloc[i_curr]:
+                if trend_4h:
+                    return 'LONG', price, candle_ts
+                log.info("Cruce alcista VETADO: 4H bajista.")
+            if e7.iloc[i_prev] >= e21.iloc[i_prev] and e7.iloc[i_curr] < e21.iloc[i_curr]:
+                if not trend_4h:
+                    return 'SHORT', price, candle_ts
+                log.info("Cruce bajista VETADO: 4H alcista.")
+    except Exception as e:
+        log.error(f"Error en evaluacion: {e}")
+    return None, None, None
+
+# ==================== CAPACIDAD (guardia + colateral) ====================
+def capacity_ok(symbol):
+    try:
+        _ctval, _ccy, _settle, _price, usd = _contract_meta(symbol)
+        nocional = usd * AMOUNT
+        if nocional > MAX_NOTIONAL_USD:
+            log.error(f"GUARDIA: nocional ${nocional:.2f} > maximo ${MAX_NOTIONAL_USD:.2f} "
+                      f"— unidad/AMOUNT inesperado. NO SE OPERA.")
+            return False
+        need = nocional / max(LEVERAGE, 1)
+    except Exception as e:
+        log.warning(f"Capacidad: nocional no calculable: {e}")
+        return False
+    try:
+        raw = exchange.privateGetAccountBalance()
+        details = ((raw or {}).get('data') or [{}])[0].get('details') or []
+        total = sum(_f(d.get('eqUsd')) for d in details)
+        verdict = 'CABE' if total >= need else 'NO CABE'
+        log.info(f"Margen 1 contrato: ~${need:.2f} | colateral real: ~${total:.2f} -> {verdict}")
+        return total >= need
+    except Exception as e:
+        log.warning(f"Capacidad: colateral no calculable: {e} — BLOQUEO.")
+        return False
+
+def _log_maxsize(symbol):
+    try:
+        inst = exchange.market(symbol)['id']
+        ms = exchange.privateGetAccountMaxSize({'instId': inst, 'tdMode': TD_MODE})
+        d0 = (ms.get('data') or [{}])[0]
+        mb, msz = d0.get('maxBuy'), d0.get('maxSell')
+        if mb or msz:
+            log.info(f"Capacidad OKX: maxBuy={mb} | maxSell={msz} contratos")
+    except Exception as e:
+        log.warning(f"MAXSIZE no disponible: {e}")
+
+# ==================== ARRANQUE ====================
+def verify_setup():
+    raw = exchange.privateGetAccountBalance()
+    details = ((raw or {}).get('data') or [{}])[0].get('details') or []
+    total = sum(_f(d.get('eqUsd')) for d in details)
+    log.info(f"Autenticacion OK | host={HOST} | Colateral real (valor USD): ~{total:.2f}")
+
+# ==================== CICLO ====================
+def run_cycle():
+    symbol = resolve_symbol()
+
+    try:
+        exchange.set_leverage(LEVERAGE, symbol, params={'mgnMode': TD_MODE})
+    except Exception as e:
+        log.warning(f"No se pudo fijar apalancamiento (se usa el de OKX): {e}")
+
+    pos = get_open_position(symbol)
+    if pos:
+        log.info(f"Posicion abierta ({pos['side']}). Esperando SL/TP.")
+        return
+
+    if not capacity_ok(symbol):
+        log.info("Sin capacidad. Vigilando.")
+        return
+
+    _log_maxsize(symbol)
+
+    if cooldown_active(symbol):
+        log.info("Vigilando (cooldown activo).")
+        return
+
+    signal, price, candle_ts = evaluate_signal(symbol)
+    if not signal:
+        log.info("Sin cruces EMA7/21 en 15m alineados con 4H. Vigilando.")
+        return
+
+    if candle_already_traded(symbol, candle_ts):
+        return
+
+    log.info(f"Senal {signal} (4H a favor). Abriendo 1 contrato...")
+    try:
+        execute_order(signal, symbol, price, AMOUNT, candle_ts)
+    except Exception as e:
+        log.error(f"Entrada rechazada: {e}")
+
+def run_once():
+    log.info("Modo ciclo unico (GitHub Actions) | XLM Ax2-D + guardias (XPERP USD, USDT prohibido).")
+    verify_setup()
+    if TEST_MODE:
+        catalog_xlm()
+        return
+    run_cycle()
+
+def main_loop():
+    log.info(f"Iniciando bot {BASE_ASSET} Ax2-D | {TIMEFRAME}+{TF_FILTER} | "
+             f"SL {SL_PCT:.1%} / TP {TP_PCT:.1%} | {LEVERAGE}x | cooldown {COOLDOWN_MIN}m | {HOST}")
+    verify_setup()
+    while True:
+        try:
+            run_cycle()
+        except KeyboardInterrupt:
+            log.info("Detenido por el usuario.")
+            break
+        except Exception as e:
+            log.error(f"Error en el ciclo principal: {e}")
+            time.sleep(60)
+        time.sleep(1200)   # 20 min
+
+if __name__ == "__main__":
+    if SINGLE_CYCLE:
+        run_once()
+    else:
+        main_loop()
