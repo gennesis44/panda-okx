@@ -51,7 +51,8 @@ def catalog_xlm():
         info = m.get('info') or {}
         estado = 'activo' if m.get('active') else 'INACTIVO'
         print(f"  {m['symbol']} | {info.get('instType') or '?'} | {estado} | "
-              f"ctVal={info.get('ctVal')}", flush=True)
+              f"ctVal={info.get('ctVal')} {info.get('ctValCcy') or '?'} | "
+              f"settle={m.get('settle') or '?'}", flush=True)
 
 def pick_future():
     exchange.load_markets()
