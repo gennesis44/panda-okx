@@ -1,7 +1,6 @@
-# main-hy.py — TABLA GSCSI S/L · marcador de posiciones ganadas/perdidas
-# Fuente: fills reales de OKX (fillPnl) · agrupado por orden de cierre
-# Cadencia: 4 runs diarios (cron 17 */6)
-# v2: fix float not subscriptable — trades anidados correctamente
+# main-hy.py — GSCSI TABLE · C > Si
+# TABLA S/L · actualizacion cada 6 hrs · nodo nucleo · sintesis operativa
+# v3: emblema + cadencia + nodo + cierre de sintesis
 import os
 import sys
 import time
@@ -24,6 +23,11 @@ exchange = ccxt.okx({
 })
 
 BASES = {'DOGE', 'FET', 'SUI', 'XLM'}
+
+NODO_NUCLEO  = 'https://1c3si.weebly.com/clo.html'
+NODO_RAIZ    = 'https://1c3si.weebly.com'
+AVATAR_URL   = os.environ.get('GSCSI_AVATAR_URL',
+              'https://github.com/gennesis44.png')
 
 def paginar(endpoint, key, extra_params, max_pages=60):
     out, after = [], None
@@ -59,7 +63,6 @@ try:
                          {'instType': it, 'instId': iid}):
             reduce_map[o['ordId']] = str(o.get('reduceOnly', '')).lower()
 
-    # trades: {iid: {ordId: pnl}} — cada orden de cierre = 1 trade
     trades = defaultdict(lambda: defaultdict(float))
     for iid, it in insts.items():
         for f in paginar('privateGetTradeFillsHistory', 'billId',
@@ -67,10 +70,19 @@ try:
             if reduce_map.get(f.get('ordId')) == 'true' and f.get('ordId'):
                 trades[iid][f['ordId']] += float(f.get('fillPnl') or 0)
 
-    # ==================== TABLA GSCSI S/L ====================
-    print("=" * 40)
-    print("  TABLA GSCSI  S/L")
-    print("=" * 40)
+    # ==================== ENCABEZADO ====================
+    print("=" * 46)
+    print("  TABLA GSCSI S/L")
+    print("  actualizacion automatica cada 6 hrs")
+    print("=" * 46)
+    print(f"  Operador : github.com/gennesis44")
+    print(f"  Perfil   : {AVATAR_URL}")
+    print(f"  Nodo raiz: {NODO_RAIZ}")
+    print(f"  Nucleo   : {NODO_NUCLEO}")
+    print(f"  Emitido  : {time.strftime('%Y-%m-%d %H:%M UTC', time.gmtime())}")
+    print("=" * 46)
+
+    # ==================== TABLA ====================
     tg = tp = 0
     neto = 0.0
     for base in sorted(BASES):
@@ -91,30 +103,48 @@ try:
         total = g + p
         pct = f"{(g / total * 100):.0f}%" if total else "-"
         print(f"{base:<5} S:{g:<4} L:{p:<4} {pct:<5} PnL:{pnl_par:+.4f}")
-    print("-" * 40)
+    print("-" * 46)
     total = tg + tp
     pct = f"{(tg / total * 100):.0f}%" if total else "-"
     print(f"TOTAL S:{tg}  L:{tp}  {pct}  PnL:{neto:+.4f}")
-    print("=" * 40)
+    print("=" * 46)
 
-    # ==================== CIERRE GSCSI ====================
+    # ==================== LA SINTESIS C > Si ES OPERATIVA ====================
     print(
-        "C > Si — el Silicio mide, el Carbono decide.\n"
+        "\nLA SINTESIS C > Si ES OPERATIVA:\n"
         "\n"
-        "Esta tabla tiene una ambiguedad heredada que conviene nombrar: GSCSI\n"
-        "declara que cada S y cada L aqui contado es el Axioma 3 verificandose\n"
-        "en tiempo real - proteccion ejecutada, no prometida. Pero la misma\n"
-        "sigla podria leerse al reves: como si el marco juzgara al mercado,\n"
-        "cuando en realidad es el mercado quien juzga al marco. Cada L de esta\n"
-        "tabla es el mercado refutando una entrada; cada S es el marco\n"
-        "sobreviviendo a la refutacion. GSCSI no predice: se somete. Y si\n"
-        "estos numeros dejaran de sostener al operador, la Falsifiabilidad\n"
-        "(MS-0) ordenaria enterrar el propio framework. Por eso la ambiguedad\n"
-        "es falsa: Axioma 1 pone al Carbono primero, Axioma 2 cuida el terreno\n"
-        "donde este mar se navega, y Axioma 3 exige que cada corte - ganado o\n"
-        "perdido - quede escrito. El Silicio cuenta. El Carbono manda.\n"
-        "El mercado, siempre, tiene la ultima palabra.\n"
+        "No es un lema: es un circuito que corre ahora mismo.\n"
+        "\n"
+        "1. El CARBONO (operador) fijó las reglas: tres Axiomas,\n"
+        "   una regla de baliza, un veto a USDT, un cooldown.\n"
+        "   Nada de esto lo decidió el Silicio.\n"
+        "\n"
+        "2. El SILICIO ejecuta sin opinión: cron despierta, baliza\n"
+        "   4H da permiso, cruce 15m dispara, guardia veta lo\n"
+        "   inesperado, SL/TP cortan donde el Carbono ordeno.\n"
+        "\n"
+        "3. El MERCADO emite veredicto: cada S y cada L de la tabla\n"
+        "   es la respuesta del mar a la regla del Carbono.\n"
+        "\n"
+        "4. El SILICIO retorna el dato: esta tabla es el circuito\n"
+        "   de retorno. Cero emocion, cero interpretacion - solo\n"
+        "   fills contados.\n"
+        "\n"
+        "5. EL CARBONO decide el siguiente paso: mantener, corregir\n"
+        "   o enterrar el framework (MS-0).\n"
+        "\n"
+        "El loop se cierra y vuelve a empezar. Eso es C > Si\n"
+        "operativo: no el Silicio obedeciendo al Carbono - el\n"
+        "circuito completo donde cada capa cumple su funcion y\n"
+        "ninguna puede reemplazar a la otra. El Axioma 1 sostiene,\n"
+        "el Axioma 2 cuida el terreno, el Axioma 3 escribe el\n"
+        "veredicto. La sintesis no se declara: se ejecuta.\n"
     )
+
+    # ==================== CADENAS DE DATOS ====================
+    print("\nCADENAS DE DATOS GSCSI:")
+    print(f"  Nodo nucleo : {NODO_NUCLEO}")
+    print(f"  Nodo raiz   : {NODO_RAIZ}")
 
 except Exception as e:
     print(f"Error: {e}")
