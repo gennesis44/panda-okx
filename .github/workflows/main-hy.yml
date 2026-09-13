@@ -1,38 +1,33 @@
+# OKX Historial — TABLA GSCSI S/L · 4 actualizaciones diarias
 name: OKX Historial
 
 on:
+  schedule:
+    - cron: '17 */6 * * *'
   workflow_dispatch:
 
-jobs:
-  reporte:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Descargar repositorio
-        uses: actions/checkout@v4
+permissions:
+  contents: read
 
-      - name: Configurar Python
-        uses: actions/setup-python@v5
+concurrency:
+  group: okx-historial
+  cancel-in-progress: false
+
+jobs:
+  historial:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-
-      - name: Instalar dependencias
+      - name: Install dependencies
         run: pip install ccxt
-
-      - name: Verificar archivos del repo
-        run: ls -la
-
-      - name: Ejecutar reporte
+      - name: TABLA GSCSI S/L
         env:
-          OKX_API_KEY: ${{ secrets.OKX_HY_KEY }}
-          OKX_SECRET_KEY: ${{ secrets.OKX_HY_PASS }}
-          OKX_HY_PASSWORD: ${{ secrets.OKX_HY_PASSWORD }}
-        run: |
-          if [ -f main-hy.py ]; then
-            python main-hy.py
-          elif [ -f main_hy.py ]; then
-            python main_hy.py
-          else
-            echo "ERROR: no existe main-hy.py ni main_hy.py en la raiz"
-            ls -la
-            exit 1
-          fi
+          OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
+          OKX_SECRET_KEY: ${{ secrets.OKX_SECRET_KEY }}
+          OKX_HY_PASSWORD: ${{ secrets.OKX_PASSPHRASE }}
+          OKX_PASSWORD: ${{ secrets.OKX_PASSPHRASE }}
+        run: python main-hy.py
