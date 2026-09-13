@@ -1,6 +1,7 @@
 # main-hy.py — TABLA GSCSI S/L · marcador de posiciones ganadas/perdidas
 # Fuente: fills reales de OKX (fillPnl) · agrupado por orden de cierre
 # Cadencia: 4 runs diarios (cron 17 */6)
+# v2: fix float not subscriptable — trades anidados correctamente
 import os
 import sys
 import time
@@ -58,7 +59,8 @@ try:
                          {'instType': it, 'instId': iid}):
             reduce_map[o['ordId']] = str(o.get('reduceOnly', '')).lower()
 
-    trades = defaultdict(float)
+    # trades: {iid: {ordId: pnl}} — cada orden de cierre = 1 trade
+    trades = defaultdict(lambda: defaultdict(float))
     for iid, it in insts.items():
         for f in paginar('privateGetTradeFillsHistory', 'billId',
                          {'instType': it, 'instId': iid}):
