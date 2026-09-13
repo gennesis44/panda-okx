@@ -21,7 +21,7 @@ jobs:
         run: pip install ccxt
       - name: GSCSI S/L Table
         env:
-          OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
-          OKX_SECRET_KEY: ${{ secrets.OKX_SECRET_KEY }}
-          OKX_HY_PASSWORD: ${{ secrets.OKX_HY_PASSWORD }}
+          OKX_API_KEY: ${{ secrets.OKX_HY_KEY }}
+          OKX_SECRET_KEY: ${{ secrets.OKX_HY_PASS }}
+          OKX_HY_PASSWORD: ${{ secrets.OKX_HY_PASSPHRASE }}
         run: python main-hy.py
