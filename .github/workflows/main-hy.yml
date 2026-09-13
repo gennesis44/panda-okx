@@ -1,5 +1,4 @@
-# OKX Historial — TABLA GSCSI S/L · 4 actualizaciones diarias
-name: OKX Historial
+name: GSCSI Table
 
 on:
   schedule:
@@ -9,12 +8,8 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: okx-historial
-  cancel-in-progress: false
-
 jobs:
-  historial:
+  table:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -24,10 +19,9 @@ jobs:
           python-version: '3.12'
       - name: Install dependencies
         run: pip install ccxt
-      - name: TABLA GSCSI S/L
+      - name: GSCSI S/L Table
         env:
           OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
           OKX_SECRET_KEY: ${{ secrets.OKX_SECRET_KEY }}
-          OKX_HY_PASSWORD: ${{ secrets.OKX_PASSPHRASE }}
-          OKX_PASSWORD: ${{ secrets.OKX_PASSPHRASE }}
+          OKX_HY_PASSWORD: ${{ secrets.OKX_HY_PASSWORD }}
         run: python main-hy.py
