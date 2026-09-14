@@ -2,7 +2,7 @@ name: ADA Bot OKX
 
 on:
   schedule:
-    - cron: '21,41,61 * * * *'
+    - cron: '21,41 * * * *'
   workflow_dispatch:
 
 permissions:
