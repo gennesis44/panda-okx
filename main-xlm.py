@@ -2,6 +2,8 @@
 # Ax3: HOST my.okx.com | clOrdId XLM | cooldown fail-closed | no entrar si NO CABE | 51016
 # Ax3.1: unidades honestas (ctValCcy) | warmup 4H 120 velas | guardia velas | posicion primero
 # Ax3.2: guardia de nocional (MAX_NOTIONAL_USD) — unidad de contrato sorpresa = bot bloqueado
+# Ax3.3: RSI-VETO (solo XLM — el gigante merece el muro):
+#        LONG vetado si RSI(14) 15m > 75 · SHORT vetado si RSI(14) 15m < 30
 # INSTRUMENTO: XPERP XLM/USD (vencimiento) — USDT/SWAP PROHIBIDO en esta cuenta (colateral no-USDT)
 import os
 import time
@@ -34,6 +36,10 @@ SINGLE_CYCLE    = os.getenv('SINGLE_CYCLE') == '1'
 # Guardia anti-unidad: 1 contrato = 100 XLM (~$18.2). Tope $25 da holgura
 # y veta cualquier unidad sorpresa (p.ej. 1000 XLM/contrato = $185).
 MAX_NOTIONAL_USD = _f(os.getenv('OKX_XLM_MAX_NOTIONAL', '25.0')) or 25.0
+# Ax3.3: RSI-VETO (muro del gigante)
+RSI_LEN     = 14
+RSI_HI      = 75.0      # LONG vetado si RSI > 75
+RSI_LO      = 30.0      # SHORT vetado si RSI < 30
 
 HOST = 'https://my.okx.com'
 
@@ -151,9 +157,16 @@ def resolve_symbol():
         return sym
     raise RuntimeError("No hay XLM/USD (XPERP o SWAP-USD) activo. USDT prohibido en esta cuenta.")
 
-# ==================== INDICADORES: SOLO EMA ====================
+# ==================== INDICADORES: EMA + RSI (Ax3.3) ====================
 def ema(s: pd.Series, length: int) -> pd.Series:
     return s.ewm(span=length, adjust=False).mean()
+
+def rsi(s: pd.Series, length: int = 14) -> pd.Series:
+    delta = s.diff()
+    gain = delta.clip(lower=0).ewm(alpha=1/length, adjust=False).mean()
+    loss = (-delta.clip(upper=0)).ewm(alpha=1/length, adjust=False).mean()
+    rs = gain / loss.replace(0, float('nan'))
+    return 100 - (100 / (1 + rs))
 
 def fetch_data(symbol, timeframe, limit=60):
     ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
@@ -286,10 +299,11 @@ def cooldown_active(symbol):
         log.warning(f"No se pudo verificar cooldown ({e}); BLOQUEO fail-closed.")
         return True
 
-# ==================== SEÑAL Ax2-D: CRUCE 15m + GATE 4H ====================
+# ==================== SEÑAL Ax2-D + Ax3.3: CRUCE 15m + GATE 4H + RSI-VETO ==============
 def evaluate_signal(symbol):
     """Detonante: cruce EMA7/21 en velas de 15m CERRADAS (ventana doble).
-    Brujula: la ultima vela 4H CERRADA define direccion permitida."""
+    Brujula: la ultima vela 4H CERRADA define direccion permitida.
+    Ax3.3 RSI-VETO: en sobre-extremo, el cruce se vetado (no perseguir)."""
     try:
         df_4h = fetch_data(symbol, TF_FILTER, limit=120)   # warmup honesto EMA21 4H
         if len(df_4h) < 25:
@@ -304,23 +318,36 @@ def evaluate_signal(symbol):
             return None, None, None
         df['EMA_7']  = ema(df['close'], 7)
         df['EMA_21'] = ema(df['close'], 21)
+        df['RSI_14'] = rsi(df['close'], RSI_LEN)
         price = exchange.fetch_ticker(symbol).get('last') or df['close'].iloc[-1]
 
-        e7, e21 = df['EMA_7'], df['EMA_21']
+        e7, e21, r14 = df['EMA_7'], df['EMA_21'], df['RSI_14']
+        rsi_now = r14.iloc[-2]
         log.info(f"Precio: {price} | {TIMEFRAME} EMA7/21: {e7.iloc[-2]:.5f}/{e21.iloc[-2]:.5f} | "
-                 f"4H: {'ALCISTA' if trend_4h else 'BAJISTA'} (gate {'LONG' if trend_4h else 'SHORT'})")
+                 f"RSI: {rsi_now:.1f} | 4H: {'ALCISTA' if trend_4h else 'BAJISTA'} "
+                 f"(gate {'LONG' if trend_4h else 'SHORT'})")
 
         for i_curr in (-2, -3):
             i_prev = i_curr - 1
             candle_ts = int(df['timestamp'].iloc[i_curr])
             if e7.iloc[i_prev] <= e21.iloc[i_prev] and e7.iloc[i_curr] > e21.iloc[i_curr]:
-                if trend_4h:
-                    return 'LONG', price, candle_ts
-                log.info("Cruce alcista VETADO: 4H bajista.")
-            if e7.iloc[i_prev] >= e21.iloc[i_prev] and e7.iloc[i_curr] < e21.iloc[i_curr]:
                 if not trend_4h:
-                    return 'SHORT', price, candle_ts
-                log.info("Cruce bajista VETADO: 4H alcista.")
+                    log.info("Cruce alcista VETADO: 4H bajista.")
+                    continue
+                if rsi_now > RSI_HI:
+                    log.info(f"Cruce alcista VETADO: RSI {rsi_now:.1f} > {RSI_HI:.0f} "
+                             f"(sobre-compra — no perseguir). [Ax3.3]")
+                    continue
+                return 'LONG', price, candle_ts
+            if e7.iloc[i_prev] >= e21.iloc[i_prev] and e7.iloc[i_curr] < e21.iloc[i_curr]:
+                if trend_4h:
+                    log.info("Cruce bajista VETADO: 4H alcista.")
+                    continue
+                if rsi_now < RSI_LO:
+                    log.info(f"Cruce bajista VETADO: RSI {rsi_now:.1f} < {RSI_LO:.0f} "
+                             f"(sobre-venta — no perseguir el maxtil). [Ax3.3]")
+                    continue
+                return 'SHORT', price, candle_ts
     except Exception as e:
         log.error(f"Error en evaluacion: {e}")
     return None, None, None
@@ -399,14 +426,14 @@ def run_cycle():
     if candle_already_traded(symbol, candle_ts):
         return
 
-    log.info(f"Senal {signal} (4H a favor). Abriendo 1 contrato...")
+    log.info(f"Senal {signal} (4H a favor, RSI OK). Abriendo 1 contrato...")
     try:
         execute_order(signal, symbol, price, AMOUNT, candle_ts)
     except Exception as e:
         log.error(f"Entrada rechazada: {e}")
 
 def run_once():
-    log.info("Modo ciclo unico (GitHub Actions) | XLM Ax2-D + guardias (XPERP USD, USDT prohibido).")
+    log.info("Modo ciclo unico (GitHub Actions) | XLM Ax2-D + guardias + RSI-VETO (XPERP USD).")
     verify_setup()
     if TEST_MODE:
         catalog_xlm()
@@ -415,7 +442,8 @@ def run_once():
 
 def main_loop():
     log.info(f"Iniciando bot {BASE_ASSET} Ax2-D | {TIMEFRAME}+{TF_FILTER} | "
-             f"SL {SL_PCT:.1%} / TP {TP_PCT:.1%} | {LEVERAGE}x | cooldown {COOLDOWN_MIN}m | {HOST}")
+             f"SL {SL_PCT:.1%} / TP {TP_PCT:.1%} | {LEVERAGE}x | cooldown {COOLDOWN_MIN}m | "
+             f"RSI-veto [{RSI_LO:.0f}-{RSI_HI:.0f}] | {HOST}")
     verify_setup()
     while True:
         try:
