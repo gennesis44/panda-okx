@@ -1,7 +1,6 @@
-# main-ada.py — Ax2-D · 15m detonante + 4H brujula + cooldown · SL 1% / TP 1.5% · 1x
-# MODO TEST ACTIVO: recorre todo el pipeline PERO no envia ordenes.
-# Imprime lo que HUBIERA hecho (senal, lado, SL, TP, tamano) para auditoria del fichaje.
-# INSTRUMENTO: XPERP ADA/USD (vencimiento) — USDT/SWAP PROHIBIDO en esta cuenta.
+# main-ada.py — Ax2-D · PRODUCCIÓN · 15m detonante + 4H brujula + cooldown
+# SL 1% / TP 1.5% · 1x · MAX_ENTRIES 2 · guardia $6 · clOrdId ADA
+# INSTRUMENTO: XPERP ADA/USD — USDT PROHIBIDO (veto verificado en test)
 import os
 import time
 import logging
@@ -18,21 +17,19 @@ def _f(x):
     except (TypeError, ValueError):
         return 0.0
 
-# ==================== CONFIGURACIÓN (Ax2-D + guardias) ====================
 BASE_ASSET  = 'ADA'
-AMOUNT      = 1.0        # contratos por entrada (unidad real la reporta OKX)
-SL_PCT      = 0.010      # 1.0%
-TP_PCT      = 0.015      # 1.5%
+AMOUNT      = 1.0        # 1 contrato = 10 ADA (~$2.14) — medido en test
+MAX_ENTRIES = 2
+SL_PCT      = 0.010
+TP_PCT      = 0.015
 TIMEFRAME   = '15m'
 TF_FILTER   = '4h'
 TD_MODE     = 'cross'
 LEVERAGE    = 1
 COOLDOWN_MIN = 60
-TEST_MODE       = os.getenv('TEST_MODE') == '1' or True   # ← TEST FORZADO hasta auditoria OK
+TEST_MODE       = os.getenv('TEST_MODE') == '1'
 SINGLE_CYCLE    = os.getenv('SINGLE_CYCLE') == '1'
-# Guardia anti-unidad: se calibrara con el Tamano real del primer run.
-# Valor provisional generoso: si ADA/USD trae ctVal grande, el test lo gritara.
-MAX_NOTIONAL_USD = _f(os.getenv('OKX_ADA_MAX_NOTIONAL', '25.0')) or 25.0
+MAX_NOTIONAL_USD = _f(os.getenv('OKX_ADA_MAX_NOTIONAL', '6.0')) or 6.0
 
 SCAN_CANDLES  = 2
 CYCLE_SECONDS = 20 * 60
@@ -48,7 +45,6 @@ exchange = ccxt.okx({
     'urls':      {'api': {'rest': HOST}},
 })
 
-# ==================== INSTRUMENTO (XPERP USD — NUNCA USDT) ====================
 def catalog_ada():
     exchange.load_markets()
     print(f"[{time.strftime('%H:%M:%S')}] --- CATALOGO ADA ---", flush=True)
@@ -145,9 +141,8 @@ def resolve_symbol():
         log.warning(f"Instrumento: {sym} (fallback SWAP-USD)")
         _log_contract_size(sym)
         return sym
-    raise RuntimeError("No hay ADA/USD (XPERP o SWAP-USD) activo. USDT prohibido en esta cuenta.")
+    raise RuntimeError("No hay ADA/USD (XPERP o SWAP-USD) activo. USDT prohibido.")
 
-# ==================== INDICADORES: SOLO EMA ====================
 def ema(s: pd.Series, length: int) -> pd.Series:
     return s.ewm(span=length, adjust=False).mean()
 
@@ -155,7 +150,6 @@ def fetch_data(symbol, timeframe, limit=60):
     ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
     return pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
 
-# ==================== POSICIÓN ====================
 def get_open_position(symbol):
     try:
         for pos in exchange.fetch_positions([symbol]):
@@ -165,7 +159,107 @@ def get_open_position(symbol):
         log.error(f"Error consultando posiciones: {e}")
     return None
 
-# ==================== COOLDOWN ====================
+def get_position_contracts(symbol):
+    try:
+        for pos in exchange.fetch_positions([symbol]):
+            if pos.get('symbol') == symbol:
+                return float(pos.get('contracts') or 0)
+    except Exception:
+        pass
+    return 0.0
+
+def close_position(symbol):
+    pos = get_open_position(symbol)
+    if not pos:
+        return
+    side, contracts = pos['side'], pos['contracts']
+    amount = exchange.amount_to_precision(symbol, contracts)
+    close_side = 'sell' if side == 'long' else 'buy'
+    try:
+        exchange.create_order(symbol, 'market', close_side, amount,
+                              params={'tdMode': TD_MODE, 'reduceOnly': True})
+        log.warning(f"Posicion {side} cerrada (giro).")
+    except Exception as e:
+        log.error(f"FALLO GRAVE cerrando posicion: {e} — cerrar MANUALMENTE en OKX.")
+
+def _post_trade_order(req):
+    method = getattr(exchange, 'privatePostTradeOrder', None) or exchange.private_post_trade_order
+    return method(req)
+
+def _cl_order_id(candle_ts: int) -> str:
+    return f"ADA{int(candle_ts)}"
+
+def candle_already_traded(symbol, candle_ts: int) -> bool:
+    cl = _cl_order_id(candle_ts)
+    try:
+        inst = exchange.market(symbol)['id']
+        resp = exchange.private_get_trade_order({'instId': inst, 'clOrdId': cl})
+        data = resp.get('data') or []
+        if data and str(data[0].get('sCode', '0')) == '0':
+            log.info(f"Vela ya operada (clOrdId {cl}). Duplicado bloqueado.")
+            return True
+        return False
+    except ccxt.ExchangeError as e:
+        msg = str(e)
+        if '51603' in msg or 'does not exist' in msg.lower():
+            return False
+        log.warning(f"No se pudo verificar duplicado ({msg}); BLOQUEO fail-closed.")
+        return True
+    except Exception as e:
+        log.warning(f"No se pudo verificar duplicado ({e}); BLOQUEO fail-closed.")
+        return True
+
+def execute_order(side: str, symbol: str, ref_price: float, amount: float, candle_ts: int):
+    ctval, ccy, _settle, _p, usd = _contract_meta(symbol, ref_price)
+    nocional = amount * usd
+    log.info(f"Nocional: {amount} contratos x {ctval} {ccy} (~${nocional:.2f})")
+
+    if nocional > MAX_NOTIONAL_USD:
+        raise RuntimeError(
+            f"GUARDIA: nocional ${nocional:.2f} > maximo ${MAX_NOTIONAL_USD:.2f} "
+            f"(ctVal={ctval} {ccy}). Unidad inesperada — NO SE OPERA.")
+
+    if side == 'LONG':
+        oside, sl_raw, tp_raw = 'buy', ref_price * (1 - SL_PCT), ref_price * (1 + TP_PCT)
+    else:
+        oside, sl_raw, tp_raw = 'sell', ref_price * (1 + SL_PCT), ref_price * (1 - TP_PCT)
+
+    sl = exchange.price_to_precision(symbol, sl_raw)
+    tp = exchange.price_to_precision(symbol, tp_raw)
+    sz = exchange.amount_to_precision(symbol, amount)
+
+    req = {
+        'instId': exchange.market(symbol)['id'],
+        'tdMode': TD_MODE,
+        'side': oside,
+        'ordType': 'optimal_limit_ioc',
+        'sz': sz,
+        'clOrdId': _cl_order_id(candle_ts),
+        'attachAlgoOrds': [{
+            'tpTriggerPx': tp, 'tpOrdPx': '-1',
+            'slTriggerPx': sl, 'slOrdPx': '-1',
+        }],
+    }
+    try:
+        resp = _post_trade_order(req)
+    except ccxt.ExchangeError as e:
+        if '51016' in str(e):
+            log.info(f"OKX: clOrdId duplicado (51016) — idempotencia OK.")
+            return True
+        raise
+
+    data = resp.get('data') or []
+    d0 = data[0] if isinstance(data, list) and data else {}
+    s_code = str(d0.get('sCode', resp.get('code', '1')))
+    if s_code == '51016':
+        log.info(f"OKX: clOrdId duplicado (51016) — idempotencia OK.")
+        return True
+    if s_code != '0':
+        raise ccxt.ExchangeError(f"OKX rechazo la entrada: {d0.get('sMsg') or resp.get('msg')}")
+    log.info(f"ADA {side} ejecutada con SL/TP adjuntos. ordId: {d0.get('ordId')} | "
+             f"SL: {sl} | TP: {tp}")
+    return True
+
 def cooldown_active(symbol):
     try:
         market_id = exchange.market(symbol)['id']
@@ -188,7 +282,6 @@ def cooldown_active(symbol):
         log.warning(f"No se pudo verificar cooldown ({e}); BLOQUEO fail-closed.")
         return True
 
-# ==================== SEÑAL Ax2-D: CRUCE 15m + GATE 4H ====================
 def evaluate_signal(symbol):
     try:
         df_4h = fetch_data(symbol, TF_FILTER, limit=120)
@@ -212,6 +305,7 @@ def evaluate_signal(symbol):
 
         for i_curr in (-2, -3):
             i_prev = i_curr - 1
+            candle_ts = int(df['timestamp'].iloc[i_curr])
             if e7.iloc[i_prev] <= e21.iloc[i_prev] and e7.iloc[i_curr] > e21.iloc[i_curr]:
                 if trend_4h:
                     return 'LONG', price
@@ -224,14 +318,12 @@ def evaluate_signal(symbol):
         log.error(f"Error en evaluacion: {e}")
     return None, None
 
-# ==================== CAPACIDAD (guardia + colateral) ====================
 def capacity_ok(symbol):
     try:
         _ctval, _ccy, _settle, _price, usd = _contract_meta(symbol)
         nocional = usd * AMOUNT
         if nocional > MAX_NOTIONAL_USD:
-            log.error(f"GUARDIA: nocional ${nocional:.2f} > maximo ${MAX_NOTIONAL_USD:.2f} "
-                      f"— unidad/AMOUNT inesperado. NO SE OPERA.")
+            log.error(f"GUARDIA: nocional ${nocional:.2f} > maximo ${MAX_NOTIONAL_USD:.2f}.")
             return False
         need = nocional / max(LEVERAGE, 1)
     except Exception as e:
@@ -259,14 +351,12 @@ def _log_maxsize(symbol):
     except Exception as e:
         log.warning(f"MAXSIZE no disponible: {e}")
 
-# ==================== ARRANQUE ====================
 def verify_setup():
     raw = exchange.privateGetAccountBalance()
     details = ((raw or {}).get('data') or [{}])[0].get('details') or []
     total = sum(_f(d.get('eqUsd')) for d in details)
     log.info(f"Autenticacion OK | host={HOST} | Colateral real (valor USD): ~{total:.2f}")
 
-# ==================== CICLO (MODO TEST: NUNCA EJECUTA) ====================
 def run_cycle():
     symbol = resolve_symbol()
 
@@ -275,7 +365,21 @@ def run_cycle():
     except Exception as e:
         log.warning(f"No se pudo fijar apalancamiento (se usa el de OKX): {e}")
 
-    capacity_ok(symbol)
+    existing = get_position_contracts(symbol)
+    if existing >= MAX_ENTRIES:
+        log.info(f"Posicion {existing} contratos. Tope {MAX_ENTRIES}. Esperando SL/TP.")
+        return
+
+    remaining = MAX_ENTRIES - existing
+    size = min(AMOUNT, remaining)
+    if size <= 0:
+        log.info("Sin residual de contratos. Vigilando.")
+        return
+
+    if not capacity_ok(symbol):
+        log.info("Sin capacidad. Vigilando.")
+        return
+
     _log_maxsize(symbol)
 
     if cooldown_active(symbol):
@@ -287,26 +391,39 @@ def run_cycle():
         log.info("Sin cruces EMA7/21 en 15m alineados con 4H. Vigilando.")
         return
 
-    # ══════ MODO TEST: el disparo se SIMULA, no se envia ══════
-    ctval, ccy, _settle, _p, usd = _contract_meta(symbol, price)
-    nocional = usd * AMOUNT
-    if signal == 'LONG':
-        sl_raw, tp_raw = price * (1 - SL_PCT), price * (1 + TP_PCT)
-    else:
-        sl_raw, tp_raw = price * (1 + SL_PCT), price * (1 - TP_PCT)
-    log.info(f"[TEST] HUBIERA EJECUTADO: {signal} | {AMOUNT} contrato(s) | "
-             f"nocional ~${nocional:.2f} | SL≈{sl_raw:.5f} | TP≈{tp_raw:.5f}")
-    log.info(f"[TEST] Guardia de nocional: {'CABE (< $'+str(MAX_NOTIONAL_USD)+')' if nocional <= MAX_NOTIONAL_USD else 'VETADA (>'+str(MAX_NOTIONAL_USD)+')'}")
-    log.info("[TEST] Sin orden enviada. El fichaje queda en auditoria.")
+    pos = get_open_position(symbol)
+    if pos and pos['side'] != ('long' if signal == 'LONG' else 'short'):
+        log.info("Cruce contrario ALINEADO con 4H: cerrando y girando.")
+        close_position(symbol)
+        time.sleep(2)
+
+    candle_ts = int(time.time() * 1000)  # fallback si no hay vela exacta
+    try:
+        df = fetch_data(symbol, TIMEFRAME, limit=3)
+        candle_ts = int(df['timestamp'].iloc[-2])
+    except Exception:
+        pass
+
+    if candle_already_traded(symbol, candle_ts):
+        return
+
+    log.info(f"Senal {signal} (4H a favor). Abriendo {size} contrato(s)...")
+    try:
+        execute_order(signal, symbol, price, size, candle_ts)
+    except Exception as e:
+        log.error(f"Entrada rechazada: {e}")
 
 def run_once():
-    log.info("Modo ciclo unico (GitHub Actions) | ADA TEST — pipeline completo, SIN ordenes.")
+    log.info("Modo ciclo unico (GitHub Actions) | ADA Ax2-D PRODUCCION (XPERP USD, USDT prohibido).")
     verify_setup()
-    catalog_ada()
+    if TEST_MODE:
+        catalog_ada()
+        return
     run_cycle()
 
 def main_loop():
-    log.info(f"Iniciando bot {BASE_ASSET} TEST | {TIMEFRAME}+{TF_FILTER} | SIN ordenes hasta auditoria")
+    log.info(f"Iniciando bot {BASE_ASSET} Ax2-D | {TIMEFRAME}+{TF_FILTER} | "
+             f"SL {SL_PCT:.1%} / TP {TP_PCT:.1%} | tope {MAX_ENTRIES} | cooldown {COOLDOWN_MIN}m | {HOST}")
     verify_setup()
     while True:
         try:
