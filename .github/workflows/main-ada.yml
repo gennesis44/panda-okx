@@ -1,0 +1,29 @@
+name: ADA Bot OKX
+
+on:
+  schedule:
+    - cron: '21,41,61 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  run-ada:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: pip install ccxt
+      - name: Run ADA Bot (TEST)
+        run: python main-ada.py
+        env:
+          SINGLE_CYCLE: '1'
+          PYTHONUNBUFFERED: '1'
+          OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
+          OKX_SECRET_KEY: ${{ secrets.OKX_SECRET_KEY }}
+          OKX_PASSWORD: ${{ secrets.OKX_PASSPHRASE }}
