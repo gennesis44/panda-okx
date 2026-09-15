@@ -1,6 +1,6 @@
 # main-hy.py — GSCSI TABLE · C > Si
 # TABLA S/L · actualizacion cada 6 hrs · nodo nucleo · sintesis operativa
-# v3: emblema + cadencia + nodo + cierre de sintesis
+# v4: +ADA en el roster (5 pares) · la tabla cuenta lo que el campo opera
 import os
 import sys
 import time
@@ -22,7 +22,7 @@ exchange = ccxt.okx({
     'urls':      {'api': {'rest': 'https://my.okx.com'}},
 })
 
-BASES = {'DOGE', 'FET', 'SUI', 'XLM'}
+BASES = {'DOGE', 'FET', 'SUI', 'XLM', 'ADA'}
 
 NODO_NUCLEO  = 'https://1c3si.weebly.com/clo.html'
 NODO_RAIZ    = 'https://1c3si.weebly.com'
@@ -115,15 +115,15 @@ try:
         "\n"
         "No es un lema: es un circuito que corre ahora mismo.\n"
         "\n"
-        "1. El CARBONO (operador) fijó las reglas: tres Axiomas,\n"
+        "1. El CARBONO (operador) fijo las reglas: tres Axiomas,\n"
         "   una regla de baliza, un veto a USDT, un cooldown.\n"
-        "   Nada de esto lo decidió el Silicio.\n"
+        "   Nada de esto lo decidio el Silicio.\n"
         "\n"
-        "2. El SILICIO ejecuta sin opinión: cron despierta, baliza\n"
+        "2. El SILICIO ejecuta sin opinion: cron despierta, baliza\n"
         "   4H da permiso, cruce 15m dispara, guardia veta lo\n"
         "   inesperado, SL/TP cortan donde el Carbono ordeno.\n"
         "\n"
-        "3. El MERCADO emite veredicto: cada S y cada L de la tabla\n"
+        "3. EL MERCADO emite veredicto: cada S y cada L de la tabla\n"
         "   es la respuesta del mar a la regla del Carbono.\n"
         "\n"
         "4. El SILICIO retorna el dato: esta tabla es el circuito\n"
