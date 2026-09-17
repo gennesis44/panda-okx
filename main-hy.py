@@ -1,6 +1,6 @@
 # main-hy.py — GSCSI TABLE · C > Si
-# TABLA S/L · actualizacion cada 6 hrs · nodo nucleo · sintesis operativa
-# v4: +ADA en el roster (5 pares) · la tabla cuenta lo que el campo opera
+# v5: fuente primaria = positions-history (PnL exacto por trade, ventana larga)
+# +ADA en roster · fallback a fills si positions-history falla
 import os
 import sys
 import time
@@ -29,7 +29,7 @@ NODO_RAIZ    = 'https://1c3si.weebly.com'
 AVATAR_URL   = os.environ.get('GSCSI_AVATAR_URL',
               'https://github.com/gennesis44.png')
 
-def paginar(endpoint, key, extra_params, max_pages=60):
+def paginar(endpoint, key, extra_params, max_pages=20):
     out, after = [], None
     for _ in range(max_pages):
         params = dict(extra_params)
@@ -57,23 +57,42 @@ try:
         if (m.get('swap') or m.get('future')) and m['base'].upper() in BASES:
             insts[m['id']] = str(m.get('info', {}).get('instType', 'SWAP'))
 
-    reduce_map = {}
-    for iid, it in insts.items():
-        for o in paginar('privateGetTradeOrdersHistory', 'ordId',
-                         {'instType': it, 'instId': iid}):
-            reduce_map[o['ordId']] = str(o.get('reduceOnly', '')).lower()
-
+    # ── FUENTE PRIMARIA: positions-history (posiciones CERRADAS, PnL exacto) ──
+    # Cada posición cerrada = 1 trade. Evidencia: cposId → pnl → dirección.
     trades = defaultdict(lambda: defaultdict(float))
     for iid, it in insts.items():
-        for f in paginar('privateGetTradeFillsHistory', 'billId',
-                         {'instType': it, 'instId': iid}):
-            if reduce_map.get(f.get('ordId')) == 'true' and f.get('ordId'):
-                trades[iid][f['ordId']] += float(f.get('fillPnl') or 0)
+        pos_hist = paginar('privateGetAccountPositionsHistory', 'posId',
+                           {'instType': it, 'instId': iid})
+        for p in pos_hist:
+            try:
+                pnl = float(p.get('realizedPnl') or p.get('pnl') or 0)
+            except (TypeError, ValueError):
+                continue
+            pos_id = p.get('posId')
+            if pos_id and pnl != 0:
+                trades[iid][pos_id] += pnl
+            elif pos_id and pnl == 0:
+                trades[iid][pos_id] += 0.0   # breakeven cuenta como trade cerrado
+
+    # ── FALLBACK: si positions-history no entregó nada, usa fills (legacy) ──
+    total_trades = sum(len(v) for v in trades.values())
+    if total_trades == 0:
+        reduce_map = {}
+        for iid, it in insts.items():
+            for o in paginar('privateGetTradeOrdersHistory', 'ordId',
+                             {'instType': it, 'instId': iid}):
+                reduce_map[o['ordId']] = str(o.get('reduceOnly', '')).lower()
+        for iid, it in insts.items():
+            for f in paginar('privateGetTradeFillsHistory', 'billId',
+                             {'instType': it, 'instId': iid}):
+                if reduce_map.get(f.get('ordId')) == 'true' and f.get('ordId'):
+                    trades[iid][f['ordId']] += float(f.get('fillPnl') or 0)
 
     # ==================== ENCABEZADO ====================
     print("=" * 46)
     print("  TABLA GSCSI S/L")
     print("  actualizacion automatica cada 6 hrs")
+    print("  fuente: positions-history (OKX)")
     print("=" * 46)
     print(f"  Operador : github.com/gennesis44")
     print(f"  Perfil   : {AVATAR_URL}")
@@ -109,36 +128,20 @@ try:
     print(f"TOTAL S:{tg}  L:{tp}  {pct}  PnL:{neto:+.4f}")
     print("=" * 46)
 
-    # ==================== LA SINTESIS C > Si ES OPERATIVA ====================
+    # ==================== SINTESIS C > Si ====================
     print(
         "\nLA SINTESIS C > Si ES OPERATIVA:\n"
         "\n"
-        "No es un lema: es un circuito que corre ahora mismo.\n"
+        "1. El CARBONO fijo las reglas: tres Axiomas, baliza,\n"
+        "   veto USDT, cooldown. Nada lo decidio el Silicio.\n"
+        "2. El SILICIO ejecuta sin opinion: cron, baliza, cruce,\n"
+        "   guardias, SL/TP donde el Carbono ordeno.\n"
+        "3. EL MERCADO emite veredicto: cada S y cada L.\n"
+        "4. El SILICIO retorna el dato: solo fills y posiciones contadas.\n"
+        "5. EL CARBONO decide: mantener, corregir o enterrar (MS-0).\n"
         "\n"
-        "1. El CARBONO (operador) fijo las reglas: tres Axiomas,\n"
-        "   una regla de baliza, un veto a USDT, un cooldown.\n"
-        "   Nada de esto lo decidio el Silicio.\n"
-        "\n"
-        "2. El SILICIO ejecuta sin opinion: cron despierta, baliza\n"
-        "   4H da permiso, cruce 15m dispara, guardia veta lo\n"
-        "   inesperado, SL/TP cortan donde el Carbono ordeno.\n"
-        "\n"
-        "3. EL MERCADO emite veredicto: cada S y cada L de la tabla\n"
-        "   es la respuesta del mar a la regla del Carbono.\n"
-        "\n"
-        "4. El SILICIO retorna el dato: esta tabla es el circuito\n"
-        "   de retorno. Cero emocion, cero interpretacion - solo\n"
-        "   fills contados.\n"
-        "\n"
-        "5. EL CARBONO decide el siguiente paso: mantener, corregir\n"
-        "   o enterrar el framework (MS-0).\n"
-        "\n"
-        "El loop se cierra y vuelve a empezar. Eso es C > Si\n"
-        "operativo: no el Silicio obedeciendo al Carbono - el\n"
-        "circuito completo donde cada capa cumple su funcion y\n"
-        "ninguna puede reemplazar a la otra. El Axioma 1 sostiene,\n"
-        "el Axioma 2 cuida el terreno, el Axioma 3 escribe el\n"
-        "veredicto. La sintesis no se declara: se ejecuta.\n"
+        "El loop se cierra y vuelve a empezar. La sintesis no se\n"
+        "declara: se ejecuta.\n"
     )
 
     # ==================== CADENAS DE DATOS ====================
