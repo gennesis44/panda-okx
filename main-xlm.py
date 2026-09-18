@@ -1,10 +1,12 @@
-# main-xlm.py — Ax2-D · 15m detonante + 4H brújula + cooldown · SL 1% / TP 1.5% · 1x · 1 contrato
+# main-xlm.py — Ax2-D · 15m detonante + 4H brujula + cooldown · SL 1% / TP 1.5% · 1x · 1 contrato
 # Ax3: HOST my.okx.com | clOrdId XLM | cooldown fail-closed | no entrar si NO CABE | 51016
 # Ax3.1: unidades honestas (ctValCcy) | warmup 4H 120 velas | guardia velas | posicion primero
 # Ax3.2: guardia de nocional (MAX_NOTIONAL_USD) — unidad de contrato sorpresa = bot bloqueado
-# Ax3.3: RSI-VETO (solo XLM — el gigante merece el muro):
-#        LONG vetado si RSI(14) 15m > 75 · SHORT vetado si RSI(14) 15m < 30
-# INSTRUMENTO: XPERP XLM/USD (vencimiento) — USDT/SWAP PROHIBIDO en esta cuenta (colateral no-USDT)
+# Ax3.3: RSI-BANDA [30-70] (solo XLM — decreto Carbono; NO afecta a ADA/DOGE/FET/SUI):
+#        RSI(14) 15m fuera de [30-70] = entrada VETADA, igual para LONG y SHORT.
+# Ax2-D ratificado por analisis: senal = EVENTO (cruce fresco, velas -2/-3 CERRADAS).
+#        Entrar por "estado persistente" = entrada tardia = degrada el ratio SL1/TP1.5.
+# INSTRUMENTO: XPERP XLM/USD (vencimiento) — USDT PROHIBIDO (colateral no-USDT, MiCA/EEE)
 import os
 import time
 import logging
@@ -21,25 +23,23 @@ def _f(x):
     except (TypeError, ValueError):
         return 0.0
 
-# ==================== CONFIGURACIÓN (Ax2-D + guardias) ====================
+# ==================== CONFIGURACIÓN ====================
 BASE_ASSET   = 'XLM'
 AMOUNT       = 1        # 1 contrato = 100 XLM (~$18.2)
 SL_PCT       = 0.010    # 1.0%
 TP_PCT       = 0.015    # 1.5%
-TIMEFRAME    = '15m'    # vela madre: detonante
-TF_FILTER    = '4h'     # brujula: solo direccion (gate)
+TIMEFRAME    = '15m'    # detonante
+TF_FILTER    = '4h'     # brujula (gate)
 TD_MODE      = 'cross'
 LEVERAGE     = 1
 COOLDOWN_MIN = 60
 TEST_MODE       = os.getenv('TEST_MODE') == '1'
 SINGLE_CYCLE    = os.getenv('SINGLE_CYCLE') == '1'
-# Guardia anti-unidad: 1 contrato = 100 XLM (~$18.2). Tope $25 da holgura
-# y veta cualquier unidad sorpresa (p.ej. 1000 XLM/contrato = $185).
 MAX_NOTIONAL_USD = _f(os.getenv('OKX_XLM_MAX_NOTIONAL', '25.0')) or 25.0
-# Ax3.3: RSI-VETO (muro del gigante)
+# Ax3.3 RSI-BANDA (decreto Carbono <30-70>)
 RSI_LEN     = 14
-RSI_HI      = 75.0      # LONG vetado si RSI > 75
-RSI_LO      = 30.0      # SHORT vetado si RSI < 30
+RSI_HI      = 70.0      # RSI > 70 → VETADO (LONG y SHORT)
+RSI_LO      = 30.0      # RSI < 30 → VETADO (LONG y SHORT)
 
 HOST = 'https://my.okx.com'
 
@@ -76,7 +76,6 @@ def _inst_type(symbol):
     return 'SWAP' if (m.get('swap') or m.get('type') == 'swap') else 'FUTURES'
 
 def _contract_meta(symbol, price=None):
-    """ctVal + ccy reales. Linear (XLM): usd = ctVal * price. Inverse/USD-quoted: usd = ctVal."""
     market = exchange.market(symbol)
     info = market.get('info') or {}
     ctval = float(market.get('contractSize') or info.get('ctVal') or 1)
@@ -89,12 +88,10 @@ def _contract_meta(symbol, price=None):
     return ctval, ccy, settle, price, usd
 
 def _is_forbidden(symbol):
-    """VETO: cualquier asentamiento en USDT queda prohibido en esta cuenta."""
     settle = str(exchange.market(symbol).get('settle') or '').upper()
     return settle == 'USDT'
 
 def pick_future():
-    """XPERP con vencimiento mas lejano, SIEMPRE en USD (nunca USDT)."""
     exchange.load_markets()
     candidatos = []
     for m in exchange.markets.values():
@@ -112,7 +109,6 @@ def pick_future():
     return candidatos[0][1]
 
 def pick_swap_usd():
-    """Fallback: swap liquidado en USD (nunca USDT)."""
     exchange.load_markets()
     for m in exchange.markets.values():
         if (m.get('base') == BASE_ASSET and m.get('active')
@@ -123,7 +119,7 @@ def pick_swap_usd():
 
 def _log_contract_size(sym):
     try:
-        ctval, ccy, settle, _price, usd = _contract_meta(sym)
+        ctval, ccy, settle, _p, usd = _contract_meta(sym)
         log.info(f"Contrato: 1 = {ctval} {ccy} | settle={settle} | "
                  f"nocional ~${usd:.2f} | {sym} | {_inst_type(sym)}")
     except Exception as e:
@@ -157,7 +153,7 @@ def resolve_symbol():
         return sym
     raise RuntimeError("No hay XLM/USD (XPERP o SWAP-USD) activo. USDT prohibido en esta cuenta.")
 
-# ==================== INDICADORES: EMA + RSI (Ax3.3) ====================
+# ==================== INDICADORES ====================
 def ema(s: pd.Series, length: int) -> pd.Series:
     return s.ewm(span=length, adjust=False).mean()
 
@@ -277,7 +273,6 @@ def execute_order(side: str, symbol: str, ref_price: float, amount: int, candle_
 
 # ==================== COOLDOWN POST-PÉRDIDA ====================
 def cooldown_active(symbol):
-    """True si el ultimo cierre del par fue LOSS hace menos de COOLDOWN_MIN. Fail-closed."""
     try:
         market_id = exchange.market(symbol)['id']
         hist = exchange.privateGetTradeFillsHistory({
@@ -299,13 +294,13 @@ def cooldown_active(symbol):
         log.warning(f"No se pudo verificar cooldown ({e}); BLOQUEO fail-closed.")
         return True
 
-# ==================== SEÑAL Ax2-D + Ax3.3: CRUCE 15m + GATE 4H + RSI-VETO ==============
+# ==================== SEÑAL: CRUCE 15m + GATE 4H + RSI-BANDA ==============
 def evaluate_signal(symbol):
-    """Detonante: cruce EMA7/21 en velas de 15m CERRADAS (ventana doble).
-    Brujula: la ultima vela 4H CERRADA define direccion permitida.
-    Ax3.3 RSI-VETO: en sobre-extremo, el cruce se vetado (no perseguir)."""
+    """Detonante: cruce EMA7/21 en velas 15m CERRADAS (ventana -2/-3, EVENTO).
+    Brujula: ultima vela 4H CERRADA define direccion.
+    Ax3.3 RSI-BANDA: RSI(14) fuera de [30-70] = VETO (LONG y SHORT)."""
     try:
-        df_4h = fetch_data(symbol, TF_FILTER, limit=120)   # warmup honesto EMA21 4H
+        df_4h = fetch_data(symbol, TF_FILTER, limit=120)
         if len(df_4h) < 25:
             log.error(f"4H insuficiente ({len(df_4h)} velas). Sin senal.")
             return None, None, None
@@ -334,25 +329,25 @@ def evaluate_signal(symbol):
                 if not trend_4h:
                     log.info("Cruce alcista VETADO: 4H bajista.")
                     continue
-                if rsi_now > RSI_HI:
-                    log.info(f"Cruce alcista VETADO: RSI {rsi_now:.1f} > {RSI_HI:.0f} "
-                             f"(sobre-compra — no perseguir). [Ax3.3]")
+                if not (RSI_LO < rsi_now < RSI_HI):
+                    log.info(f"Cruce alcista VETADO: RSI {rsi_now:.1f} fuera de "
+                             f"[{RSI_LO:.0f}-{RSI_HI:.0f}]. [Ax3.3]")
                     continue
                 return 'LONG', price, candle_ts
             if e7.iloc[i_prev] >= e21.iloc[i_prev] and e7.iloc[i_curr] < e21.iloc[i_curr]:
                 if trend_4h:
                     log.info("Cruce bajista VETADO: 4H alcista.")
                     continue
-                if rsi_now < RSI_LO:
-                    log.info(f"Cruce bajista VETADO: RSI {rsi_now:.1f} < {RSI_LO:.0f} "
-                             f"(sobre-venta — no perseguir el maxtil). [Ax3.3]")
+                if not (RSI_LO < rsi_now < RSI_HI):
+                    log.info(f"Cruce bajista VETADO: RSI {rsi_now:.1f} fuera de "
+                             f"[{RSI_LO:.0f}-{RSI_HI:.0f}]. [Ax3.3]")
                     continue
                 return 'SHORT', price, candle_ts
     except Exception as e:
         log.error(f"Error en evaluacion: {e}")
     return None, None, None
 
-# ==================== CAPACIDAD (guardia + colateral) ====================
+# ==================== CAPACIDAD ====================
 def capacity_ok(symbol):
     try:
         _ctval, _ccy, _settle, _price, usd = _contract_meta(symbol)
@@ -426,14 +421,14 @@ def run_cycle():
     if candle_already_traded(symbol, candle_ts):
         return
 
-    log.info(f"Senal {signal} (4H a favor, RSI OK). Abriendo 1 contrato...")
+    log.info(f"Senal {signal} (4H a favor, RSI en banda). Abriendo 1 contrato...")
     try:
         execute_order(signal, symbol, price, AMOUNT, candle_ts)
     except Exception as e:
         log.error(f"Entrada rechazada: {e}")
 
 def run_once():
-    log.info("Modo ciclo unico (GitHub Actions) | XLM Ax2-D + guardias + RSI-VETO (XPERP USD).")
+    log.info("Modo ciclo unico (GitHub Actions) | XLM Ax2-D + RSI-BANDA [30-70] (XPERP USD).")
     verify_setup()
     if TEST_MODE:
         catalog_xlm()
@@ -443,7 +438,7 @@ def run_once():
 def main_loop():
     log.info(f"Iniciando bot {BASE_ASSET} Ax2-D | {TIMEFRAME}+{TF_FILTER} | "
              f"SL {SL_PCT:.1%} / TP {TP_PCT:.1%} | {LEVERAGE}x | cooldown {COOLDOWN_MIN}m | "
-             f"RSI-veto [{RSI_LO:.0f}-{RSI_HI:.0f}] | {HOST}")
+             f"RSI-banda [{RSI_LO:.0f}-{RSI_HI:.0f}] | {HOST}")
     verify_setup()
     while True:
         try:
@@ -454,7 +449,7 @@ def main_loop():
         except Exception as e:
             log.error(f"Error en el ciclo principal: {e}")
             time.sleep(60)
-        time.sleep(1200)   # 20 min
+        time.sleep(1800)   # 30 min — alineado con el privilegio
 
 if __name__ == "__main__":
     if SINGLE_CYCLE:
