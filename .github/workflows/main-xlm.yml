@@ -2,7 +2,7 @@ name: xlm-bot-okx
 
 on:
   schedule:
-    - cron: '2,22,42 * * * *'
+    - cron: '3,33 * * * *'    # cada 30 min — privilegio XLM (decreto Carbono)
   workflow_dispatch:
     inputs:
       mode:
