@@ -29,7 +29,7 @@ TF_FILTER   = '4h'       # brujula: solo direccion (gate)
 TD_MODE     = 'cross'
 LEVERAGE    = 1
 COOLDOWN_MIN = 60
-TEST_MODE       = os.getenv('TEST_MODE') == '1'
+TEST_MODE       = os.getenv('TEST_MODE') == '0'
 SINGLE_CYCLE    = os.getenv('SINGLE_CYCLE') == '1'
 # Guardia anti-unidad: 2 contratos = 20 FET (~$3.4). Tope $7.0 da holgura
 # y veta cualquier unidad sorpresa (p.ej. 1000 FET/contrato = $170).
