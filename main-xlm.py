@@ -1,4 +1,4 @@
-# main-xlm.py — Ax2-D · 15m detonante + 4H brujula + cooldown · SL 1% / TP 1.5% · 1x · 1 contrato
+# main-xlm.py — Ax2-D · 15m detonante + 4H brujula (cruce fresco) + cooldown · SL 1% / TP 1.5% · 1x · 1 contrato
 # Ax3: HOST my.okx.com | clOrdId XLM | cooldown fail-closed | no entrar si NO CABE | 51016
 # Ax3.1: unidades honestas (ctValCcy) | warmup 4H 120 velas | guardia velas | posicion primero
 # Ax3.2: guardia de nocional (MAX_NOTIONAL_USD) — unidad de contrato sorpresa = bot bloqueado
@@ -25,11 +25,11 @@ def _f(x):
 
 # ==================== CONFIGURACIÓN ====================
 BASE_ASSET   = 'XLM'
-AMOUNT       = 1        # 1 contrato = 100 XLM (~$18.2)
+AMOUNT       = 1        # 1 contrato = 100 XLM (\~$18.2)
 SL_PCT       = 0.010    # 1.0%
 TP_PCT       = 0.015    # 1.5%
 TIMEFRAME    = '15m'    # detonante
-TF_FILTER    = '4h'     # brujula (gate)
+TF_FILTER    = '4h'     # brujula (gate + cruce fresco)
 TD_MODE      = 'cross'
 LEVERAGE     = 1
 COOLDOWN_MIN = 60
@@ -121,7 +121,7 @@ def _log_contract_size(sym):
     try:
         ctval, ccy, settle, _p, usd = _contract_meta(sym)
         log.info(f"Contrato: 1 = {ctval} {ccy} | settle={settle} | "
-                 f"nocional ~${usd:.2f} | {sym} | {_inst_type(sym)}")
+                 f"nocional \~${usd:.2f} | {sym} | {_inst_type(sym)}")
     except Exception as e:
         log.warning(f"No se pudo leer el tamano del contrato: {e}")
 
@@ -223,7 +223,7 @@ def candle_already_traded(symbol, candle_ts: int) -> bool:
 def execute_order(side: str, symbol: str, ref_price: float, amount: int, candle_ts: int):
     ctval, ccy, _settle, _p, usd = _contract_meta(symbol, ref_price)
     nocional = amount * usd
-    log.info(f"Nocional: {amount} contrato x {ctval} {ccy} (~${nocional:.2f})")
+    log.info(f"Nocional: {amount} contrato x {ctval} {ccy} (\~${nocional:.2f})")
 
     if nocional > MAX_NOTIONAL_USD:
         raise RuntimeError(
@@ -294,23 +294,42 @@ def cooldown_active(symbol):
         log.warning(f"No se pudo verificar cooldown ({e}); BLOQUEO fail-closed.")
         return True
 
-# ==================== SEÑAL: CRUCE 15m + GATE 4H + RSI-BANDA ==============
+# ==================== SEÑAL: CRUCE 15m + CRUCE 4H + RSI-BANDA ==============
 def evaluate_signal(symbol):
     """Detonante: cruce EMA7/21 en velas 15m CERRADAS (ventana -2/-3, EVENTO).
-    Brujula: ultima vela 4H CERRADA define direccion.
+    Brújula: cruce fresco EMA7/21 en 4H (también EVENTO) + dirección alineada.
     Ax3.3 RSI-BANDA: RSI(14) fuera de [30-70] = VETO (LONG y SHORT)."""
     try:
+        # ---------- 4H: cruce fresco (evento) ----------
         df_4h = fetch_data(symbol, TF_FILTER, limit=120)
         if len(df_4h) < 25:
             log.error(f"4H insuficiente ({len(df_4h)} velas). Sin senal.")
             return None, None, None
-        e7h, e21h = ema(df_4h['close'], 7), ema(df_4h['close'], 21)
-        trend_4h = e7h.iloc[-2] > e21h.iloc[-2]
 
+        e7h = ema(df_4h['close'], 7)
+        e21h = ema(df_4h['close'], 21)
+
+        # Buscamos cruce fresco en las últimas velas 4H cerradas (-2 / -3)
+        cross_4h = None          # 'LONG' o 'SHORT' o None
+        for i_curr in (-2, -3):
+            i_prev = i_curr - 1
+            if e7h.iloc[i_prev] <= e21h.iloc[i_prev] and e7h.iloc[i_curr] > e21h.iloc[i_curr]:
+                cross_4h = 'LONG'
+                break
+            if e7h.iloc[i_prev] >= e21h.iloc[i_prev] and e7h.iloc[i_curr] < e21h.iloc[i_curr]:
+                cross_4h = 'SHORT'
+                break
+
+        if cross_4h is None:
+            log.info("Sin cruce fresco EMA7/21 en 4H. Vigilando.")
+            return None, None, None
+
+        # ---------- 15m: cruce fresco + alineación con 4H + RSI ----------
         df = fetch_data(symbol, TIMEFRAME, limit=60)
         if len(df) < 25:
             log.error(f"{TIMEFRAME} insuficiente ({len(df)} velas). Sin senal.")
             return None, None, None
+
         df['EMA_7']  = ema(df['close'], 7)
         df['EMA_21'] = ema(df['close'], 21)
         df['RSI_14'] = rsi(df['close'], RSI_LEN)
@@ -318,31 +337,36 @@ def evaluate_signal(symbol):
 
         e7, e21, r14 = df['EMA_7'], df['EMA_21'], df['RSI_14']
         rsi_now = r14.iloc[-2]
+
         log.info(f"Precio: {price} | {TIMEFRAME} EMA7/21: {e7.iloc[-2]:.5f}/{e21.iloc[-2]:.5f} | "
-                 f"RSI: {rsi_now:.1f} | 4H: {'ALCISTA' if trend_4h else 'BAJISTA'} "
-                 f"(gate {'LONG' if trend_4h else 'SHORT'})")
+                 f"RSI: {rsi_now:.1f} | 4H cruce: {cross_4h}")
 
         for i_curr in (-2, -3):
             i_prev = i_curr - 1
             candle_ts = int(df['timestamp'].iloc[i_curr])
+
+            # Cruce alcista 15m
             if e7.iloc[i_prev] <= e21.iloc[i_prev] and e7.iloc[i_curr] > e21.iloc[i_curr]:
-                if not trend_4h:
-                    log.info("Cruce alcista VETADO: 4H bajista.")
+                if cross_4h != 'LONG':
+                    log.info("Cruce alcista 15m VETADO: 4H no tiene cruce LONG fresco.")
                     continue
                 if not (RSI_LO < rsi_now < RSI_HI):
                     log.info(f"Cruce alcista VETADO: RSI {rsi_now:.1f} fuera de "
                              f"[{RSI_LO:.0f}-{RSI_HI:.0f}]. [Ax3.3]")
                     continue
                 return 'LONG', price, candle_ts
+
+            # Cruce bajista 15m
             if e7.iloc[i_prev] >= e21.iloc[i_prev] and e7.iloc[i_curr] < e21.iloc[i_curr]:
-                if trend_4h:
-                    log.info("Cruce bajista VETADO: 4H alcista.")
+                if cross_4h != 'SHORT':
+                    log.info("Cruce bajista 15m VETADO: 4H no tiene cruce SHORT fresco.")
                     continue
                 if not (RSI_LO < rsi_now < RSI_HI):
                     log.info(f"Cruce bajista VETADO: RSI {rsi_now:.1f} fuera de "
                              f"[{RSI_LO:.0f}-{RSI_HI:.0f}]. [Ax3.3]")
                     continue
                 return 'SHORT', price, candle_ts
+
     except Exception as e:
         log.error(f"Error en evaluacion: {e}")
     return None, None, None
@@ -365,7 +389,7 @@ def capacity_ok(symbol):
         details = ((raw or {}).get('data') or [{}])[0].get('details') or []
         total = sum(_f(d.get('eqUsd')) for d in details)
         verdict = 'CABE' if total >= need else 'NO CABE'
-        log.info(f"Margen 1 contrato: ~${need:.2f} | colateral real: ~${total:.2f} -> {verdict}")
+        log.info(f"Margen 1 contrato: \~\( {need:.2f} | colateral real: \~ \){total:.2f} -> {verdict}")
         return total >= need
     except Exception as e:
         log.warning(f"Capacidad: colateral no calculable: {e} — BLOQUEO.")
@@ -387,7 +411,7 @@ def verify_setup():
     raw = exchange.privateGetAccountBalance()
     details = ((raw or {}).get('data') or [{}])[0].get('details') or []
     total = sum(_f(d.get('eqUsd')) for d in details)
-    log.info(f"Autenticacion OK | host={HOST} | Colateral real (valor USD): ~{total:.2f}")
+    log.info(f"Autenticacion OK | host={HOST} | Colateral real (valor USD): \~{total:.2f}")
 
 # ==================== CICLO ====================
 def run_cycle():
@@ -421,14 +445,14 @@ def run_cycle():
     if candle_already_traded(symbol, candle_ts):
         return
 
-    log.info(f"Senal {signal} (4H a favor, RSI en banda). Abriendo 1 contrato...")
+    log.info(f"Senal {signal} (4H cruce fresco a favor, RSI en banda). Abriendo 1 contrato...")
     try:
         execute_order(signal, symbol, price, AMOUNT, candle_ts)
     except Exception as e:
         log.error(f"Entrada rechazada: {e}")
 
 def run_once():
-    log.info("Modo ciclo unico (GitHub Actions) | XLM Ax2-D + RSI-BANDA [30-70] (XPERP USD).")
+    log.info("Modo ciclo unico (GitHub Actions) | XLM Ax2-D + RSI-BANDA [30-70] + cruce 4H (XPERP USD).")
     verify_setup()
     if TEST_MODE:
         catalog_xlm()
@@ -436,7 +460,7 @@ def run_once():
     run_cycle()
 
 def main_loop():
-    log.info(f"Iniciando bot {BASE_ASSET} Ax2-D | {TIMEFRAME}+{TF_FILTER} | "
+    log.info(f"Iniciando bot {BASE_ASSET} Ax2-D | {TIMEFRAME}+{TF_FILTER} (cruce fresco) | "
              f"SL {SL_PCT:.1%} / TP {TP_PCT:.1%} | {LEVERAGE}x | cooldown {COOLDOWN_MIN}m | "
              f"RSI-banda [{RSI_LO:.0f}-{RSI_HI:.0f}] | {HOST}")
     verify_setup()
