@@ -1,7 +1,7 @@
 # main-hy.py — GSCSI TABLE · C > Si
-# v7: instrumentos resueltos con la MISMA regla del bot ADA en producción:
-#     X-Perp = future (expTime más lejano) · fallback swap USD · settle USDC ·
-#     veto USDT · S=short L=long reales · SL/TP % · historial JSONL · exit 1
+# v8: fuente = positions-history CRUDA (FUTURES + SWAP) → filtro posterior.
+#     Sin depender de la clasificación ccxt de los X-Perp. Veto USDT.
+#     S=short L=long reales · SL/TP % · historial JSONL · exit 1 en error
 import os
 import sys
 import time
@@ -10,10 +10,11 @@ import pathlib
 import ccxt
 from collections import defaultdict
 
-# ══ AXIOMAS DEL CARBONO (editar aquí, nunca en el código) ══
-BASES        = {'DOGE', 'FET', 'SUI', 'XLM', 'ADA'}        # sin BTC
-SL_PCT       = {'DOGE':1.0, 'FET':1.0, 'SUI':1.0, 'XLM':1.0, 'ADA':1.0}  # ← Carbono ajusta
-TP_PCT       = {'DOGE':2.0, 'FET':2.0, 'SUI':2.0, 'XLM':2.0, 'ADA':2.0}  # ← Carbono ajusta
+# ══ AXIOMAS DEL CARBONO ══
+BASES        = {'DOGE', 'FET', 'SUI', 'XLM', 'ADA'}      # sin BTC
+VETO         = 'USDT'                                     # axioma EEE/MiCA
+SL_PCT       = {'DOGE':1.0, 'FET':1.0, 'SUI':1.0, 'XLM':1.0, 'ADA':1.0}  # ← Carbono
+TP_PCT       = {'DOGE':2.0, 'FET':2.0, 'SUI':2.0, 'XLM':2.0, 'ADA':2.0}  # ← Carbono
 CADENCIA_HRS = 8
 
 NODO_NUCLEO = 'https://1c3si.weebly.com/clo.html'
@@ -23,16 +24,16 @@ AVATAR_URL  = os.environ.get('GSCSI_AVATAR_URL', 'https://github.com/gennesis44.
 API_KEY    = os.environ.get('OKX_API_KEY', '')
 SECRET_KEY = os.environ.get('OKX_SECRET_KEY', '')
 PASSPHRASE = os.environ.get('OKX_HY_PASSWORD') or os.environ.get('OKX_PASSWORD') or ''
-
 if not (API_KEY and SECRET_KEY and PASSPHRASE):
-    sys.exit("ABORTADO: falta credencial")
+    print("ABORTADO: falta credencial", flush=True)
+    sys.exit(1)
 
 exchange = ccxt.okx({
     'apiKey':   API_KEY,
     'secret':   SECRET_KEY,
     'password': PASSPHRASE,
     'options':  {'defaultType': 'swap'},
-    'urls':     {'api': {'rest': 'https://my.okx.com'}},   # EEE — obligatorio
+    'urls':     {'api': {'rest': 'https://my.okx.com'}},   # EEE
 })
 
 HISTORIAL = pathlib.Path('data/history.jsonl')
@@ -48,7 +49,7 @@ def paginar(endpoint, key, extra_params, max_pages=20):
         try:
             data = getattr(exchange, endpoint)(params).get('data', [])
         except Exception:
-            raise                      # nada de errores silenciosos
+            raise
         if not data:
             break
         out.extend(data)
@@ -59,52 +60,12 @@ def paginar(endpoint, key, extra_params, max_pages=20):
     return out
 
 
-# ── resolución de instrumentos: regla de producción (main-ada.py) ──
-def _exp(m):
-    try:
-        return int((m.get('info') or {}).get('expTime') or 0)
-    except (TypeError, ValueError):
-        return 0
-
-def _settle(m):
-    return str(m.get('settle') or (m.get('info') or {}).get('settleCcy') or '').upper()
-
-def _inst_type(m):
-    t = str((m.get('info') or {}).get('instType') or '').upper()
-    if t in ('SWAP', 'FUTURES'):
-        return t
-    return 'FUTURES' if m.get('future') else 'SWAP'
-
-def selecciona_instrumentos(exchange):
-    """Regla del bot ADA (resolve_symbol):
-       1º X-Perp = future activo con expTime MÁS LEJANO, settle USDC
-       2º fallback = swap USD activo
-       VETO absoluto: settle USDT (EEE/MiCA)."""
-    print("INSTRUMENTOS ACTIVOS (regla resolve_symbol del bot ADA):")
-    elegidos = {}
-    for base in sorted(BASES):
-        fut, swp = [], []
-        for m in exchange.markets.values():
-            if (m.get('base') or '').upper() != base or not m.get('active'):
-                continue
-            if not (m.get('future') or m.get('swap')):
-                continue
-            s = _settle(m)
-            if s == 'USDT' or s != 'USDC':    # veto USDT + UM = margen USDC
-                continue
-            (fut if m.get('future') else swp).append(m)
-        m = max(fut, key=_exp) if fut else (swp[0] if swp else None)
-        if m is None:
-            sys.exit(f"ABORTADO: sin X-Perp/swap-USD activo para {base} (settle USDC)")
-        it = _inst_type(m)
-        elegidos[m['id']] = (base, it)
-        origen = 'X-Perp' if fut else 'fallback swap'
-        print(f"  {base:<5} → {m['id']:<24} instType={it:<8} "
-              f"expTime={(m.get('info') or {}).get('expTime', '?')} ({origen})")
-    return elegidos
+def admite(iid):
+    """Base permitida + veto USDT. Ej: ADA-USD-SWAP ok · ADA-USDT-SWAP NO."""
+    base = iid.split('-')[0].upper()
+    return base in BASES and VETO not in iid.upper()
 
 
-# ── clasificación de salidas ──
 def mov_pct(r):
     try:
         o, c = float(r['open']), float(r['close'])
@@ -113,6 +74,7 @@ def mov_pct(r):
     if o <= 0 or c <= 0:
         return None
     return (c / o - 1) * 100 if r['dir'] == 'long' else (1 - c / o) * 100
+
 
 def salida(r, base):
     if r['liq'] > 0:
@@ -128,35 +90,44 @@ def salida(r, base):
 
 
 try:
-    exchange.load_markets()
-    insts = selecciona_instrumentos(exchange)
-
-    # ── posiciones cerradas: 1 posId = 1 trade ──
-    trades = defaultdict(list)          # iid -> [regs]
-    for iid, (base, itype) in insts.items():
+    # ── positions-history CRUDA: dos instType, sin instId ──
+    crudos = []
+    vistos = set()
+    for it in ('FUTURES', 'SWAP'):
         for p in paginar('privateGetAccountPositionsHistory', 'posId',
-                         {'instType': itype, 'instId': iid}):   # ← instType REAL
-            pos_id = p.get('posId')
-            if not pos_id:
+                         {'instType': it}):
+            pid = (p.get('posId'), p.get('uTime'))
+            if pid in vistos:
                 continue
-            try:
-                pnl = float(p.get('realizedPnl') or 0)
-            except (TypeError, ValueError):
-                continue
-            trades[iid].append({
-                'posId': pos_id,
-                'dir':   (p.get('direction') or '?').lower(),
-                'open':  p.get('openAvgPx') or '',
-                'close': p.get('closeAvgPx') or '',
-                'liq':   float(p.get('liqPenalty') or 0),
-                'pnl':   pnl,
-                'uTime': p.get('uTime') or '',
-            })
+            vistos.add(pid)
+            crudos.append(p)
+            print(f"  [{it}] instId={p.get('instId')} dir={p.get('direction')} "
+                  f"pnl={p.get('realizedPnl')}", flush=True)
+
+    # ── filtro posterior: bases del roster + veto USDT ──
+    trades = defaultdict(list)                 # inst -> [regs]
+    for p in crudos:
+        iid = p.get('instId') or ''
+        if not admite(iid):
+            continue
+        try:
+            pnl = float(p.get('realizedPnl') or 0)
+        except (TypeError, ValueError):
+            continue
+        trades[iid].append({
+            'posId': p.get('posId'),
+            'dir':   (p.get('direction') or '?').lower(),
+            'open':  p.get('openAvgPx') or '',
+            'close': p.get('closeAvgPx') or '',
+            'liq':   float(p.get('liqPenalty') or 0),
+            'pnl':   pnl,
+            'uTime': p.get('uTime') or '',
+        })
 
     # consolidar cierres parciales por posId
     agg = defaultdict(list)
     for iid, regs in trades.items():
-        base = insts[iid][0]
+        base = iid.split('-')[0].upper()
         by_pos = {}
         for r in regs:
             t = by_pos.setdefault(r['posId'], dict(r))
@@ -169,7 +140,12 @@ try:
             t['base'], t['inst'] = base, iid
             agg[base].append(t)
 
-    # ── persistencia: dedup por (inst, posId) ──
+    if not any(agg.values()):
+        print("ERROR: positions-history no devolvio NINGUN registro admisible "
+              "en FUTURES ni SWAP. Pegar este log completo.", flush=True)
+        sys.exit(1)
+
+    # ── persistencia JSONL (dedup por inst+posId) ──
     prev = {}
     if HISTORIAL.exists():
         for line in HISTORIAL.read_text().splitlines():
@@ -188,12 +164,11 @@ try:
                     prev[k] = t
 
     # ── ENCABEZADO ──
-    print("=" * 46)
+    print("=" * 46, flush=True)
     print("  TABLA GSCSI S/L")
     print(f"  actualizacion automatica cada {CADENCIA_HRS} hrs")
-    print("  fuente: positions-history (OKX Europe)")
-    print("  Plataforma: my.okx.com · Regimen: MiCA/EEE")
-    print("  Instrumento: X-Perp UM · margen USDC · USDT: VETADO")
+    print("  fuente: positions-history CRUDA (OKX Europe)")
+    print("  my.okx.com · MiCA/EEE · USDT: VETADO")
     print("=" * 46)
     print(f"  Operador : github.com/gennesis44")
     print(f"  Perfil   : {AVATAR_URL}")
@@ -202,7 +177,7 @@ try:
     print(f"  Emitido  : {time.strftime('%Y-%m-%d %H:%M UTC', time.gmtime())}")
     print("=" * 46)
 
-    # ── TABLA: S=shorts cerrados · L=longs cerrados · % = winrate ──
+    # ── TABLA ──
     tg = tp = tw = 0
     neto = 0.0
     for base in sorted(BASES):
@@ -225,8 +200,8 @@ try:
     pct = f"{(tw / total * 100):.0f}%" if total else "-"
     print(f"TOTAL S:{tg}  L:{tp}  {pct}  PnL:{neto:+.4f}")
 
-    # ── ACUMULADO desde génesis (JSONL) ──
-    acc = [j for j in prev.values() if j.get('base') in BASES]
+    # ── ACUMULADO (JSONL) ──
+    acc = list(prev.values())
     if acc:
         aw  = sum(1 for r in acc if r['pnl'] > 0)
         al  = sum(1 for r in acc if r['pnl'] < 0)
@@ -242,7 +217,7 @@ try:
         print(f"  shorts:{ash} · longs:{len(acc) - ash} · PnL:{apnl:+.4f}")
         print(f"  peor trade: {peor.get('base', '?')} {peor['pnl']:+.4f}")
 
-    # ── SINTESIS C > Si ──
+    # ── SINTESIS ──
     print(
         "\nLA SINTESIS C > Si ES OPERATIVA:\n"
         "\n"
@@ -262,5 +237,5 @@ try:
     print(f"  Nodo raiz   : {NODO_RAIZ}")
 
 except Exception as e:
-    print(f"ERROR FATAL: {e}")
+    print(f"ERROR FATAL: {e}", flush=True)
     sys.exit(1)
