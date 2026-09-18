@@ -2,26 +2,56 @@ name: GSCSI Table
 
 on:
   schedule:
-    - cron: '17 */6 * * *'
+    - cron: '17 */8 * * *'      # cada 8 hrs — decreto Carbono
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write               # necesario para persistir data/history.jsonl
+
+concurrency:
+  group: gscsi-table
+  cancel-in-progress: false     # los runs se encolan, nunca se pisan
 
 jobs:
   table:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+
       - name: Install dependencies
-        run: pip install ccxt
+        run: pip install ccxt==4.4.68   # ← mira tu log "Successfully installed ccxt-X.Y.Z" y usa ESA versión
+
       - name: GSCSI S/L Table
         env:
-          OKX_API_KEY: ${{ secrets.OKX_HY_KEY }}
-          OKX_SECRET_KEY: ${{ secrets.OKX_HY_PASS }}
+          OKX_API_KEY:     ${{ secrets.OKX_HY_KEY }}
+          OKX_SECRET_KEY:  ${{ secrets.OKX_HY_PASS }}
           OKX_HY_PASSWORD: ${{ secrets.OKX_HY_PASSPHRASE }}
-        run: python main-hy.py
+        run: |
+          set -o pipefail
+          python main-hy.py | tee reporte.txt
+
+      - name: Persistir historial
+        run: |
+          git config user.name  "gscsi-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git pull --rebase --autostash origin main
+          git add data/
+          if git diff --cached --quiet; then
+            echo "sin posiciones nuevas"
+          else
+            git commit -m "GSCSI: historial $(date -u +'%Y-%m-%dT%H:%MZ')"
+            git push
+          fi
+
+      - name: Reporte como artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: gscsi-reporte
+          path: reporte.txt
