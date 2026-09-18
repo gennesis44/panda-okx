@@ -1,6 +1,7 @@
 # main-hy.py — GSCSI TABLE · C > Si
-# v6: EEE/MiCA (my.okx.com, X-Perp UM margen USDC) · S=short L=long reales ·
-#     SL/TP % · historial persistido data/history.jsonl · dedup · exit 1 en error
+# v7: instrumentos resueltos con la MISMA regla del bot ADA en producción:
+#     X-Perp = future (expTime más lejano) · fallback swap USD · settle USDC ·
+#     veto USDT · S=short L=long reales · SL/TP % · historial JSONL · exit 1
 import os
 import sys
 import time
@@ -11,12 +12,9 @@ from collections import defaultdict
 
 # ══ AXIOMAS DEL CARBONO (editar aquí, nunca en el código) ══
 BASES        = {'DOGE', 'FET', 'SUI', 'XLM', 'ADA'}        # sin BTC
-QUOTE_OK     = {'USD', 'USDC'}                              # UM X-Perp
-VETO_CCY     = 'USDT'                                       # axioma EEE
 SL_PCT       = {'DOGE':1.0, 'FET':1.0, 'SUI':1.0, 'XLM':1.0, 'ADA':1.0}  # ← Carbono ajusta
 TP_PCT       = {'DOGE':2.0, 'FET':2.0, 'SUI':2.0, 'XLM':2.0, 'ADA':2.0}  # ← Carbono ajusta
 CADENCIA_HRS = 8
-INSTIDS_FIJOS = {}   # solo si el log dice "AMBIGUO": ej. {'DOGE':'DOGE-USDC-SWAP'}
 
 NODO_NUCLEO = 'https://1c3si.weebly.com/clo.html'
 NODO_RAIZ   = 'https://1c3si.weebly.com'
@@ -50,7 +48,7 @@ def paginar(endpoint, key, extra_params, max_pages=20):
         try:
             data = getattr(exchange, endpoint)(params).get('data', [])
         except Exception:
-            raise                      # v6: NADA de errores silenciosos
+            raise                      # nada de errores silenciosos
         if not data:
             break
         out.extend(data)
@@ -61,41 +59,52 @@ def paginar(endpoint, key, extra_params, max_pages=20):
     return out
 
 
-def selecciona_instrumentos(exchange):
-    """UM = cotizado USD/USDC y margen (settle) USDC. USDT vetado por diseño."""
-    candid = defaultdict(set)
-    for m in exchange.markets.values():
-        if not m.get('swap'):
-            continue
-        base = (m.get('base') or '').upper()
-        if base not in BASES:
-            continue
-        iid = m['id']
-        if VETO_CCY in iid.upper():
-            continue                   # veto USDT: excluido siempre
-        quote  = (m.get('quote') or '').upper()
-        settle = (m.get('info', {}).get('settleCcy') or m.get('settle') or '').upper()
-        if settle == 'USDC' and quote in QUOTE_OK:
-            candid[base].add(iid)
+# ── resolución de instrumentos: regla de producción (main-ada.py) ──
+def _exp(m):
+    try:
+        return int((m.get('info') or {}).get('expTime') or 0)
+    except (TypeError, ValueError):
+        return 0
 
+def _settle(m):
+    return str(m.get('settle') or (m.get('info') or {}).get('settleCcy') or '').upper()
+
+def _inst_type(m):
+    t = str((m.get('info') or {}).get('instType') or '').upper()
+    if t in ('SWAP', 'FUTURES'):
+        return t
+    return 'FUTURES' if m.get('future') else 'SWAP'
+
+def selecciona_instrumentos(exchange):
+    """Regla del bot ADA (resolve_symbol):
+       1º X-Perp = future activo con expTime MÁS LEJANO, settle USDC
+       2º fallback = swap USD activo
+       VETO absoluto: settle USDT (EEE/MiCA)."""
+    print("INSTRUMENTOS ACTIVOS (regla resolve_symbol del bot ADA):")
     elegidos = {}
     for base in sorted(BASES):
-        if base in INSTIDS_FIJOS:
-            elegidos[INSTIDS_FIJOS[base]] = base
-            continue
-        ids = candid.get(base, set())
-        if len(ids) == 1:
-            elegidos[next(iter(ids))] = base
-        elif len(ids) > 1:
-            print(f"AMBIGUO {base}: candidatos {sorted(ids)}")
-            print(f"→ fija INSTIDS_FIJOS['{base}'] = '<instId>' y re-ejecuta")
-            sys.exit(1)
-        else:
-            print(f"ABORTADO: sin instrumento UM para {base} en my.okx.com")
-            sys.exit(1)
+        fut, swp = [], []
+        for m in exchange.markets.values():
+            if (m.get('base') or '').upper() != base or not m.get('active'):
+                continue
+            if not (m.get('future') or m.get('swap')):
+                continue
+            s = _settle(m)
+            if s == 'USDT' or s != 'USDC':    # veto USDT + UM = margen USDC
+                continue
+            (fut if m.get('future') else swp).append(m)
+        m = max(fut, key=_exp) if fut else (swp[0] if swp else None)
+        if m is None:
+            sys.exit(f"ABORTADO: sin X-Perp/swap-USD activo para {base} (settle USDC)")
+        it = _inst_type(m)
+        elegidos[m['id']] = (base, it)
+        origen = 'X-Perp' if fut else 'fallback swap'
+        print(f"  {base:<5} → {m['id']:<24} instType={it:<8} "
+              f"expTime={(m.get('info') or {}).get('expTime', '?')} ({origen})")
     return elegidos
 
 
+# ── clasificación de salidas ──
 def mov_pct(r):
     try:
         o, c = float(r['open']), float(r['close'])
@@ -103,9 +112,7 @@ def mov_pct(r):
         return None
     if o <= 0 or c <= 0:
         return None
-    m = (c / o - 1) * 100 if r['dir'] == 'long' else (1 - c / o) * 100
-    return m * 100 if False else m      # ya en %
-
+    return (c / o - 1) * 100 if r['dir'] == 'long' else (1 - c / o) * 100
 
 def salida(r, base):
     if r['liq'] > 0:
@@ -124,11 +131,11 @@ try:
     exchange.load_markets()
     insts = selecciona_instrumentos(exchange)
 
-    # ── leer posiciones cerradas: 1 posId = 1 trade ──
+    # ── posiciones cerradas: 1 posId = 1 trade ──
     trades = defaultdict(list)          # iid -> [regs]
-    for iid, base in insts.items():
+    for iid, (base, itype) in insts.items():
         for p in paginar('privateGetAccountPositionsHistory', 'posId',
-                         {'instType': 'SWAP', 'instId': iid}):
+                         {'instType': itype, 'instId': iid}):   # ← instType REAL
             pos_id = p.get('posId')
             if not pos_id:
                 continue
@@ -136,19 +143,20 @@ try:
                 pnl = float(p.get('realizedPnl') or 0)
             except (TypeError, ValueError):
                 continue
-            reg = {'posId': pos_id,
-                   'dir':  (p.get('direction') or '?').lower(),
-                   'open': p.get('openAvgPx') or '',
-                   'close': p.get('closeAvgPx') or '',
-                   'liq':  float(p.get('liqPenalty') or 0),
-                   'pnl':  pnl,
-                   'uTime': p.get('uTime') or ''}
-            trades[iid].append(reg)
+            trades[iid].append({
+                'posId': pos_id,
+                'dir':   (p.get('direction') or '?').lower(),
+                'open':  p.get('openAvgPx') or '',
+                'close': p.get('closeAvgPx') or '',
+                'liq':   float(p.get('liqPenalty') or 0),
+                'pnl':   pnl,
+                'uTime': p.get('uTime') or '',
+            })
 
-    # consolidar por posId (cierres parciales se suman)
-    agg = defaultdict(list)             # base -> [trade]
+    # consolidar cierres parciales por posId
+    agg = defaultdict(list)
     for iid, regs in trades.items():
-        base = insts[iid]
+        base = insts[iid][0]
         by_pos = {}
         for r in regs:
             t = by_pos.setdefault(r['posId'], dict(r))
@@ -161,7 +169,7 @@ try:
             t['base'], t['inst'] = base, iid
             agg[base].append(t)
 
-    # ── persistencia: dedup por (inst, posId), append solo de nuevos ──
+    # ── persistencia: dedup por (inst, posId) ──
     prev = {}
     if HISTORIAL.exists():
         for line in HISTORIAL.read_text().splitlines():
@@ -175,10 +183,9 @@ try:
         for base in sorted(agg):
             for t in agg[base]:
                 k = (t['inst'], t['posId'])
-                if k in prev:
-                    continue
-                f.write(json.dumps(t) + '\n')
-                prev[k] = t
+                if k not in prev:
+                    f.write(json.dumps(t) + '\n')
+                    prev[k] = t
 
     # ── ENCABEZADO ──
     print("=" * 46)
@@ -186,7 +193,7 @@ try:
     print(f"  actualizacion automatica cada {CADENCIA_HRS} hrs")
     print("  fuente: positions-history (OKX Europe)")
     print("  Plataforma: my.okx.com · Regimen: MiCA/EEE")
-    print("  Quote: USD/USDC (UM) · USDT: VETADO")
+    print("  Instrumento: X-Perp UM · margen USDC · USDT: VETADO")
     print("=" * 46)
     print(f"  Operador : github.com/gennesis44")
     print(f"  Perfil   : {AVATAR_URL}")
@@ -218,21 +225,22 @@ try:
     pct = f"{(tw / total * 100):.0f}%" if total else "-"
     print(f"TOTAL S:{tg}  L:{tp}  {pct}  PnL:{neto:+.4f}")
 
-    # ── HISTORIAL ACUMULADO (desde génesis, fuente JSONL) ──
-    acc = list(prev.values())
+    # ── ACUMULADO desde génesis (JSONL) ──
+    acc = [j for j in prev.values() if j.get('base') in BASES]
     if acc:
-        aw = sum(1 for r in acc if r['pnl'] > 0)
-        al = sum(1 for r in acc if r['pnl'] < 0)
+        aw  = sum(1 for r in acc if r['pnl'] > 0)
+        al  = sum(1 for r in acc if r['pnl'] < 0)
         ash = sum(1 for r in acc if r['dir'] == 'short')
-        alo = len(acc) - ash
         apnl = sum(r['pnl'] for r in acc)
-        peor = min(acc, key=lambda r: r['pnl'])
         den = aw + al
+        peor = min(acc, key=lambda r: r['pnl'])
         print("=" * 46)
-        print(f"ACUMULADO: {len(acc)} trades · winrate "
-              f"{(aw / den * 100):.0f}%" if den else "ACUMULADO: sin datos")
-        print(f"  shorts:{ash} · longs:{alo} · PnL:{apnl:+.4f}")
-        print(f"  peor trade: {peor['base']} {peor['pnl']:+.4f}")
+        if den:
+            print(f"ACUMULADO: {len(acc)} trades · winrate {aw / den * 100:.0f}%")
+        else:
+            print(f"ACUMULADO: {len(acc)} trades (solo breakeven)")
+        print(f"  shorts:{ash} · longs:{len(acc) - ash} · PnL:{apnl:+.4f}")
+        print(f"  peor trade: {peor.get('base', '?')} {peor['pnl']:+.4f}")
 
     # ── SINTESIS C > Si ──
     print(
@@ -254,5 +262,5 @@ try:
     print(f"  Nodo raiz   : {NODO_RAIZ}")
 
 except Exception as e:
-    print(f"ERROR FATAL: {e}")          # v6: el run sale ROJO, no verde mentiroso
+    print(f"ERROR FATAL: {e}")
     sys.exit(1)
