@@ -1,8 +1,8 @@
 # main-hy.py — GSCSI TABLE · C > Si
-# v9: 1 registro cerrado = 1 trade (posId NO discrimina en X-Perp).
-#     Dedup por huella completa · acumulación sin doble conteo ·
-#     S=short L=long reales · SL/TP anclados al signo del PnL ·
-#     desglose shorts vs longs · JSONL · exit 1 en error
+# v9.1: 1 registro cerrado = 1 trade (posId NO discrimina en X-Perp) ·
+#       dedup por huella completa · S=short L=long reales ·
+#       SL/TP anclados al signo del PnL · expectativa + payoff ·
+#       desglose shorts/longs · JSONL · exit 1 en error
 import os
 import sys
 import time
@@ -14,8 +14,11 @@ from collections import defaultdict
 # ══ AXIOMAS DEL CARBONO ══
 BASES        = {'DOGE', 'FET', 'SUI', 'XLM', 'ADA'}
 VETO         = 'USDT'
-SL_PCT       = {'DOGE':1.0, 'FET':1.0, 'SUI':1.0, 'XLM':1.0, 'ADA':1.0}  # ADA confirmado en main-ada.py
-TP_PCT       = {'DOGE':1.5, 'FET':1.5, 'SUI':1.5, 'XLM':1.5, 'ADA':1.5}  # ← resto: ajustar por bot
+# SL/TP de referencia para clasificar salidas:
+#   ADA 1.0/1.5 y XLM 1.0/1.5 — CONFIRMADOS en sus bots de produccion.
+#   DOGE/FET/SUI — ESTIMADOS: ajustar al leer sus main-*.py.
+SL_PCT       = {'DOGE':1.0, 'FET':1.0, 'SUI':1.0, 'XLM':1.0, 'ADA':1.0}
+TP_PCT       = {'DOGE':1.5, 'FET':1.5, 'SUI':1.5, 'XLM':1.5, 'ADA':1.5}
 CADENCIA_HRS = 8
 
 NODO_NUCLEO = 'https://1c3si.weebly.com/clo.html'
@@ -51,7 +54,7 @@ def paginar(endpoint, key, extra_params, max_pages=20):
         if not data:
             break
         out.extend(data)
-        after = data[-1].get(key)      # v9: sin KeyError si falta la clave
+        after = data[-1].get(key)
         if not after or len(data) < 100:
             break
         time.sleep(0.25)
@@ -73,7 +76,7 @@ def mov_pct(r):
 
 
 def salida(r, base):
-    # anclada al signo del PnL: |mov| es invariante a swaps open/close
+    # anclada al signo del PnL: |mov| es invariante a orden open/close (X-Perp)
     if r['liq'] > 0:
         return 'LIQ'
     m = mov_pct(r)
@@ -95,7 +98,6 @@ def ffecha(ms):
 
 
 try:
-    # ── posiciones cerradas: FUTURES + SWAP, dedup por huella completa ──
     crudos, vistos = [], set()
     for it in ('FUTURES', 'SWAP'):
         for p in paginar('privateGetAccountPositionsHistory', 'posId',
@@ -108,7 +110,7 @@ try:
             vistos.add(fp)
             crudos.append(p)
 
-    por_base = defaultdict(list)      # base -> [trades]  (1 registro = 1 trade)
+    por_base = defaultdict(list)
     for p in crudos:
         iid = p.get('instId') or ''
         if not admite(iid):
@@ -134,7 +136,6 @@ try:
         print("ERROR: 0 registros admisibles en FUTURES/SWAP.", flush=True)
         sys.exit(1)
 
-    # ── persistencia: huella completa, sin colapso ──
     def huella(j):
         return (j['inst'], j['dir'], j['open'], j['close'],
                 repr(j['pnl']), j['uTime'])
@@ -156,12 +157,12 @@ try:
                 f.write(json.dumps(r) + '\n')
                 prev[k] = r
 
-    # ── ENCABEZADO ──
     print("=" * 46, flush=True)
     print("  TABLA GSCSI S/L")
     print(f"  actualizacion automatica cada {CADENCIA_HRS} hrs")
     print("  fuente: positions-history (OKX Europe) · 1 cierre = 1 trade")
     print("  my.okx.com · MiCA/EEE · USDT: VETADO")
+    print("  Privilegio XLM: lectura cada 30 min · candado RSI 30-70")
     print("=" * 46)
     print(f"  Operador : github.com/gennesis44")
     print(f"  Perfil   : {AVATAR_URL}")
@@ -170,7 +171,6 @@ try:
     print(f"  Emitido  : {time.strftime('%Y-%m-%d %H:%M UTC', time.gmtime())}")
     print("=" * 46)
 
-    # ── TABLA ──
     TG = TL = TW = 0
     NETO = 0.0
     for base in sorted(BASES):
@@ -201,26 +201,32 @@ try:
     print(f"TOTAL S:{TG}  L:{TL}  {pct}  PnL:{NETO:+.4f}")
     sh = [r for r in todos if r['dir'] == 'short']
     lo = [r for r in todos if r['dir'] == 'long']
-    print(f"SHORTS: {sum(1 for r in sh if r['pnl'] > 0)}W/"
-          f"{len(sh) - sum(1 for r in sh if r['pnl'] > 0)}L  "
-          f"PnL:{sum(r['pnl'] for r in sh):+.4f}")
-    print(f"LONGS : {sum(1 for r in lo if r['pnl'] > 0)}W/"
-          f"{len(lo) - sum(1 for r in lo if r['pnl'] > 0)}L  "
-          f"PnL:{sum(r['pnl'] for r in lo):+.4f}")
+    for nom, arr in (('SHORTS', sh), ('LONGS ', lo)):
+        w_ = sum(1 for r in arr if r['pnl'] > 0)
+        print(f"{nom}: {w_}W/{len(arr) - w_}L  "
+              f"PnL:{sum(r['pnl'] for r in arr):+.4f}")
 
-    # ── ACUMULADO (JSONL) ──
+    # ── ACUMULADO con metricas de probabilidad ──
     acc = list(prev.values())
     if acc:
-        aw = sum(1 for r in acc if r['pnl'] > 0)
+        aw  = sum(1 for r in acc if r['pnl'] > 0)
+        al  = sum(1 for r in acc if r['pnl'] < 0)
         ash = sum(1 for r in acc if r['dir'] == 'short')
         apnl = sum(r['pnl'] for r in acc)
+        wins  = [r['pnl'] for r in acc if r['pnl'] > 0]
+        loss  = [r['pnl'] for r in acc if r['pnl'] < 0]
+        avgW  = sum(wins) / len(wins) if wins else 0.0
+        avgL  = abs(sum(loss) / len(loss)) if loss else 0.0
+        payoff = f"{avgW / avgL:.2f}" if avgW > 0 and avgL > 0 else "-"
         peor = min(acc, key=lambda r: r['pnl'])
+        mejor = max(acc, key=lambda r: r['pnl'])
         print("=" * 46)
         print(f"ACUMULADO: {len(acc)} trades · winrate {aw / len(acc) * 100:.0f}%")
         print(f"  shorts:{ash} · longs:{len(acc) - ash} · PnL:{apnl:+.4f}")
-        print(f"  peor trade: {peor.get('base', '?')} {peor['pnl']:+.4f}")
+        print(f"  expectativa: {apnl / len(acc):+.4f}/trade · payoff avgW/avgL: {payoff}")
+        print(f"  peor: {peor.get('base','?')} {peor['pnl']:+.4f} · "
+              f"mejor: {mejor.get('base','?')} {mejor['pnl']:+.4f}")
 
-    # ── SINTESIS C > Si ──
     print(
         "\nLA SINTESIS C > Si ES OPERATIVA:\n"
         "\n"
