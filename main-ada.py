@@ -1,5 +1,8 @@
 # main-ada.py — Ax2-D · PRODUCCIÓN · 15m detonante + 4H brujula + cooldown
 # SL 1% / TP 1.5% · 1x · MAX_ENTRIES 2 · guardia $6 · clOrdId ADA
+# Ax3.4: idempotencia FAIL-CLOSED — si la vela 15m no se puede leer,
+#        NO se opera (antes: fallback time.time() desactivaba la
+#        proteccion anti-duplicado en cada reintento). RSI NO aplica a ADA.
 # INSTRUMENTO: XPERP ADA/USD — USDT PROHIBIDO (veto verificado en test)
 import os
 import time
@@ -397,12 +400,13 @@ def run_cycle():
         close_position(symbol)
         time.sleep(2)
 
-    candle_ts = int(time.time() * 1000)  # fallback si no hay vela exacta
+    # Ax3.4: idempotencia FAIL-CLOSED — sin vela legible NO se opera
     try:
         df = fetch_data(symbol, TIMEFRAME, limit=3)
         candle_ts = int(df['timestamp'].iloc[-2])
-    except Exception:
-        pass
+    except Exception as e:
+        log.error(f"Vela 15m ilegible ({e}) — sin idempotencia NO se opera. Fail-closed.")
+        return
 
     if candle_already_traded(symbol, candle_ts):
         return
