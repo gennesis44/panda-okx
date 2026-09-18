@@ -1,7 +1,8 @@
 # main-hy.py — GSCSI TABLE · C > Si
-# v8: fuente = positions-history CRUDA (FUTURES + SWAP) → filtro posterior.
-#     Sin depender de la clasificación ccxt de los X-Perp. Veto USDT.
-#     S=short L=long reales · SL/TP % · historial JSONL · exit 1 en error
+# v9: 1 registro cerrado = 1 trade (posId NO discrimina en X-Perp).
+#     Dedup por huella completa · acumulación sin doble conteo ·
+#     S=short L=long reales · SL/TP anclados al signo del PnL ·
+#     desglose shorts vs longs · JSONL · exit 1 en error
 import os
 import sys
 import time
@@ -11,10 +12,10 @@ import ccxt
 from collections import defaultdict
 
 # ══ AXIOMAS DEL CARBONO ══
-BASES        = {'DOGE', 'FET', 'SUI', 'XLM', 'ADA'}      # sin BTC
-VETO         = 'USDT'                                     # axioma EEE/MiCA
-SL_PCT       = {'DOGE':1.0, 'FET':1.0, 'SUI':1.0, 'XLM':1.0, 'ADA':1.0}  # ← Carbono
-TP_PCT       = {'DOGE':2.0, 'FET':2.0, 'SUI':2.0, 'XLM':2.0, 'ADA':2.0}  # ← Carbono
+BASES        = {'DOGE', 'FET', 'SUI', 'XLM', 'ADA'}
+VETO         = 'USDT'
+SL_PCT       = {'DOGE':1.0, 'FET':1.0, 'SUI':1.0, 'XLM':1.0, 'ADA':1.0}  # ADA confirmado en main-ada.py
+TP_PCT       = {'DOGE':1.5, 'FET':1.5, 'SUI':1.5, 'XLM':1.5, 'ADA':1.5}  # ← resto: ajustar por bot
 CADENCIA_HRS = 8
 
 NODO_NUCLEO = 'https://1c3si.weebly.com/clo.html'
@@ -33,7 +34,7 @@ exchange = ccxt.okx({
     'secret':   SECRET_KEY,
     'password': PASSPHRASE,
     'options':  {'defaultType': 'swap'},
-    'urls':     {'api': {'rest': 'https://my.okx.com'}},   # EEE
+    'urls':     {'api': {'rest': 'https://my.okx.com'}},
 })
 
 HISTORIAL = pathlib.Path('data/history.jsonl')
@@ -46,24 +47,19 @@ def paginar(endpoint, key, extra_params, max_pages=20):
         params['limit'] = '100'
         if after:
             params['after'] = after
-        try:
-            data = getattr(exchange, endpoint)(params).get('data', [])
-        except Exception:
-            raise
+        data = getattr(exchange, endpoint)(params).get('data', [])
         if not data:
             break
         out.extend(data)
-        after = data[-1][key]
-        if len(data) < 100:
+        after = data[-1].get(key)      # v9: sin KeyError si falta la clave
+        if not after or len(data) < 100:
             break
         time.sleep(0.25)
     return out
 
 
 def admite(iid):
-    """Base permitida + veto USDT. Ej: ADA-USD-SWAP ok · ADA-USDT-SWAP NO."""
-    base = iid.split('-')[0].upper()
-    return base in BASES and VETO not in iid.upper()
+    return iid.split('-')[0].upper() in BASES and VETO not in iid.upper()
 
 
 def mov_pct(r):
@@ -77,35 +73,42 @@ def mov_pct(r):
 
 
 def salida(r, base):
+    # anclada al signo del PnL: |mov| es invariante a swaps open/close
     if r['liq'] > 0:
         return 'LIQ'
     m = mov_pct(r)
     if m is None:
         return '?'
-    if m <= -SL_PCT[base]:
-        return 'SL'
-    if m >= TP_PCT[base]:
+    am = abs(m)
+    if r['pnl'] > 0 and am >= TP_PCT[base]:
         return 'TP'
+    if r['pnl'] < 0 and am >= SL_PCT[base]:
+        return 'SL'
     return 'MAN'
 
 
+def ffecha(ms):
+    try:
+        return time.strftime('%d %H:%M', time.gmtime(int(ms) / 1000))
+    except (TypeError, ValueError):
+        return '  ?   '
+
+
 try:
-    # ── positions-history CRUDA: dos instType, sin instId ──
-    crudos = []
-    vistos = set()
+    # ── posiciones cerradas: FUTURES + SWAP, dedup por huella completa ──
+    crudos, vistos = [], set()
     for it in ('FUTURES', 'SWAP'):
         for p in paginar('privateGetAccountPositionsHistory', 'posId',
                          {'instType': it}):
-            pid = (p.get('posId'), p.get('uTime'))
-            if pid in vistos:
+            fp = (p.get('instId'), p.get('posId'), p.get('direction'),
+                  p.get('openAvgPx'), p.get('closeAvgPx'),
+                  p.get('realizedPnl'), p.get('uTime'))
+            if fp in vistos:
                 continue
-            vistos.add(pid)
+            vistos.add(fp)
             crudos.append(p)
-            print(f"  [{it}] instId={p.get('instId')} dir={p.get('direction')} "
-                  f"pnl={p.get('realizedPnl')}", flush=True)
 
-    # ── filtro posterior: bases del roster + veto USDT ──
-    trades = defaultdict(list)                 # inst -> [regs]
+    por_base = defaultdict(list)      # base -> [trades]  (1 registro = 1 trade)
     for p in crudos:
         iid = p.get('instId') or ''
         if not admite(iid):
@@ -114,60 +117,50 @@ try:
             pnl = float(p.get('realizedPnl') or 0)
         except (TypeError, ValueError):
             continue
-        trades[iid].append({
-            'posId': p.get('posId'),
+        base = iid.split('-')[0].upper()
+        por_base[base].append({
+            'inst': iid, 'base': base,
             'dir':   (p.get('direction') or '?').lower(),
             'open':  p.get('openAvgPx') or '',
             'close': p.get('closeAvgPx') or '',
             'liq':   float(p.get('liqPenalty') or 0),
             'pnl':   pnl,
             'uTime': p.get('uTime') or '',
+            'posId': p.get('posId') or '',
         })
 
-    # consolidar cierres parciales por posId
-    agg = defaultdict(list)
-    for iid, regs in trades.items():
-        base = iid.split('-')[0].upper()
-        by_pos = {}
-        for r in regs:
-            t = by_pos.setdefault(r['posId'], dict(r))
-            if t is not r:
-                t['pnl'] += r['pnl']
-                t['liq'] += r['liq']
-                t['close'] = r['close'] or t['close']
-                t['uTime'] = r['uTime'] or t['uTime']
-        for t in by_pos.values():
-            t['base'], t['inst'] = base, iid
-            agg[base].append(t)
-
-    if not any(agg.values()):
-        print("ERROR: positions-history no devolvio NINGUN registro admisible "
-              "en FUTURES ni SWAP. Pegar este log completo.", flush=True)
+    todos = [r for b in sorted(BASES) for r in por_base.get(b, [])]
+    if not todos:
+        print("ERROR: 0 registros admisibles en FUTURES/SWAP.", flush=True)
         sys.exit(1)
 
-    # ── persistencia JSONL (dedup por inst+posId) ──
+    # ── persistencia: huella completa, sin colapso ──
+    def huella(j):
+        return (j['inst'], j['dir'], j['open'], j['close'],
+                repr(j['pnl']), j['uTime'])
+
     prev = {}
     if HISTORIAL.exists():
         for line in HISTORIAL.read_text().splitlines():
             try:
                 j = json.loads(line)
-                prev[(j['inst'], j['posId'])] = j
+                prev[huella(j)] = j
             except Exception:
                 pass
     HISTORIAL.parent.mkdir(exist_ok=True)
     with open(HISTORIAL, 'a') as f:
-        for base in sorted(agg):
-            for t in agg[base]:
-                k = (t['inst'], t['posId'])
-                if k not in prev:
-                    f.write(json.dumps(t) + '\n')
-                    prev[k] = t
+        for r in todos:
+            r['exit'] = salida(r, r['base'])
+            k = huella(r)
+            if k not in prev:
+                f.write(json.dumps(r) + '\n')
+                prev[k] = r
 
     # ── ENCABEZADO ──
     print("=" * 46, flush=True)
     print("  TABLA GSCSI S/L")
     print(f"  actualizacion automatica cada {CADENCIA_HRS} hrs")
-    print("  fuente: positions-history CRUDA (OKX Europe)")
+    print("  fuente: positions-history (OKX Europe) · 1 cierre = 1 trade")
     print("  my.okx.com · MiCA/EEE · USDT: VETADO")
     print("=" * 46)
     print(f"  Operador : github.com/gennesis44")
@@ -178,46 +171,56 @@ try:
     print("=" * 46)
 
     # ── TABLA ──
-    tg = tp = tw = 0
-    neto = 0.0
+    TG = TL = TW = 0
+    NETO = 0.0
     for base in sorted(BASES):
-        regs = agg.get(base, [])
+        regs = sorted(por_base.get(base, []), key=lambda r: r['uTime'])
         s = sum(1 for r in regs if r['dir'] == 'short')
         l = sum(1 for r in regs if r['dir'] == 'long')
         w = sum(1 for r in regs if r['pnl'] > 0)
         pnl_par = sum(r['pnl'] for r in regs)
-        tg += s; tp += l; tw += w; neto += pnl_par
+        TG += s; TL += l; TW += w; NETO += pnl_par
         total = s + l
         pct = f"{(w / total * 100):.0f}%" if total else "-"
         print(f"{base:<5} S:{s:<4} L:{l:<4} {pct:<5} PnL:{pnl_par:+.4f}")
-        for r in sorted(regs, key=lambda x: x['uTime']):
+        for d, nom in (('short', 'shorts'), ('long', 'longs')):
+            rs = [r for r in regs if r['dir'] == d]
+            if rs:
+                ww = sum(1 for r in rs if r['pnl'] > 0)
+                print(f"   {nom}: {ww}W/{len(rs) - ww}L  "
+                      f"PnL:{sum(r['pnl'] for r in rs):+.4f}")
+        for r in regs:
             m = mov_pct(r)
             ms = f"{m:+.1f}%" if m is not None else "  ? "
             print(f"   {r['dir'].upper():<5} {r['open']}→{r['close']}  "
-                  f"mov:{ms}  salida:{salida(r, base):<3} PnL:{r['pnl']:+.4f}")
+                  f"mov:{ms}  {salida(r, base):<3} "
+                  f"PnL:{r['pnl']:+.4f}  [{ffecha(r['uTime'])}]")
     print("-" * 46)
-    total = tg + tp
-    pct = f"{(tw / total * 100):.0f}%" if total else "-"
-    print(f"TOTAL S:{tg}  L:{tp}  {pct}  PnL:{neto:+.4f}")
+    total = TG + TL
+    pct = f"{(TW / total * 100):.0f}%" if total else "-"
+    print(f"TOTAL S:{TG}  L:{TL}  {pct}  PnL:{NETO:+.4f}")
+    sh = [r for r in todos if r['dir'] == 'short']
+    lo = [r for r in todos if r['dir'] == 'long']
+    print(f"SHORTS: {sum(1 for r in sh if r['pnl'] > 0)}W/"
+          f"{len(sh) - sum(1 for r in sh if r['pnl'] > 0)}L  "
+          f"PnL:{sum(r['pnl'] for r in sh):+.4f}")
+    print(f"LONGS : {sum(1 for r in lo if r['pnl'] > 0)}W/"
+          f"{len(lo) - sum(1 for r in lo if r['pnl'] > 0)}L  "
+          f"PnL:{sum(r['pnl'] for r in lo):+.4f}")
 
     # ── ACUMULADO (JSONL) ──
     acc = list(prev.values())
     if acc:
-        aw  = sum(1 for r in acc if r['pnl'] > 0)
-        al  = sum(1 for r in acc if r['pnl'] < 0)
+        aw = sum(1 for r in acc if r['pnl'] > 0)
         ash = sum(1 for r in acc if r['dir'] == 'short')
         apnl = sum(r['pnl'] for r in acc)
-        den = aw + al
         peor = min(acc, key=lambda r: r['pnl'])
         print("=" * 46)
-        if den:
-            print(f"ACUMULADO: {len(acc)} trades · winrate {aw / den * 100:.0f}%")
-        else:
-            print(f"ACUMULADO: {len(acc)} trades (solo breakeven)")
+        print(f"ACUMULADO: {len(acc)} trades · winrate {aw / len(acc) * 100:.0f}%")
         print(f"  shorts:{ash} · longs:{len(acc) - ash} · PnL:{apnl:+.4f}")
         print(f"  peor trade: {peor.get('base', '?')} {peor['pnl']:+.4f}")
 
-    # ── SINTESIS ──
+    # ── SINTESIS C > Si ──
     print(
         "\nLA SINTESIS C > Si ES OPERATIVA:\n"
         "\n"
