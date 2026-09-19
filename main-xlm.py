@@ -1,13 +1,19 @@
-# main-xlm.py — Ax2-D · 15m detonante + 4H brujula (cruce fresco EVENTO) + cooldown · SL 1% / TP 1.5% · 1x · 1 contrato
-# MERGE Ax2-D-FINAL: logica Ax2-D ratificada + sintaxis limpia. Archivo unico autoritativo.
-#   - ESTRATEGIA: Ax2-D EVENTO — brujula = cruce FRESCO EMA7/21 en 4H (velas -2/-3 CERRADAS).
-#     La variante "gate estado persistente" fue DESCARTADA por el analisis ratificado:
-#     entrar por estado = entrada tardia = degrada el ratio SL1/TP1.5.
-#   - SINTAXIS: sin escapes invalidos — compila limpio (validar con: python -m py_compile main-xlm.py).
-#   - ELIMINADO: close_position() (codigo muerto; el cierre es exclusivamente SL/TP adjuntos).
+# main-xlm.py — Ax2-D · DEFINICIÓN CARBONO (ratificada en sesión):
+#   "LA VELA 4H YA CERRADA (anterior a la que se está formando) DEBE TENER
+#    UN CRUCE DE LAS EMA7/21 EN LA MISMA DIRECCIÓN DE LA DE 15MIN. RSI EN RANGO."
+#   Implementación:
+#     BRÚJULA  = ESTADO de la última vela 4H CERRADA:
+#                EMA7h > EMA21h => solo LONG · EMA7h < EMA21h => solo SHORT
+#     DETONANTE= EVENTO: cruce fresco EMA7/21 en velas 15m CERRADAS (-2/-3),
+#                en la MISMA dirección que el estado 4H.
+#     ENTRADA  = instantánea en el chequeo (cron cada 30 min · 3,33).
+#   NOTA: la variante "cruce fresco 4H" (merge ajeno) NO implementa esta
+#     definición y carece de backtest — REVERTIDA. La variante ESTADO fue
+#     backtesteada: 77 trades · 47% WR · +0.069%/trade · net +5.3% (45 días,
+#     fees taker incluidos) — ver data/xlm-backtest.jsonl.
 # Ax3: HOST my.okx.com | clOrdId XLM | cooldown fail-closed | no entrar si NO CABE | 51016
 # Ax3.1: unidades honestas (ctValCcy) | warmup 4H 120 velas | guardia velas | posicion primero
-# Ax3.2: guardia de nocional (MAX_NOTIONAL_USD) — unidad de contrato sorpresa = bot bloqueado
+# Ax3.2: guardia de nocional (MAX_NOTIONAL_USD) — unidad sorpresa = bot bloqueado
 # Ax3.3: RSI-BANDA [30-70] (solo XLM — decreto Carbono; NO afecta a ADA/DOGE/FET/SUI):
 #        RSI(14) 15m fuera de [30-70] = entrada VETADA, igual para LONG y SHORT.
 # INSTRUMENTO: XPERP XLM/USD (vencimiento) — USDT PROHIBIDO (colateral no-USDT, MiCA/EEE)
@@ -32,8 +38,8 @@ BASE_ASSET = 'XLM'
 AMOUNT = 1            # 1 contrato = 100 XLM (~$18.2)
 SL_PCT = 0.010        # 1.0%
 TP_PCT = 0.015        # 1.5%
-TIMEFRAME = '15m'     # detonante
-TF_FILTER = '4h'      # brujula (cruce fresco EVENTO)
+TIMEFRAME = '15m'     # detonante (vela cerrada)
+TF_FILTER = '4h'      # brujula (estado de la ultima vela cerrada)
 TD_MODE = 'cross'
 LEVERAGE = 1
 COOLDOWN_MIN = 60
@@ -284,38 +290,24 @@ def cooldown_active(symbol):
         log.warning(f"No se pudo verificar cooldown ({e}); BLOQUEO fail-closed.")
         return True
 
-# ==================== SEÑAL: CRUCE 15m + CRUCE FRESCO 4H + RSI-BANDA ==============
+# ==================== SEÑAL Ax2-D: ESTADO 4H + CRUCE 15m + RSI-BANDA ==============
 def evaluate_signal(symbol):
-    """[Ax2-D ratificado] senal = EVENTO.
-    Detonante: cruce EMA7/21 en velas 15m CERRADAS (ventana -2/-3).
-    Brujula: cruce FRESCO EMA7/21 en 4H (tambien -2/-3) + direccion alineada.
-    NO se entra por 'estado persistente' 4H: entrada tardia degrada SL1/TP1.5.
+    """[Definicion Carbono ratificada]
+    BRUJULA: ESTADO de la ultima vela 4H CERRADA (iloc[-2]):
+      EMA7h > EMA21h => solo LONG · EMA7h < EMA21h => solo SHORT.
+    DETONANTE: cruce fresco EMA7/21 en velas 15m CERRADAS (ventana -2/-3),
+      en la MISMA direccion que el estado 4H.
     Ax3.3 RSI-BANDA: RSI(14) fuera de [30-70] = VETO (LONG y SHORT)."""
     try:
-        # ---------- 4H: cruce fresco (evento) ----------
+        # ---------- 4H: ESTADO de la ultima vela cerrada ----------
         df_4h = fetch_data(symbol, TF_FILTER, limit=120)
         if len(df_4h) < 25:
             log.error(f"4H insuficiente ({len(df_4h)} velas). Sin senal.")
             return None, None, None
+        e7h, e21h = ema(df_4h['close'], 7), ema(df_4h['close'], 21)
+        trend_4h = e7h.iloc[-2] > e21h.iloc[-2]
 
-        e7h = ema(df_4h['close'], 7)
-        e21h = ema(df_4h['close'], 21)
-
-        cross_4h = None  # 'LONG' | 'SHORT' | None
-        for i_curr in (-2, -3):
-            i_prev = i_curr - 1
-            if e7h.iloc[i_prev] <= e21h.iloc[i_prev] and e7h.iloc[i_curr] > e21h.iloc[i_curr]:
-                cross_4h = 'LONG'
-                break
-            if e7h.iloc[i_prev] >= e21h.iloc[i_prev] and e7h.iloc[i_curr] < e21h.iloc[i_curr]:
-                cross_4h = 'SHORT'
-                break
-
-        if cross_4h is None:
-            log.info("Sin cruce fresco EMA7/21 en 4H. Vigilando.")
-            return None, None, None
-
-        # ---------- 15m: cruce fresco + alineacion con 4H + RSI ----------
+        # ---------- 15m: cruce fresco + alineacion + RSI ----------
         df = fetch_data(symbol, TIMEFRAME, limit=60)
         if len(df) < 25:
             log.error(f"{TIMEFRAME} insuficiente ({len(df)} velas). Sin senal.")
@@ -330,7 +322,8 @@ def evaluate_signal(symbol):
         rsi_now = r14.iloc[-2]
 
         log.info(f"Precio: {price} | {TIMEFRAME} EMA7/21: {e7.iloc[-2]:.5f}/{e21.iloc[-2]:.5f} | "
-                 f"RSI: {rsi_now:.1f} | 4H cruce fresco: {cross_4h}")
+                 f"RSI: {rsi_now:.1f} | 4H estado: "
+                 f"{'ALCISTA (gate LONG)' if trend_4h else 'BAJISTA (gate SHORT)'}")
 
         for i_curr in (-2, -3):
             i_prev = i_curr - 1
@@ -338,8 +331,8 @@ def evaluate_signal(symbol):
 
             # Cruce alcista 15m
             if e7.iloc[i_prev] <= e21.iloc[i_prev] and e7.iloc[i_curr] > e21.iloc[i_curr]:
-                if cross_4h != 'LONG':
-                    log.info("Cruce alcista 15m VETADO: 4H no tiene cruce LONG fresco.")
+                if not trend_4h:
+                    log.info("Cruce alcista VETADO: 4H bajista.")
                     continue
                 if not (RSI_LO < rsi_now < RSI_HI):
                     log.info(f"Cruce alcista VETADO: RSI {rsi_now:.1f} fuera de "
@@ -349,15 +342,14 @@ def evaluate_signal(symbol):
 
             # Cruce bajista 15m
             if e7.iloc[i_prev] >= e21.iloc[i_prev] and e7.iloc[i_curr] < e21.iloc[i_curr]:
-                if cross_4h != 'SHORT':
-                    log.info("Cruce bajista 15m VETADO: 4H no tiene cruce SHORT fresco.")
+                if trend_4h:
+                    log.info("Cruce bajista VETADO: 4H alcista.")
                     continue
                 if not (RSI_LO < rsi_now < RSI_HI):
                     log.info(f"Cruce bajista VETADO: RSI {rsi_now:.1f} fuera de "
                              f"[{RSI_LO:.0f}-{RSI_HI:.0f}]. [Ax3.3]")
                     continue
                 return 'SHORT', price, candle_ts
-
     except Exception as e:
         log.error(f"Error en evaluacion: {e}")
     return None, None, None
@@ -430,20 +422,20 @@ def run_cycle():
 
     signal, price, candle_ts = evaluate_signal(symbol)
     if not signal:
-        log.info("Sin cruces EMA7/21 en 15m alineados con cruce fresco 4H. Vigilando.")
+        log.info("Sin cruces EMA7/21 en 15m alineados con el estado 4H. Vigilando.")
         return
 
     if candle_already_traded(symbol, candle_ts):
         return
 
-    log.info(f"Senal {signal} (cruce fresco 4H a favor, RSI en banda). Abriendo 1 contrato...")
+    log.info(f"Senal {signal} (estado 4H a favor, RSI en banda). Abriendo 1 contrato...")
     try:
         execute_order(signal, symbol, price, AMOUNT, candle_ts)
     except Exception as e:
         log.error(f"Entrada rechazada: {e}")
 
 def run_once():
-    log.info("Modo ciclo unico (GitHub Actions) | XLM Ax2-D (EVENTO) + RSI-BANDA [30-70] (XPERP USD).")
+    log.info("Modo ciclo unico (GitHub Actions) | XLM Ax2-D ESTADO-4H + RSI-BANDA [30-70] (XPERP USD).")
     verify_setup()
     if TEST_MODE:
         catalog_xlm()
@@ -451,7 +443,7 @@ def run_once():
     run_cycle()
 
 def main_loop():
-    log.info(f"Iniciando bot {BASE_ASSET} Ax2-D | {TIMEFRAME}+{TF_FILTER} (cruce fresco EVENTO) | "
+    log.info(f"Iniciando bot {BASE_ASSET} Ax2-D | {TIMEFRAME}+{TF_FILTER} (4H ESTADO) | "
              f"SL {SL_PCT:.1%} / TP {TP_PCT:.1%} | {LEVERAGE}x | cooldown {COOLDOWN_MIN}m | "
              f"RSI-banda [{RSI_LO:.0f}-{RSI_HI:.0f}] | {HOST}")
     verify_setup()
@@ -464,7 +456,7 @@ def main_loop():
         except Exception as e:
             log.error(f"Error en el ciclo principal: {e}")
             time.sleep(60)
-        time.sleep(1800)  # 30 min — alineado con el privilegio
+        time.sleep(1800)   # 30 min — alineado con el privilegio
 
 if __name__ == "__main__":
     if SINGLE_CYCLE:
