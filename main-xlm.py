@@ -1,11 +1,15 @@
-# main-xlm.py — Ax2-D · 15m detonante + 4H brujula (cruce fresco) + cooldown · SL 1% / TP 1.5% · 1x · 1 contrato
+# main-xlm.py — Ax2-D · 15m detonante + 4H brujula (cruce fresco EVENTO) + cooldown · SL 1% / TP 1.5% · 1x · 1 contrato
+# MERGE Ax2-D-FINAL: logica Ax2-D ratificada + sintaxis limpia. Archivo unico autoritativo.
+#   - ESTRATEGIA: Ax2-D EVENTO — brujula = cruce FRESCO EMA7/21 en 4H (velas -2/-3 CERRADAS).
+#     La variante "gate estado persistente" fue DESCARTADA por el analisis ratificado:
+#     entrar por estado = entrada tardia = degrada el ratio SL1/TP1.5.
+#   - SINTAXIS: sin escapes invalidos — compila limpio (validar con: python -m py_compile main-xlm.py).
+#   - ELIMINADO: close_position() (codigo muerto; el cierre es exclusivamente SL/TP adjuntos).
 # Ax3: HOST my.okx.com | clOrdId XLM | cooldown fail-closed | no entrar si NO CABE | 51016
 # Ax3.1: unidades honestas (ctValCcy) | warmup 4H 120 velas | guardia velas | posicion primero
 # Ax3.2: guardia de nocional (MAX_NOTIONAL_USD) — unidad de contrato sorpresa = bot bloqueado
 # Ax3.3: RSI-BANDA [30-70] (solo XLM — decreto Carbono; NO afecta a ADA/DOGE/FET/SUI):
 #        RSI(14) 15m fuera de [30-70] = entrada VETADA, igual para LONG y SHORT.
-# Ax2-D ratificado por analisis: senal = EVENTO (cruce fresco, velas -2/-3 CERRADAS).
-#        Entrar por "estado persistente" = entrada tardia = degrada el ratio SL1/TP1.5.
 # INSTRUMENTO: XPERP XLM/USD (vencimiento) — USDT PROHIBIDO (colateral no-USDT, MiCA/EEE)
 import os
 import time
@@ -24,22 +28,22 @@ def _f(x):
         return 0.0
 
 # ==================== CONFIGURACIÓN ====================
-BASE_ASSET   = 'XLM'
-AMOUNT       = 1        # 1 contrato = 100 XLM (\~$18.2)
-SL_PCT       = 0.010    # 1.0%
-TP_PCT       = 0.015    # 1.5%
-TIMEFRAME    = '15m'    # detonante
-TF_FILTER    = '4h'     # brujula (gate + cruce fresco)
-TD_MODE      = 'cross'
-LEVERAGE     = 1
+BASE_ASSET = 'XLM'
+AMOUNT = 1            # 1 contrato = 100 XLM (~$18.2)
+SL_PCT = 0.010        # 1.0%
+TP_PCT = 0.015        # 1.5%
+TIMEFRAME = '15m'     # detonante
+TF_FILTER = '4h'      # brujula (cruce fresco EVENTO)
+TD_MODE = 'cross'
+LEVERAGE = 1
 COOLDOWN_MIN = 60
-TEST_MODE       = os.getenv('TEST_MODE') == '1'
-SINGLE_CYCLE    = os.getenv('SINGLE_CYCLE') == '1'
+TEST_MODE = os.getenv('TEST_MODE') == '1'
+SINGLE_CYCLE = os.getenv('SINGLE_CYCLE') == '1'
 MAX_NOTIONAL_USD = _f(os.getenv('OKX_XLM_MAX_NOTIONAL', '25.0')) or 25.0
-# Ax3.3 RSI-BANDA (decreto Carbono <30-70>)
-RSI_LEN     = 14
-RSI_HI      = 70.0      # RSI > 70 → VETADO (LONG y SHORT)
-RSI_LO      = 30.0      # RSI < 30 → VETADO (LONG y SHORT)
+# Ax3.3 RSI-BANDA (decreto Carbono [30-70])
+RSI_LEN = 14
+RSI_HI = 70.0         # RSI > 70 -> VETADO (LONG y SHORT)
+RSI_LO = 30.0         # RSI < 30 -> VETADO (LONG y SHORT)
 
 HOST = 'https://my.okx.com'
 
@@ -121,7 +125,7 @@ def _log_contract_size(sym):
     try:
         ctval, ccy, settle, _p, usd = _contract_meta(sym)
         log.info(f"Contrato: 1 = {ctval} {ccy} | settle={settle} | "
-                 f"nocional \~${usd:.2f} | {sym} | {_inst_type(sym)}")
+                 f"nocional ~${usd:.2f} | {sym} | {_inst_type(sym)}")
     except Exception as e:
         log.warning(f"No se pudo leer el tamano del contrato: {e}")
 
@@ -178,20 +182,6 @@ def get_open_position(symbol):
         log.error(f"Error consultando posiciones: {e}")
     return None
 
-def close_position(symbol):
-    pos = get_open_position(symbol)
-    if not pos:
-        return
-    side, contracts = pos['side'], pos['contracts']
-    amount = exchange.amount_to_precision(symbol, contracts)
-    close_side = 'sell' if side == 'long' else 'buy'
-    try:
-        exchange.create_order(symbol, 'market', close_side, amount,
-                              params={'tdMode': TD_MODE, 'reduceOnly': True})
-        log.warning(f"Posicion {side} cerrada (giro).")
-    except Exception as e:
-        log.error(f"FALLO GRAVE cerrando posicion: {e} — cerrar MANUALMENTE en OKX.")
-
 # ==================== ENTRADA CON SL/TP ADJUNTOS ====================
 def _post_trade_order(req):
     method = getattr(exchange, 'privatePostTradeOrder', None) or exchange.private_post_trade_order
@@ -223,7 +213,7 @@ def candle_already_traded(symbol, candle_ts: int) -> bool:
 def execute_order(side: str, symbol: str, ref_price: float, amount: int, candle_ts: int):
     ctval, ccy, _settle, _p, usd = _contract_meta(symbol, ref_price)
     nocional = amount * usd
-    log.info(f"Nocional: {amount} contrato x {ctval} {ccy} (\~${nocional:.2f})")
+    log.info(f"Nocional: {amount} contrato x {ctval} {ccy} (~${nocional:.2f})")
 
     if nocional > MAX_NOTIONAL_USD:
         raise RuntimeError(
@@ -294,10 +284,12 @@ def cooldown_active(symbol):
         log.warning(f"No se pudo verificar cooldown ({e}); BLOQUEO fail-closed.")
         return True
 
-# ==================== SEÑAL: CRUCE 15m + CRUCE 4H + RSI-BANDA ==============
+# ==================== SEÑAL: CRUCE 15m + CRUCE FRESCO 4H + RSI-BANDA ==============
 def evaluate_signal(symbol):
-    """Detonante: cruce EMA7/21 en velas 15m CERRADAS (ventana -2/-3, EVENTO).
-    Brújula: cruce fresco EMA7/21 en 4H (también EVENTO) + dirección alineada.
+    """[Ax2-D ratificado] senal = EVENTO.
+    Detonante: cruce EMA7/21 en velas 15m CERRADAS (ventana -2/-3).
+    Brujula: cruce FRESCO EMA7/21 en 4H (tambien -2/-3) + direccion alineada.
+    NO se entra por 'estado persistente' 4H: entrada tardia degrada SL1/TP1.5.
     Ax3.3 RSI-BANDA: RSI(14) fuera de [30-70] = VETO (LONG y SHORT)."""
     try:
         # ---------- 4H: cruce fresco (evento) ----------
@@ -309,8 +301,7 @@ def evaluate_signal(symbol):
         e7h = ema(df_4h['close'], 7)
         e21h = ema(df_4h['close'], 21)
 
-        # Buscamos cruce fresco en las últimas velas 4H cerradas (-2 / -3)
-        cross_4h = None          # 'LONG' o 'SHORT' o None
+        cross_4h = None  # 'LONG' | 'SHORT' | None
         for i_curr in (-2, -3):
             i_prev = i_curr - 1
             if e7h.iloc[i_prev] <= e21h.iloc[i_prev] and e7h.iloc[i_curr] > e21h.iloc[i_curr]:
@@ -324,13 +315,13 @@ def evaluate_signal(symbol):
             log.info("Sin cruce fresco EMA7/21 en 4H. Vigilando.")
             return None, None, None
 
-        # ---------- 15m: cruce fresco + alineación con 4H + RSI ----------
+        # ---------- 15m: cruce fresco + alineacion con 4H + RSI ----------
         df = fetch_data(symbol, TIMEFRAME, limit=60)
         if len(df) < 25:
             log.error(f"{TIMEFRAME} insuficiente ({len(df)} velas). Sin senal.")
             return None, None, None
 
-        df['EMA_7']  = ema(df['close'], 7)
+        df['EMA_7'] = ema(df['close'], 7)
         df['EMA_21'] = ema(df['close'], 21)
         df['RSI_14'] = rsi(df['close'], RSI_LEN)
         price = exchange.fetch_ticker(symbol).get('last') or df['close'].iloc[-1]
@@ -339,7 +330,7 @@ def evaluate_signal(symbol):
         rsi_now = r14.iloc[-2]
 
         log.info(f"Precio: {price} | {TIMEFRAME} EMA7/21: {e7.iloc[-2]:.5f}/{e21.iloc[-2]:.5f} | "
-                 f"RSI: {rsi_now:.1f} | 4H cruce: {cross_4h}")
+                 f"RSI: {rsi_now:.1f} | 4H cruce fresco: {cross_4h}")
 
         for i_curr in (-2, -3):
             i_prev = i_curr - 1
@@ -389,7 +380,7 @@ def capacity_ok(symbol):
         details = ((raw or {}).get('data') or [{}])[0].get('details') or []
         total = sum(_f(d.get('eqUsd')) for d in details)
         verdict = 'CABE' if total >= need else 'NO CABE'
-        log.info(f"Margen 1 contrato: \~\( {need:.2f} | colateral real: \~ \){total:.2f} -> {verdict}")
+        log.info(f"Margen 1 contrato: ~${need:.2f} | colateral real: ~${total:.2f} -> {verdict}")
         return total >= need
     except Exception as e:
         log.warning(f"Capacidad: colateral no calculable: {e} — BLOQUEO.")
@@ -411,7 +402,7 @@ def verify_setup():
     raw = exchange.privateGetAccountBalance()
     details = ((raw or {}).get('data') or [{}])[0].get('details') or []
     total = sum(_f(d.get('eqUsd')) for d in details)
-    log.info(f"Autenticacion OK | host={HOST} | Colateral real (valor USD): \~{total:.2f}")
+    log.info(f"Autenticacion OK | host={HOST} | Colateral real (valor USD): ~{total:.2f}")
 
 # ==================== CICLO ====================
 def run_cycle():
@@ -439,20 +430,20 @@ def run_cycle():
 
     signal, price, candle_ts = evaluate_signal(symbol)
     if not signal:
-        log.info("Sin cruces EMA7/21 en 15m alineados con 4H. Vigilando.")
+        log.info("Sin cruces EMA7/21 en 15m alineados con cruce fresco 4H. Vigilando.")
         return
 
     if candle_already_traded(symbol, candle_ts):
         return
 
-    log.info(f"Senal {signal} (4H cruce fresco a favor, RSI en banda). Abriendo 1 contrato...")
+    log.info(f"Senal {signal} (cruce fresco 4H a favor, RSI en banda). Abriendo 1 contrato...")
     try:
         execute_order(signal, symbol, price, AMOUNT, candle_ts)
     except Exception as e:
         log.error(f"Entrada rechazada: {e}")
 
 def run_once():
-    log.info("Modo ciclo unico (GitHub Actions) | XLM Ax2-D + RSI-BANDA [30-70] + cruce 4H (XPERP USD).")
+    log.info("Modo ciclo unico (GitHub Actions) | XLM Ax2-D (EVENTO) + RSI-BANDA [30-70] (XPERP USD).")
     verify_setup()
     if TEST_MODE:
         catalog_xlm()
@@ -460,7 +451,7 @@ def run_once():
     run_cycle()
 
 def main_loop():
-    log.info(f"Iniciando bot {BASE_ASSET} Ax2-D | {TIMEFRAME}+{TF_FILTER} (cruce fresco) | "
+    log.info(f"Iniciando bot {BASE_ASSET} Ax2-D | {TIMEFRAME}+{TF_FILTER} (cruce fresco EVENTO) | "
              f"SL {SL_PCT:.1%} / TP {TP_PCT:.1%} | {LEVERAGE}x | cooldown {COOLDOWN_MIN}m | "
              f"RSI-banda [{RSI_LO:.0f}-{RSI_HI:.0f}] | {HOST}")
     verify_setup()
@@ -473,7 +464,7 @@ def main_loop():
         except Exception as e:
             log.error(f"Error en el ciclo principal: {e}")
             time.sleep(60)
-        time.sleep(1800)   # 30 min — alineado con el privilegio
+        time.sleep(1800)  # 30 min — alineado con el privilegio
 
 if __name__ == "__main__":
     if SINGLE_CYCLE:
