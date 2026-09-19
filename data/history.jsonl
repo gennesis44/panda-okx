@@ -29,3 +29,5 @@
 {"inst": "XLM-USD_UM_XPERP-310704", "base": "XLM", "dir": "long", "open": "0.186988", "close": "0.18669", "liq": 0.0, "pnl": -0.0484839, "uTime": "1788696850835", "posId": "3898236517662003201", "exit": "MAN"}
 {"inst": "XLM-USD_UM_XPERP-310704", "base": "XLM", "dir": "long", "open": "0.18573", "close": "0.18522", "liq": 0.0, "pnl": -0.0695475, "uTime": "1788681606737", "posId": "3898236517662003201", "exit": "MAN"}
 {"inst": "XLM-USD_UM_XPERP-310704", "base": "XLM", "dir": "long", "open": "0.184557", "close": "0.18437", "liq": 0.0, "pnl": -0.03714635, "uTime": "1788678905020", "posId": "3898236517662003201", "exit": "MAN"}
+{"inst": "DOGE-USD_UM_XPERP-310404", "base": "DOGE", "dir": "long", "open": "0.08784", "close": "0.0891", "liq": 0.0, "pnl": 0.0117153, "uTime": "1789823177216", "posId": "3893920642968522753", "exit": "MAN"}
+{"inst": "FET-USD_UM_XPERP-310912", "base": "FET", "dir": "long", "open": "0.1843", "close": "0.1809", "liq": 0.0, "pnl": -0.1077737427307692, "uTime": "1789825837087", "posId": "3936445466454200321", "exit": "SL"}
