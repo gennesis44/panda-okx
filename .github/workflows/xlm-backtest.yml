@@ -1,0 +1,44 @@
+name: XLM Backtest DEMO
+
+on:
+  workflow_dispatch:      # solo manual — un backtest no corre por cron
+
+permissions:
+  contents: write         # para persistir data/xlm-backtest.jsonl
+
+concurrency:
+  group: xlm-backtest
+  cancel-in-progress: false
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Dependencias
+        run: pip install -r requirements.txt
+
+      - name: Backtest DEMO XLM (sin ordenes, solo lectura publica)
+        run: python backtest-xlm.py
+
+      - name: Persistir resultados
+        run: |
+          git config user.name  "gscsi-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git pull --rebase --autostash origin main
+          git add data/xlm-backtest.jsonl
+          if git diff --cached --quiet; then
+            echo "sin cambios"
+          else
+            git commit -m "XLM backtest $(date -u +'%Y-%m-%dT%H:%MZ')"
+            git push
+          fi
