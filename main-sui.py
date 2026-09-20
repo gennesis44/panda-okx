@@ -30,7 +30,7 @@ def _f(x):
 
 # ==================== CONFIGURACIÓN (decreto Carbono) ====================
 BASE_ASSET = 'SUI'
-AMOUNT     = 1          # 1 contrato = 10 SUI (~$9.00)
+AMOUNT.    = 10         # 1 contrato = 1 SUI (~`$0.90) → 10 ct = 10 SUI (~$9.00)
 SL_LONG    = 0.040      # 4.0%
 TP_LONG    = 0.055      # 5.5%
 SL_SHORT   = 0.030      # 3.0%
