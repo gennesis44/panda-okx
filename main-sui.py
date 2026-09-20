@@ -1,13 +1,14 @@
-# main-sui.py — Ax2-SUI · EL CATAMARÁN · decreto Carbono (ratificado 21-sep)
-#   "Botamos ese catamarán" — variante A BIDIRECCIONAL ratificada:
-#     SEÑAL UNICA: cruce EMA3/15 en velas 1H CERRADAS (ventana -2/-3/-4)
+# main-sui.py — Ax2-SUI · EL CATAMARAN · decreto Carbono (ratificado 21-sep)
+#   Variante A BIDIRECCIONAL ratificada:
+#     SENAL UNICA: cruce EMA3/15 en velas 1H CERRADAS (ventana -2/-3/-4)
 #     LONG  (cruce alcista): SL 4.0% / TP 5.5%
 #     SHORT (cruce bajista): SL 3.0% / TP 4.5%
-#   Validación:
+#   Validacion:
 #     - Backtest 60 dias: 17 trades · WR 47% (breakeven 42%) · +0.41%/trade · PF 1.21
 #     - Campo: 2 cruces reales documentados, 2 direcciones, 2 ganadores
 #     - Marea macro: cruce alcista SEMANAL vigente — bidireccional por diseño
-#   Nota: NEVER solo-SHORT — la marea vira; el catamaran navega con viento que venga.
+#   AMOUNT corregido: 1 contrato = 1 SUI (ctVal=1.0 confirmado por API)
+#     → 10 contratos = 10 SUI (~$9.00 nocional) · guardia $15 lo protege
 # Ax3: HOST my.okx.com | clOrdId SUI | cooldown fail-closed | no entrar si NO CABE | 51016
 # Ax3.1: unidades honestas (ctValCcy) | posicion primero | vela cerrada siempre
 # Ax3.2: guardia de nocional — unidad sorpresa = bot bloqueado
@@ -30,22 +31,22 @@ def _f(x):
 
 # ==================== CONFIGURACIÓN (decreto Carbono) ====================
 BASE_ASSET = 'SUI'
-AMOUNT.    = 10         # 1 contrato = 1 SUI (~`$0.90) → 10 ct = 10 SUI (~$9.00)
-SL_LONG    = 0.040      # 4.0%
-TP_LONG    = 0.055      # 5.5%
-SL_SHORT   = 0.030      # 3.0%
-TP_SHORT   = 0.045      # 4.5%
-TIMEFRAME  = '1h'       # marco unico del catamaran
-EMA_FAST   = 3
-EMA_SLOW   = 15
-TD_MODE    = 'cross'
-LEVERAGE   = 1
+AMOUNT = 10         # 1 contrato = 1 SUI (~$0.90) → 10 ct = 10 SUI (~$9.00)
+SL_LONG = 0.040     # 4.0%
+TP_LONG = 0.055     # 5.5%
+SL_SHORT = 0.030    # 3.0%
+TP_SHORT = 0.045    # 4.5%
+TIMEFRAME = '1h'
+EMA_FAST = 3
+EMA_SLOW = 15
+TD_MODE = 'cross'
+LEVERAGE = 1
 COOLDOWN_MIN = 60
-TEST_MODE       = os.getenv('TEST_MODE') == '1'
-SINGLE_CYCLE    = os.getenv('SINGLE_CYCLE') == '1'
+TEST_MODE = os.getenv('TEST_MODE') == '1'
+SINGLE_CYCLE = os.getenv('SINGLE_CYCLE') == '1'
 MAX_NOTIONAL_USD = _f(os.getenv('OKX_SUI_MAX_NOTIONAL', '15.0')) or 15.0
-SIGNAL_WINDOW   = (-2, -3, -4)
-WARMUP_1H       = 30
+SIGNAL_WINDOW = (-2, -3, -4)
+WARMUP_1H = 30
 
 HOST = 'https://my.okx.com'
 
@@ -288,12 +289,6 @@ def cooldown_active(symbol):
 
 # ==================== SEÑAL: CRUCE EMA3/15 1H CERRADA ====================
 def evaluate_signal(symbol):
-    """[El Catamarán — decreto Carbono]
-    SENAL UNICA: cruce EMA3/EMA15 en velas 1H CERRADAS.
-    LONG  (alcista): SL 4% / TP 5.5%
-    SHORT (bajista): SL 3% / TP 4.5%
-    Bidireccional por diseño: navega con el viento que venga.
-    Ventana -2/-3/-4 cubre el gap de cadencia del cron."""
     try:
         df = fetch_data(symbol, TIMEFRAME, limit=200)
         if len(df) < WARMUP_1H + 10:
@@ -356,7 +351,7 @@ def capacity_ok(symbol):
         raw = exchange.privateGetAccountBalance()
         details = ((raw or {}).get('data') or [{}])[0].get('details') or []
         total = sum(_f(d.get('eqUsd')) for d in details)
-        log.info("Margen (1 ct): ~$" + format(need, '.2f') + " | colateral: ~$" +
+        log.info("Margen (10 ct): ~$" + format(need, '.2f') + " | colateral: ~$" +
                  format(total, '.2f') + " -> " + ('CABE' if total >= need else 'NO CABE'))
         return total >= need
     except Exception as e:
@@ -426,7 +421,7 @@ def main_loop():
         except Exception as e:
             log.error("Error en el ciclo principal: " + str(e))
             time.sleep(60)
-        time.sleep(1200)   # 20 min — cubre la ventana 1H sin perder cruces
+        time.sleep(1200)
 
 if __name__ == "__main__":
     if SINGLE_CYCLE:
