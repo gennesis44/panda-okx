@@ -1,0 +1,3 @@
+{"dir": "LONG", "signal_time": 1789322400000, "entry_time": 1789333200000, "entry": 0.1729, "exit": 0.16252599999999998, "reason": "SL", "net": -0.060000000000000164}
+{"dir": "LONG", "signal_time": 1789650000000, "entry_time": 1789660800000, "entry": 0.1637, "exit": 0.1759775, "reason": "TP", "net": 0.07499999999999996}
+{"dir": "SHORT", "signal_time": 1789876800000, "entry_time": 1789887600000, "entry": 0.1697, "exit": 0.174791, "reason": "SL", "net": -0.030000000000000027}
