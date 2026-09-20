@@ -1,5 +1,11 @@
+# saldo-hy.py — GSCSI · CUENTA COMPLETA EN UNA CORRIDA
+#   [1] Patrimonio + balances por moneda
+#   [2] Posiciones ABIERTAS (futuros, con PnL flotante y % recorrido)
+#   [3] CIERRES recientes (positions-history, con PnL realizado)
+# Solo lectura · sin órdenes · my.okx.com · EEE · fail-closed (exit 1)
 import os
 import sys
+import time
 import ccxt
 
 API_KEY    = os.environ.get('OKX_API_KEY', '')
@@ -13,110 +19,155 @@ exchange = ccxt.okx({
     'apiKey':    API_KEY,
     'secret':    SECRET_KEY,
     'password':  PASSPHRASE,
+    'enableRateLimit': True,
     'options':   {'defaultType': 'swap'},
-    'urls':      {'api': {'rest': 'https://my.okx.com'}},
+    'urls':      {'api': {'rest': 'https://my.okx.com'}},   # EEE — obligatorio
 })
 
-print("== PATRIMONIO DE LA CUENTA (margen unificado) ==")
-try:
+
+def ffecha(ms):
+    try:
+        return time.strftime('%d %H:%M', time.gmtime(int(ms) / 1000))
+    except (TypeError, ValueError):
+        return '?'
+
+def fnum(x, dec=6):
+    try:
+        return f"{float(x):,.{dec}g}"
+    except (TypeError, ValueError):
+        return '?'
+
+
+def seccion_patrimonio():
+    print("== [1] PATRIMONIO (margen unificado) ==")
     data = exchange.privateGetAccountBalance({}).get('data', [])
     if not data or not data[0].get('details'):
-        print("  La cuenta no devuelve detalles de balance (¿vacía por completo?)")
-        sys.exit(0)
-
+        print("  La cuenta no devuelve detalles de balance.")
+        return
     root = data[0]
-    print(f"  Equity total de la cuenta: {float(root.get('totalEq') or 0):,.2f} USD\n")
+    print(f"  Equity total de la cuenta: {float(root.get('totalEq') or 0):,.2f} USD")
 
     filas = []
     for c in root.get('details', []):
-        eq  = float(c.get('eq') or 0)
+        eq = float(c.get('eq') or 0)
         if eq == 0:
             continue
-        filas.append((
-            c.get('ccy', '?'),
-            eq,
-            float(c.get('availBal') or 0) + float(c.get('availEq') or 0),
-            float(c.get('frozenBal') or 0),
-        ))
-
+        filas.append((c.get('ccy', '?'), eq,
+                      float(c.get('availBal') or 0) + float(c.get('availEq') or 0),
+                      float(c.get('frozenBal') or 0)))
     if not filas:
-        print("  ✓ No hay ninguna moneda con saldo distinto de cero.")
-    else:
-        print(f"  {'MONEDA':<8}{'EQUITY':>16}{'DISPONIBLE':>16}{'CONGELADO':>14}")
-        print("  " + "-" * 56)
-        for ccy, eq, disp, frz in sorted(filas, key=lambda x: -x[1]):
-            print(f"  {ccy:<8}{eq:>16,.6g}{disp:>16,.6g}{frz:>14,.6g}")
+        print("  ✓ Sin monedas con saldo distinto de cero.")
+        return
+    print(f"  {'MONEDA':<8}{'EQUITY':>16}{'DISPONIBLE':>16}{'CONGELADO':>14}")
+    print("  " + "-" * 56)
+    for ccy, eq, disp, frz in sorted(filas, key=lambda x: -x[1]):
+        print(f"  {ccy:<8}{fnum(eq):>16}{fnum(disp):>16}{fnum(frz, 2):>14}")
 
-    # ─────────────────────────────────────────────────────────
-    # POSICIONES ABIERTAS (futuros) — FET incluida con andamios
-    # ─────────────────────────────────────────────────────────
-    print("\n== POSICIONES ABIERTAS ==")
+
+def seccion_abiertas():
+    print("\n== [2] POSICIONES ABIERTAS ==")
+    raw = []
     try:
         raw = exchange.privateGetAccountPositions({}).get('data', [])
     except Exception:
-        raw = []
-    # fallback a ccxt si el endpoint crudo no responde
+        pass
     if not raw:
         try:
             raw = exchange.fetch_positions()
         except Exception as e:
             print(f"  ✗ No se pudieron leer posiciones: {str(e)[:200]}")
-            raw = []
+            return
 
-    posiciones = []
-    for p in raw:
-        contratos = float(p.get('contracts') or p.get('pos') or 0)
-        if contratos > 0:
-            posiciones.append(p)
-
-    if not posiciones:
+    abiertas = [p for p in raw if float(p.get('contracts') or p.get('pos') or 0) > 0]
+    if not abiertas:
         print("  ✓ Sin posiciones abiertas.")
-    else:
-        print(f"  {'ACTIVO':<10}{'LADO':<7}{'CONTR.':>7}{'ENTRADA':>12}"
-              f"{'ACTUAL':>12}{'PnL FLOT':>12}{'RECOCIDO':>10}")
-        print("  " + "-" * 74)
-        for p in posiciones:
-            info  = p.get('info') or {}
-            iid   = info.get('instId') or (p.get('symbol') or '?')
-            base  = iid.split('-')[0] if iid else '?'
-            lado  = (p.get('side') or info.get('posSide') or '?').upper()
-            entrada = float(p.get('entryPrice') or info.get('avgPx') or 0)
-            actual  = float(p.get('markPrice') or info.get('markPx') or 0)
-            upl     = float(p.get('unrealizedPnl') or info.get('upl') or 0)
-            pct     = (actual / entrada - 1) * 100 if entrada > 0 else 0.0
-            lever   = info.get('lever') or '?'
-            marca   = ' ←← MANUAL' if info.get('clOrdId') or base == 'FET' else ''
-            print(f"  {base:<10}{lado:<7}{contratos:>7g}{entrada:>12.5f}"
-                  f"{actual:>12.5f}{upl:>12.4f}{pct:>+9.2f}%  {lever}x{marca}")
-            # detalle raw útil
-            print(f"     ↳ inst={iid} | mgn={info.get('mgnMode','?')} "
-                  f"| liqPx={info.get('liqPx') or '-'} | uTime={info.get('uTime','?')}")
+        return
 
-        # SL/TP adjuntos por posición (attachAlgoOrds — via órdenes de algoritmo)
-        print("\n== ANDAMIOS (SL/TP adjuntos) ==")
-        for p in posiciones:
-            info = p.get('info') or {}
-            iid  = info.get('instId') or '?'
-            base = iid.split('-')[0]
-            try:
-                algos = exchange.privateGetTradeOrdersAlgoPending({
-                    'ordType': 'oco', 'instId': iid}).get('data', [])
-                if not algos:
-                    algos = exchange.privateGetTradeOrdersAlgoPending({
-                        'ordType': 'conditional', 'instId': iid}).get('data', [])
-                if not algos:
-                    print(f"  {base}: sin algo-pending visible (SL/TP pueden "
-                          f"estar como adjuntos de la orden madre)")
-                for a in algos[:2]:
-                    print(f"  {base}: TP-trigger={a.get('tpTriggerPx','?')} "
-                          f"| SL-trigger={a.get('slTriggerPx','?')} "
-                          f"| estado={a.get('state','?')}")
-            except Exception as e:
-                print(f"  {base}: no se pudo leer algo-pending ({str(e)[:120]})")
+    for p in abiertas:
+        info = p.get('info') or {}
+        iid  = info.get('instId') or (p.get('symbol') or '?')
+        base = iid.split('-')[0]
+        lado = (p.get('side') or info.get('posSide') or '?').upper()
+        contr= float(p.get('contracts') or p.get('pos') or 0)
+        entrada = float(p.get('entryPrice') or info.get('avgPx') or 0)
+        actual  = float(p.get('markPrice') or info.get('markPx') or 0)
+        upl     = float(p.get('unrealizedPnl') or info.get('upl') or 0)
+        pct     = (actual / entrada - 1) * 100 if entrada > 0 else 0.0
+        lev     = info.get('lever') or info.get('leverage') or '?'
+        mgn     = info.get('mgnMode') or '?'
+        liq     = info.get('liqPx') or info.get('liq_price') or '-'
+        print(f"  {base:<6} {lado:<6} {contr:g} ct @ {entrada:.5f} → {actual:.5f}  "
+              f"| PnL flot: {upl:+.4f} ({pct:+.2f}%)  | {lev}x {mgn}  | liq: {liq}")
 
+    # andamios SL/TP pendientes por instrumento
+    print("  --- SL/TP pendientes (algo) ---")
+    vistos = set()
+    for p in abiertas:
+        info = p.get('info') or {}
+        iid  = info.get('instId') or '?'
+        base = iid.split('-')[0]
+        if base in vistos:
+            continue
+        vistos.add(base)
+        try:
+            algos = exchange.privateGetTradeOrdersAlgoPending({
+                'instId': iid}).get('data', [])
+            if not algos:
+                print(f"  {base:<6}: sin algo-pending visible "
+                      f"(los adjuntos a la orden madre no siempre se listan)")
+            for a in algos[:2]:
+                print(f"  {base:<6}: TP-trigger={a.get('tpTriggerPx','?')}  "
+                      f"SL-trigger={a.get('slTriggerPx','?')}  "
+                      f"state={a.get('state','?')}")
+        except Exception as e:
+            print(f"  {base:<6}: no legible ({str(e)[:120]})")
+
+
+def seccion_cierres():
+    print("\n== [3] CIERRES RECIENTES ==")
+    hist = []
+    for it in ('FUTURES', 'SWAP'):
+        try:
+            hist += exchange.privateGetAccountPositionsHistory({
+                'instType': it, 'limit': '10'}).get('data', [])
+        except Exception as e:
+            print(f"  ✗ positions-history [{it}]: {str(e)[:150]}")
+    if not hist:
+        print("  ✓ Sin cierres recientes visibles.")
+        return
+
+    # dedup por huella, más recientes primero
+    vistos, limpios = set(), []
+    for h in hist:
+        k = (h.get('instId'), h.get('direction'), h.get('openAvgPx'),
+             h.get('closeAvgPx'), h.get('realizedPnl'), h.get('uTime'))
+        if k in vistos:
+            continue
+        vistos.add(k)
+        limpios.append(h)
+    limpios.sort(key=lambda h: h.get('uTime') or 0, reverse=True)
+
+    print(f"  {'ACTIVO':<6}{'DIR':<7}{'ENTRADA':>11}{'SALIDA':>11}{'PnL':>11}  HORA (UTC)")
+    print("  " + "-" * 62)
+    for h in limpios[:10]:
+        base = (h.get('instId') or '?').split('-')[0]
+        pnl  = float(h.get('realizedPnl') or 0)
+        marca = ' ←← MANUAL?' if pnl != 0 and abs(pnl) < 0.2 and base in ('FET',) else ''
+        print(f"  {base:<6}{(h.get('direction') or '?').upper():<7}"
+              f"{fnum(h.get('openAvgPx'), 5):>11}{fnum(h.get('closeAvgPx'), 5):>11}"
+              f"{pnl:>+11.4f}  [{ffecha(h.get('uTime'))}]{marca}")
+
+
+try:
+    print("=" * 56)
+    print("  CUENTA GSCSI COMPLETA — solo lectura")
+    print("  my.okx.com · EEE · USDT: VETADO")
+    print(f"  Emitido: {time.strftime('%Y-%m-%d %H:%M UTC', time.gmtime())}")
+    print("=" * 56)
+    seccion_patrimonio()
+    seccion_abiertas()
+    seccion_cierres()
     print("\n  USDT/USDC disponible = capital arrancable directo.")
-    print("  Otras monedas: convertir a USDT en la app (Convertir) si quieres sumarlas.")
-
 except Exception as e:
-    print("  ✗ FALLO:", str(e)[:300])
+    print(f"ERROR FATAL: {e}", flush=True)
     sys.exit(1)
