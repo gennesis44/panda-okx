@@ -1,24 +1,40 @@
-name: SUI Bot OKX
+name: sui-bot-okx
+
 on:
   schedule:
-    - cron: '*/20 * * * *'
+    - cron: '7,37 * * * *'   # cada 30 min (offset 7/37 — no choca con XLM 3/33)
   workflow_dispatch:
+    inputs:
+      mode:
+        description: 'prod = ciclo normal | test = catalogo'
+        required: false
+        default: 'prod'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sui-bot
+  cancel-in-progress: false
 
 jobs:
-  sui-bot:
+  run-bot:
     runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      SINGLE_CYCLE: '1'
+      TEST_MODE: ${{ github.event.inputs.mode == 'test' && '1' || '' }}
+      PYTHONUNBUFFERED: '1'
+      OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
+      OKX_SECRET_KEY: ${{ secrets.OKX_SECRET_KEY }}
+      OKX_PASSWORD: ${{ secrets.OKX_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - run: pip install ccxt pandas
-      - run: python main-sui.py
-        env:
-          SINGLE_CYCLE: '1'
-          PYTHONUNBUFFERED: '1'
-          OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
-          OKX_SECRET_KEY: ${{ secrets.OKX_SECRET_KEY }}
-          OKX_API_SECRET: ${{ secrets.OKX_API_SECRET }}
-          OKX_PASSWORD: ${{ secrets.OKX_PASSWORD }}
-          OKX_PASSPHRASE: ${{ secrets.OKX_PASSPHRASE }}
+          cache: pip
+      - name: Dependencias
+        run: pip install -r requirements.txt
+      - name: Ciclo del bot
+        run: python main-sui.py
