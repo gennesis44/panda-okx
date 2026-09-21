@@ -1,0 +1,13 @@
+{"dir": "SHORT", "signal_time": 1783447200000, "entry_time": 1783512000000, "entry": 0.1669, "exit": 0.1710725, "reason": "SL", "net": -0.02629999999999991}
+{"dir": "LONG", "signal_time": 1784073600000, "entry_time": 1784138400000, "entry": 0.1646, "exit": 0.15883899999999998, "reason": "SL", "net": -0.036300000000000145}
+{"dir": "SHORT", "signal_time": 1784203200000, "entry_time": 1784289600000, "entry": 0.1608, "exit": 0.16482, "reason": "SL", "net": -0.02629999999999991}
+{"dir": "LONG", "signal_time": 1784311200000, "entry_time": 1784376000000, "entry": 0.1657, "exit": 0.173985, "reason": "TP", "net": 0.04870000000000004}
+{"dir": "SHORT", "signal_time": 1784829600000, "entry_time": 1784894400000, "entry": 0.166, "exit": 0.15936, "reason": "TP", "net": 0.03870000000000003}
+{"dir": "LONG", "signal_time": 1785326400000, "entry_time": 1785391200000, "entry": 0.1622, "exit": 0.17031000000000002, "reason": "TP", "net": 0.04870000000000004}
+{"dir": "SHORT", "signal_time": 1786363200000, "entry_time": 1786428000000, "entry": 0.1872, "exit": 0.179712, "reason": "TP", "net": 0.03869999999999992}
+{"dir": "LONG", "signal_time": 1787140800000, "entry_time": 1787205600000, "entry": 0.1833, "exit": 0.192465, "reason": "TP", "net": 0.04870000000000004}
+{"dir": "SHORT", "signal_time": 1787680800000, "entry_time": 1787745600000, "entry": 0.2103, "exit": 0.21555749999999996, "reason": "SL", "net": -0.02629999999999991}
+{"dir": "LONG", "signal_time": 1788393600000, "entry_time": 1788458400000, "entry": 0.2226, "exit": 0.21480899999999997, "reason": "SL", "net": -0.036300000000000145}
+{"dir": "SHORT", "signal_time": 1788976800000, "entry_time": 1789041600000, "entry": 0.2122, "exit": 0.203712, "reason": "TP", "net": 0.03869999999999992}
+{"dir": "LONG", "signal_time": 1789387200000, "entry_time": 1789452000000, "entry": 0.2051, "exit": 0.1979215, "reason": "SL", "net": -0.036300000000000034}
+{"dir": "LONG", "signal_time": 1789689600000, "entry_time": 1789754400000, "entry": 0.2209, "exit": 0.231945, "reason": "TP", "net": 0.04870000000000004}
