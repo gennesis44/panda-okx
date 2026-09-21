@@ -2,7 +2,7 @@ name: Bot DOGE
 
 on:
   schedule:
-    - cron: '9 * * * *'
+    - cron: '*/3 * * * *'   # cada 3 min — el marco 2m exige chequeo frecuente
   workflow_dispatch:
 
 permissions:
