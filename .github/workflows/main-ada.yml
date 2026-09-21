@@ -2,11 +2,15 @@ name: ADA Bot OKX
 
 on:
   schedule:
-    - cron: '21,41 * * * *'
+    - cron: '23,43 * * * *'   # cada 20 min — cubre de sobra el marco 6H
   workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: ada-bot
+  cancel-in-progress: false
 
 jobs:
   run-ada:
@@ -14,12 +18,13 @@ jobs:
     timeout-minutes: 8
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
       - name: Install dependencies
         run: pip install ccxt pandas
-      - name: Run ADA Bot (TEST)
+      - name: Run ADA Bot
         run: python main-ada.py
         env:
           SINGLE_CYCLE: '1'
