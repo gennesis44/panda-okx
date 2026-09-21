@@ -1,14 +1,15 @@
-# main-doge.py — Ax2-DOGE · EL PERRO · decreto Carbono (ratificado 21-sep)
+# main-doge.py — Ax2-DOGE · EL PERRO · ley v2 (decreto Carbono 21-sep post-caza)
 #   LEY: cruce EMA3/21 en velas 2m CERRADAS (ventana -2/-3)
-#   LONG  (cruce alcista): SL 2.0% / TP 3.0%
-#   SHORT (cruce bajista): SL 1.5% / TP 2.5%
-#   TAMANO (ratificado): 10 ct = 100 DOGE (~$9.40) — collar de $9
-#   Validacion (backtest 21-sep):
-#     5 trades · WR 60% (breakeven 41%) · expect +0.87%/trade NETO fees · PF 2.16
-#     Ruido 2m: media 0.17% → SL 2% = 12x colchon
-#     Tope API: 2m solo retiene ~2 dias → el live es la muestra continua
-#   NOTA: el marco anterior (1h EMA7/21 SL1/TP1.5) fue enterrado:
-#     30 trades · WR 37% · -0.21%/trade tras fees — sin edge
+#   LONG  (cruce alcista): SL 2.0% / TP 4.0%   (R:R 2.0 · breakeven ~33%)
+#   SHORT (cruce bajista): SL 3.0% / TP 4.0%   (R:R 1.33 · breakeven ~43%)
+#   CAMBIO v2: SL SHORT 1.5→3.0 (aire tras SL ejecutado por mecha en dia +7.84%)
+#              TP ambos 4.0 (objetivo mas ambicioso, fees amortizados)
+#   Validacion (backtest 21-sep, geometria v1):
+#     5 trades · WR 60% · expect +0.87%/trade neto fees · PF 2.16
+#     Ruido 2m: media 0.17% · P90 0.34% (el SL 3% = 17x colchon)
+#     Tope API: 2m retiene ~2 dias → el live es la muestra continua
+#   PRIMERA CAZA LIVE (v1): SHORT ejecutado por SL −$0.13 — mecha 0.09481
+#     vs trigger 0.09476 en dia +7.84% (vendedor contra marea)
 # Ax3: HOST my.okx.com | clOrdId DOGE | cooldown fail-closed | no entrar si NO CABE | 51016
 # Ax3.1: unidades honestas (ctVal=10 DOGE confirmado por API run 12:17 UTC)
 # Ax3.2: guardia de nocional — unidad sorpresa = bot bloqueado
@@ -33,9 +34,9 @@ def _f(x):
 BASE_ASSET = 'DOGE'
 AMOUNT = 10         # 10 ct = 100 DOGE (~$9.40) — collar de $9 ratificado
 SL_LONG = 0.020     # 2.0%
-TP_LONG = 0.030     # 3.0%
-SL_SHORT = 0.015    # 1.5%
-TP_SHORT = 0.025    # 2.5%
+TP_LONG = 0.040     # 4.0%   (v2: antes 3.0)
+SL_SHORT = 0.030    # 3.0%   (v2: antes 1.5)
+TP_SHORT = 0.040    # 4.0%   (v2: antes 2.5)
 TIMEFRAME = '2m'
 EMA_FAST = 3
 EMA_SLOW = 21
@@ -179,7 +180,7 @@ def get_open_position(symbol):
         log.error("Error consultando posiciones: " + str(e))
     return None
 
-# ==================== ENTRADA CON SL/TP ASIMÉTRICOS ====================
+# ==================== ENTRADA CON SL/TP ASIMÉTRICOS v2 ====================
 def _post_trade_order(req):
     method = getattr(exchange, 'privatePostTradeOrder', None) or exchange.private_post_trade_order
     return method(req)
@@ -290,12 +291,12 @@ def cooldown_active(symbol):
 
 # ==================== SEÑAL: CRUCE EMA3/21 2m CERRADA ====================
 def evaluate_signal(symbol):
-    """[El Perro — decreto Carbono]
+    """[El Perro — ley v2, decreto Carbono 21-sep]
     SENAL UNICA: cruce EMA3/EMA21 en velas 2m CERRADAS.
-    LONG  (alcista): SL 2% / TP 3%
-    SHORT (bajista): SL 1.5% / TP 2.5%
-    Ruido 2m medido: 0.17% medio — SL 2% = 12x colchon.
-    Ventana -2/-3 cubre la cadencia del cron (*/3)."""
+    LONG  (alcista): SL 2% / TP 4%   (R:R 2.0 — breakeven ~33%)
+    SHORT (bajista): SL 3% / TP 4%   (R:R 1.33 — breakeven ~43%)
+    v2: aire extra en ambos SL tras la primera caza ejecutada por
+    mecha en dia alcista. Ruido 2m medido: 0.17% medio — SL 3% = 17x."""
     try:
         df = fetch_data(symbol, TIMEFRAME, limit=100)
         if len(df) < WARMUP_2M + 10:
@@ -408,7 +409,7 @@ def run_cycle():
         log.error("Entrada rechazada: " + str(e))
 
 def run_once():
-    log.info("Modo ciclo unico | DOGE EMA3/21 2m | LONG SL2/TP3 | SHORT SL1.5/TP2.5 | 10 ct (XPERP USD).")
+    log.info("Modo ciclo unico | DOGE EMA3/21 2m v2 | LONG SL2/TP4 | SHORT SL3/TP4 (XPERP USD).")
     verify_setup()
     if TEST_MODE:
         catalog_doge()
@@ -416,7 +417,7 @@ def run_once():
     run_cycle()
 
 def main_loop():
-    log.info("Bot " + BASE_ASSET + " | 2m EMA3/21 | LONG SL2/TP3 · SHORT SL1.5/TP2.5 | " +
+    log.info("Bot " + BASE_ASSET + " | 2m EMA3/21 v2 | LONG SL2/TP4 · SHORT SL3/TP4 | " +
              str(AMOUNT) + " ct | cooldown " + str(COOLDOWN_MIN) + "m | " + HOST)
     verify_setup()
     while True:
