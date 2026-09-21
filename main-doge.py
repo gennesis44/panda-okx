@@ -2,17 +2,15 @@
 #   LEY: cruce EMA3/21 en velas 2m CERRADAS (ventana -2/-3)
 #   LONG  (cruce alcista): SL 2.0% / TP 3.0%
 #   SHORT (cruce bajista): SL 1.5% / TP 2.5%
+#   TAMANO (ratificado): 10 ct = 100 DOGE (~$9.40) — collar de $9
 #   Validacion (backtest 21-sep):
 #     5 trades · WR 60% (breakeven 41%) · expect +0.87%/trade NETO fees · PF 2.16
 #     Ruido 2m: media 0.17% → SL 2% = 12x colchon
 #     Tope API: 2m solo retiene ~2 dias → el live es la muestra continua
-#   NOTAS:
-#     - fees r/t ~0.13% ya considerados en la geometria (TP >= 2.5% minimo)
-#     - el marco anterior (1h EMA7/21 SL1/TP1.5) fue enterrado:
-#       30 trades backtest · WR 37% · −0.21%/trade tras fees — sin edge
-#     - el perro es igual a su Amo spacex: vertical, rapido, sin aviso
+#   NOTA: el marco anterior (1h EMA7/21 SL1/TP1.5) fue enterrado:
+#     30 trades · WR 37% · -0.21%/trade tras fees — sin edge
 # Ax3: HOST my.okx.com | clOrdId DOGE | cooldown fail-closed | no entrar si NO CABE | 51016
-# Ax3.1: unidades honestas (ctValCcy) | posicion primero | vela cerrada siempre
+# Ax3.1: unidades honestas (ctVal=10 DOGE confirmado por API run 12:17 UTC)
 # Ax3.2: guardia de nocional — unidad sorpresa = bot bloqueado
 # INSTRUMENTO: XPERP DOGE/USD (vencimiento) — USDT PROHIBIDO (MiCA/EEE)
 import os
@@ -33,12 +31,12 @@ def _f(x):
 
 # ==================== CONFIGURACIÓN (decreto Carbono) ====================
 BASE_ASSET = 'DOGE'
-AMOUNT = 1          # 1 contrato (ctVal verificado en primer run — ver guardia)
+AMOUNT = 10         # 10 ct = 100 DOGE (~$9.40) — collar de $9 ratificado
 SL_LONG = 0.020     # 2.0%
 TP_LONG = 0.030     # 3.0%
 SL_SHORT = 0.015    # 1.5%
 TP_SHORT = 0.025    # 2.5%
-TIMEFRAME = '2m'    # marco del perro: el mas rapido de la flota
+TIMEFRAME = '2m'
 EMA_FAST = 3
 EMA_SLOW = 21
 TD_MODE = 'cross'
@@ -297,7 +295,7 @@ def evaluate_signal(symbol):
     LONG  (alcista): SL 2% / TP 3%
     SHORT (bajista): SL 1.5% / TP 2.5%
     Ruido 2m medido: 0.17% medio — SL 2% = 12x colchon.
-    Ventana -2/-3 cubre la cadencia del cron."""
+    Ventana -2/-3 cubre la cadencia del cron (*/3)."""
     try:
         df = fetch_data(symbol, TIMEFRAME, limit=100)
         if len(df) < WARMUP_2M + 10:
@@ -360,7 +358,7 @@ def capacity_ok(symbol):
         raw = exchange.privateGetAccountBalance()
         details = ((raw or {}).get('data') or [{}])[0].get('details') or []
         total = sum(_f(d.get('eqUsd')) for d in details)
-        log.info("Margen (1 ct): ~$" + format(need, '.2f') + " | colateral: ~$" +
+        log.info("Margen (10 ct): ~$" + format(need, '.2f') + " | colateral: ~$" +
                  format(total, '.2f') + " -> " + ('CABE' if total >= need else 'NO CABE'))
         return total >= need
     except Exception as e:
@@ -410,7 +408,7 @@ def run_cycle():
         log.error("Entrada rechazada: " + str(e))
 
 def run_once():
-    log.info("Modo ciclo unico | DOGE EMA3/21 2m | LONG SL2/TP3 | SHORT SL1.5/TP2.5 (XPERP USD).")
+    log.info("Modo ciclo unico | DOGE EMA3/21 2m | LONG SL2/TP3 | SHORT SL1.5/TP2.5 | 10 ct (XPERP USD).")
     verify_setup()
     if TEST_MODE:
         catalog_doge()
@@ -430,7 +428,7 @@ def main_loop():
         except Exception as e:
             log.error("Error en el ciclo principal: " + str(e))
             time.sleep(60)
-        time.sleep(120)   # 2 min — cada vela nueva es un chequeo (marco 2m)
+        time.sleep(120)   # 2 min — cada vela nueva es un chequeo
 
 if __name__ == "__main__":
     if SINGLE_CYCLE:
