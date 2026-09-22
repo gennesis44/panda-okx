@@ -1,18 +1,17 @@
-# main-fet.py — Ax3-FET · decreto Carbono (21-sep):
-#   "EMA3/10 30min. Implantar los candados del perro para % entre emas.
-#    Entrada de fet para ver el cruce y posible entrada cada 4min"
+# main-fet.py — Ax3-FET · decreto Carbono + FIX CANDADO (v2 del implante)
 #   LEY: cruce EMA3/10 en velas 30m CERRADAS (ventana -2/-3)
-#   LONG  (cruce alcista): SL 6.0% / TP 7.5%   (heredado — el decreto no lo toca)
-#   SHORT (cruce bajista): SL 3.0% / TP 4.0%   (heredado)
-#   🔒 CANDADO ANTI-RANGO (heredado del perro): si EMA3/10 separadas
-#     < 0.15% en la vela de la senal → rango → cruce VETADO.
-#   CADENCIA: cron cada 4 min — ventana -2/-3 cubre de sobra (30m velas).
-#   NOTA: sustituye a la variante 1H EMA5/100 (n=3, juicio diferido —
-#     el nuevo decreto la reemplaza).
-# Ax3: HOST my.okx.com | clOrdId FET | cooldown fail-closed | no entrar si NO CABE | 51016
-# Ax3.1: unidades honestas (ctValCcy) | posicion primero | vela cerrada siempre
+#   LONG  SL 6.0% / TP 7.5%   ·   SHORT SL 3.0% / TP 4.0%
+#   🔒 CANDADO ANTI-RANGO v2 — FIX FORENSE 22-sep:
+#     BUG detectado en vivo: rango_activo recibia indice NEGATIVO
+#     → e3[-2] lanza KeyError en pandas → el except devolvia
+#       (False, 0.0) = fail-OPEN → "VALIDO 0.000%" → cruce sin candado.
+#     FIX: (1) indices POSITIVOS via .iloc, (2) fail-CLOSED:
+#       si no se puede medir la separacion → VETO (no paso).
+#     Evidencia del bug: "VALIDO (separacion 0.000%)" con EMAs a 0.094%.
+# Ax3: HOST my.okx.com | clOrdId FET | cooldown fail-closed | 51016
+# Ax3.1: unidades honestas | posicion primero | vela cerrada siempre
 # Ax3.2: guardia de nocional — unidad sorpresa = bot bloqueado
-# INSTRUMENTO: XPERP FET/USD (vencimiento) — USDT PROHIBIDO (MiCA/EEE)
+# INSTRUMENTO: XPERP FET/USD — USDT PROHIBIDO (MiCA/EEE)
 import os
 import time
 import logging
@@ -31,12 +30,12 @@ def _f(x):
 
 # ==================== CONFIGURACIÓN (decreto Carbono) ====================
 BASE_ASSET = 'FET'
-AMOUNT = 2          # 2 ct = 20 FET (~$3.5)
-SL_LONG = 0.060     # 6.0%  (heredado)
-TP_LONG = 0.075     # 7.5%  (heredado)
-SL_SHORT = 0.030    # 3.0%  (heredado)
-TP_SHORT = 0.040    # 4.0%  (heredado)
-TIMEFRAME = '30m'   # marco del decreto
+AMOUNT = 2          # 2 ct = 20 FET (~$4.2)
+SL_LONG = 0.060
+TP_LONG = 0.075
+SL_SHORT = 0.030
+TP_SHORT = 0.040
+TIMEFRAME = '30m'
 EMA_FAST = 3
 EMA_SLOW = 10
 TD_MODE = 'cross'
@@ -47,7 +46,6 @@ SINGLE_CYCLE = os.getenv('SINGLE_CYCLE') == '1'
 MAX_NOTIONAL_USD = _f(os.getenv('OKX_FET_MAX_NOTIONAL', '7.0')) or 7.0
 SIGNAL_WINDOW = (-2, -3)
 WARMUP_30M = 40
-# 🔒 CANDADO ANTI-RANGO (heredado del perro)
 RANGO_UMBRAL_PCT = 0.15
 
 HOST = 'https://my.okx.com'
@@ -290,25 +288,30 @@ def cooldown_active(symbol):
         log.warning("No se pudo verificar cooldown (" + str(e) + "); BLOQUEO fail-closed.")
         return True
 
-# ==================== 🔒 CANDADO ANTI-RANGO (heredado del perro) ====================
-def rango_activo(efast, eslow, idx):
-    """True si las EMAs estan pegadas (< umbral %) en idx.
-    Mercado sin direccion — todo cruce ahi es whipsaw seguro."""
+# ==================== 🔒 CANDADO ANTI-RANGO v2 (FAIL-CLOSED) ====================
+def rango_activo(efast, eslow, idx_pos):
+    """True si las EMAs estan pegadas (< umbral %) en idx_pos (indice POSITIVO).
+    v2 FIX: usa .iloc (no [] con negativos) y FAIL-CLOSED:
+    si no se puede medir → devuelve bloqueado=True (VETO).
+    Un candado que no puede medir no deja pasar — es su trabajo."""
     try:
-        sep = abs(efast[idx] - eslow[idx]) / eslow[idx] * 100.0
+        ef = float(efast.iloc[idx_pos])
+        es = float(eslow.iloc[idx_pos])
+        if es <= 0:
+            return True, 0.0
+        sep = abs(ef - es) / es * 100.0
         return sep < RANGO_UMBRAL_PCT, sep
     except Exception:
-        return False, 0.0
+        return True, 0.0    # FAIL-CLOSED: no medible → VETO
 
-# ==================== SEÑAL: CRUCE EMA3/10 30m + CANDADO ====================
+# ==================== SEÑAL: CRUCE EMA3/10 30m + CANDADO v2 ====================
 def evaluate_signal(symbol):
-    """[FET — decreto Ax3 Carbono]
-    SENAL UNICA: cruce EMA3/EMA10 en velas 30m CERRADAS.
-    LONG  (alcista): SL 6% / TP 7.5%   (heredado)
-    SHORT (bajista): SL 3% / TP 4%     (heredado)
-    🔒 CANDADO: en la vela de la senal, si |EMA3-EMA10| < 0.15%
-    del precio → rango (sin direccion) → cruce VETADO.
-    Ventana -2/-3 cubre de sobra la cadencia de 4 min."""
+    """[FET — decreto Ax3 + candado v2 fail-closed]
+    SENAL: cruce EMA3/10 en velas 30m CERRADAS.
+    LONG SL6/TP7.5 · SHORT SL3/TP4.
+    🔒 CANDADO v2: separacion EMA3/EMA10 < 0.15% en la vela de la
+    senal → rango → VETO. Medicion con .iloc e indice positivo.
+    Si la medicion falla → VETO (fail-closed)."""
     try:
         df = fetch_data(symbol, TIMEFRAME, limit=100)
         if len(df) < WARMUP_30M + 10:
@@ -332,36 +335,38 @@ def evaluate_signal(symbol):
 
         for i_curr in SIGNAL_WINDOW:
             i_prev = i_curr - 1
-            idx = len(df) + i_curr
+            idx = len(df) + i_curr          # indice POSITIVO real
             if abs(i_prev) > len(df) - 1 or idx < WARMUP_30M:
                 continue
             candle_ts = int(df['timestamp'].iloc[i_curr])
 
             up = (e3.iloc[i_prev] <= e10.iloc[i_prev]
-                  and e3.iloc[i_curr] > e10.iloc[i_curr])
+                  and e3.iloc[idx] > e10.iloc[idx])
             down = (e3.iloc[i_prev] >= e10.iloc[i_prev]
-                    and e3.iloc[i_curr] < e10.iloc[i_curr])
+                    and e3.iloc[idx] < e10.iloc[idx])
 
             if up:
-                bloqueado, sep = rango_activo(e3, e10, i_curr)
+                bloqueado, sep = rango_activo(e3, e10, idx)
                 if bloqueado:
-                    log.info("Cruce ALCISTA VETADO por candado: EMAs separadas " +
+                    log.info("Cruce ALCISTA VETADO por candado: separacion " +
                              format(sep, '.3f') + "% < " +
-                             format(RANGO_UMBRAL_PCT, '.2f') + "% (rango). [anti-rango]")
+                             format(RANGO_UMBRAL_PCT, '.2f') + "% (o no medible). [fail-closed]")
                     continue
                 log.info("Cruce ALCISTA VALIDO (separacion " +
-                         format(sep, '.3f') + "%). Senal LONG.")
+                         format(sep, '.3f') + "% >= " +
+                         format(RANGO_UMBRAL_PCT, '.2f') + "%). Senal LONG.")
                 return 'LONG', price, candle_ts
 
             if down:
-                bloqueado, sep = rango_activo(e3, e10, i_curr)
+                bloqueado, sep = rango_activo(e3, e10, idx)
                 if bloqueado:
-                    log.info("Cruce BAJISTA VETADO por candado: EMAs separadas " +
+                    log.info("Cruce BAJISTA VETADO por candado: separacion " +
                              format(sep, '.3f') + "% < " +
-                             format(RANGO_UMBRAL_PCT, '.2f') + "% (rango). [anti-rango]")
+                             format(RANGO_UMBRAL_PCT, '.2f') + "% (o no medible). [fail-closed]")
                     continue
                 log.info("Cruce BAJISTA VALIDO (separacion " +
-                         format(sep, '.3f') + "%). Senal SHORT.")
+                         format(sep, '.3f') + "% >= " +
+                         format(RANGO_UMBRAL_PCT, '.2f') + "%). Senal SHORT.")
                 return 'SHORT', price, candle_ts
 
         log.info("Sin cruce EMA3/10 en la ventana. Vigilando.")
@@ -429,7 +434,7 @@ def run_cycle():
     if candle_already_traded(symbol, candle_ts):
         return
 
-    log.info("Senal " + signal + " (cruce EMA3/10 30m VALIDADO). Abriendo " +
+    log.info("Senal " + signal + " (cruce EMA3/10 30m VALIDADO v2). Abriendo " +
              str(AMOUNT) + " contrato...")
     try:
         execute_order(signal, symbol, price, AMOUNT, candle_ts)
@@ -437,7 +442,7 @@ def run_cycle():
         log.error("Entrada rechazada: " + str(e))
 
 def run_once():
-    log.info("Modo ciclo unico | FET EMA3/10 30m + CANDADO ANTI-RANGO (XPERP USD).")
+    log.info("Modo ciclo unico | FET EMA3/10 30m + CANDADO v2 FAIL-CLOSED (XPERP USD).")
     verify_setup()
     if TEST_MODE:
         catalog_fet()
@@ -445,8 +450,8 @@ def run_once():
     run_cycle()
 
 def main_loop():
-    log.info("Bot " + BASE_ASSET + " | 30m EMA3/10+lock | LONG SL6/TP7.5 · SHORT SL3/TP4 | " +
-             str(AMOUNT) + " ct | lock " + format(RANGO_UMBRAL_PCT, '.2f') + "% | " + HOST)
+    log.info("Bot " + BASE_ASSET + " | 30m EMA3/10+lock-v2 | LONG SL6/TP7.5 · SHORT SL3/TP4 | " +
+             str(AMOUNT) + " ct | lock " + format(RANGO_UMBRAL_PCT, '.2f') + "% fail-closed | " + HOST)
     verify_setup()
     while True:
         try:
