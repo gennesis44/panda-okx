@@ -37,3 +37,4 @@
 {"inst": "FET-USD_UM_XPERP-310912", "base": "FET", "dir": "long", "open": "0.1703", "close": "0.1795", "liq": 0.0, "pnl": 0.09058995, "uTime": "1789923228726", "posId": "3936445466454200321", "exit": "TP"}
 {"inst": "DOGE-USD_UM_XPERP-310404", "base": "DOGE", "dir": "short", "open": "0.09341", "close": "0.09491", "liq": 0.0, "pnl": -0.159416, "uTime": "1790002256464", "posId": "3893920642968522753", "exit": "SL"}
 {"inst": "DOGE-USD_UM_XPERP-310404", "base": "DOGE", "dir": "long", "open": "0.09949", "close": "0.10341", "liq": 0.0, "pnl": 0.3808568, "uTime": "1790049801761", "posId": "3893920642968522753", "exit": "TP"}
+{"inst": "XLM-USD_UM_XPERP-310704", "base": "XLM", "dir": "long", "open": "0.21486", "close": "0.21228", "liq": 0.0, "pnl": -0.279357, "uTime": "1790087380037", "posId": "3898236517662003201", "exit": "SL"}
