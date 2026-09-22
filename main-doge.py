@@ -1,19 +1,19 @@
-# main-doge.py — Ax2-DOGE · EL PERRO · ley v2 + CANDADO ANTI-RANGO (v3)
+# main-doge.py — Ax2-DOGE · EL PERRO · ley v2 + CANDADO v2 FAIL-CLOSED
 #   LEY: cruce EMA3/21 en velas 2m CERRADAS (ventana -2/-3)
 #   LONG  (cruce alcista): SL 2.0% / TP 4.0%   (R:R 2.0 · breakeven ~33%)
 #   SHORT (cruce bajista): SL 3.0% / TP 4.0%   (R:R 1.33 · breakeven ~43%)
-#   🔒 CANDADO ANTI-RANGO (implante 21-sep, post-whipsaw en vivo):
-#     Si EMA3 y EMA21 están a menos de RANGO_UMBRAL (0.15%) de
-#     separación en la vela de la señal → mercado SIN direccion
-#     → cruce VETADO. Los micro-cruces de rango (whipsaw) jamás
-#     llegan a orden. Solo cruces con SEPARACION REAL (movimiento
-#     tendencial confirmado) disparan.
-#     Origen: rango 22-sep (EMAs a 0.02-0.06%) — escapó por suerte,
-#     no por diseño. Este candado convierte la suerte en ley.
-#   Validación (backtest 21-sep, geometria v1 — v2 pendiente de live):
+#   🔒 CANDADO ANTI-RANGO v2 — FIX FORENSE 22-sep:
+#     BUG detectado en FET en vivo: rango_activo recibia indice NEGATIVO
+#     → e3[-2] lanza KeyError en pandas → el except devolvia
+#       (False, 0.0) = fail-OPEN → "VALIDO 0.000%" → cruce sin candado.
+#     FIX: (1) indices POSITIVOS via .iloc, (2) FAIL-CLOSED:
+#       si no se puede medir la separacion → VETO (no paso).
+#     Evidencia del bug: "VALIDO (separacion 0.000%)" con EMAs a 0.094%.
+#     EL PERRO TENIA EL MISMO BUG LATENTE — este archivo lo cura.
+#   Validacion (backtest 21-sep, geometria v1 — v2 pendiente de live):
 #     5 trades · WR 60% · expect +0.87%/trade NETO fees · PF 2.16
-#   PRIMERA CAZA LIVE (v1): SL −$0.13 — mecha en dia +7.84% (vendedor
-#     contra marea). v2 (SL3/TP4) nace con aire x2.
+#   PRIMERA CAZA LIVE (v1): SL −$0.1594 — mecha en dia +7.84%.
+#     Registro: perro neto +0.22 tras el TP v2 de +0.3809 (22-sep 04:03).
 # Ax3: HOST my.okx.com | clOrdId DOGE | cooldown fail-closed | no entrar si NO CABE | 51016
 # Ax3.1: unidades honestas (ctVal=10 DOGE confirmado por API run 12:17 UTC)
 # Ax3.2: guardia de nocional — unidad sorpresa = bot bloqueado
@@ -52,8 +52,8 @@ SINGLE_CYCLE = os.getenv('SINGLE_CYCLE') == '1'
 MAX_NOTIONAL_USD = _f(os.getenv('OKX_DOGE_MAX_NOTIONAL', '15.0')) or 15.0
 SIGNAL_WINDOW = (-2, -3)
 WARMUP_2M = 40
-# 🔒 CANDADO ANTI-RANGO (implante quirúrgico 21-sep)
-RANGO_UMBRAL_PCT = 0.15   # separación mínima EMA3/EMA21 (%) para validar cruce
+# 🔒 CANDADO ANTI-RANGO v2 (fail-closed)
+RANGO_UMBRAL_PCT = 0.15
 
 HOST = 'https://my.okx.com'
 
@@ -295,24 +295,31 @@ def cooldown_active(symbol):
         log.warning("No se pudo verificar cooldown (" + str(e) + "); BLOQUEO fail-closed.")
         return True
 
-# ==================== 🔒 CANDADO ANTI-RANGO (implante) ====================
-def rango_activo(e3, e21, idx):
-    """True si las EMAs están pegadas (< umbral %) en idx.
-    Mercado sin direccion — todo cruce ahi es whipsaw seguro."""
+# ==================== 🔒 CANDADO ANTI-RANGO v2 (FAIL-CLOSED) ====================
+def rango_activo(efast, eslow, idx_pos):
+    """True si las EMAs estan pegadas (< umbral %) en idx_pos (indice POSITIVO).
+    v2 FIX: usa .iloc (no [] con negativos) y FAIL-CLOSED:
+    si no se puede medir → devuelve bloqueado=True (VETO).
+    Un candado que no puede medir no deja pasar — es su trabajo."""
     try:
-        sep = abs(e3[idx] - e21[idx]) / e21[idx] * 100.0
+        ef = float(efast.iloc[idx_pos])
+        es = float(eslow.iloc[idx_pos])
+        if es <= 0:
+            return True, 0.0
+        sep = abs(ef - es) / es * 100.0
         return sep < RANGO_UMBRAL_PCT, sep
     except Exception:
-        return False, 0.0
+        return True, 0.0    # FAIL-CLOSED: no medible → VETO
 
-# ==================== SEÑAL: CRUCE EMA3/21 2m + CANDADO ====================
+# ==================== SEÑAL: CRUCE EMA3/21 2m + CANDADO v2 ====================
 def evaluate_signal(symbol):
-    """[El Perro — ley v2 + candado anti-rango]
+    """[El Perro — ley v2 + candado v2 fail-closed]
     SENAL UNICA: cruce EMA3/EMA21 en velas 2m CERRADAS.
     LONG  (alcista): SL 2% / TP 4%
     SHORT (bajista): SL 3% / TP 4%
-    🔒 CANDADO: en la vela de la señal, si |EMA3-EMA21| < 0.15%
-    del precio → rango (sin direccion) → cruce VETADO."""
+    🔒 CANDADO v2: en la vela de la senal, si |EMA3-EMA21| < 0.15%
+    del precio → rango (sin direccion) → cruce VETADO.
+    Medicion con .iloc e indice POSITIVO. Si la medicion falla → VETO."""
     try:
         df = fetch_data(symbol, TIMEFRAME, limit=100)
         if len(df) < WARMUP_2M + 10:
@@ -336,38 +343,38 @@ def evaluate_signal(symbol):
 
         for i_curr in SIGNAL_WINDOW:
             i_prev = i_curr - 1
-            idx = len(df) + i_curr
+            idx = len(df) + i_curr          # indice POSITIVO real
             if abs(i_prev) > len(df) - 1 or idx < WARMUP_2M:
                 continue
             candle_ts = int(df['timestamp'].iloc[i_curr])
 
             up = (e3.iloc[i_prev] <= e21.iloc[i_prev]
-                  and e3.iloc[i_curr] > e21.iloc[i_curr])
+                  and e3.iloc[idx] > e21.iloc[idx])
             down = (e3.iloc[i_prev] >= e21.iloc[i_prev]
-                    and e3.iloc[i_curr] < e21.iloc[i_curr])
+                    and e3.iloc[idx] < e21.iloc[idx])
 
             if up:
-                # 🔒 CANDADO: medir separacion en la vela del cruce
-                bloqueado, sep = rango_activo(e3, e21, i_curr)
+                bloqueado, sep = rango_activo(e3, e21, idx)
                 if bloqueado:
-                    log.info("Cruce ALCISTA VETADO por candado: EMAs separadas " +
+                    log.info("Cruce ALCISTA VETADO por candado: separacion " +
                              format(sep, '.3f') + "% < " +
-                             format(RANGO_UMBRAL_PCT, '.2f') + "% (rango). [anti-rango]")
+                             format(RANGO_UMBRAL_PCT, '.2f') + "% (o no medible). [fail-closed]")
                     continue
                 log.info("Cruce ALCISTA VALIDO (separacion " +
-                         format(sep, '.3f') + "%). Senal LONG.")
+                         format(sep, '.3f') + "% >= " +
+                         format(RANGO_UMBRAL_PCT, '.2f') + "%). Senal LONG.")
                 return 'LONG', price, candle_ts
 
             if down:
-                # 🔒 CANDADO: mismo chequeo para el bajista
-                bloqueado, sep = rango_activo(e3, e21, i_curr)
+                bloqueado, sep = rango_activo(e3, e21, idx)
                 if bloqueado:
-                    log.info("Cruce BAJISTA VETADO por candado: EMAs separadas " +
+                    log.info("Cruce BAJISTA VETADO por candado: separacion " +
                              format(sep, '.3f') + "% < " +
-                             format(RANGO_UMBRAL_PCT, '.2f') + "% (rango). [anti-rango]")
+                             format(RANGO_UMBRAL_PCT, '.2f') + "% (o no medible). [fail-closed]")
                     continue
                 log.info("Cruce BAJISTA VALIDO (separacion " +
-                         format(sep, '.3f') + "%). Senal SHORT.")
+                         format(sep, '.3f') + "% >= " +
+                         format(RANGO_UMBRAL_PCT, '.2f') + "%). Senal SHORT.")
                 return 'SHORT', price, candle_ts
 
         log.info("Sin cruce EMA3/21 en la ventana. Vigilando.")
@@ -435,7 +442,7 @@ def run_cycle():
     if candle_already_traded(symbol, candle_ts):
         return
 
-    log.info("Senal " + signal + " (cruce EMA3/21 2m VALIDADO). Abriendo " +
+    log.info("Senal " + signal + " (cruce EMA3/21 2m VALIDADO v2). Abriendo " +
              str(AMOUNT) + " contrato...")
     try:
         execute_order(signal, symbol, price, AMOUNT, candle_ts)
@@ -443,7 +450,7 @@ def run_cycle():
         log.error("Entrada rechazada: " + str(e))
 
 def run_once():
-    log.info("Modo ciclo unico | DOGE EMA3/21 2m v3 + CANDADO ANTI-RANGO (XPERP USD).")
+    log.info("Modo ciclo unico | DOGE EMA3/21 2m v3 + CANDADO v2 FAIL-CLOSED (XPERP USD).")
     verify_setup()
     if TEST_MODE:
         catalog_doge()
@@ -451,8 +458,8 @@ def run_once():
     run_cycle()
 
 def main_loop():
-    log.info("Bot " + BASE_ASSET + " | 2m EMA3/21 v3+lock | LONG SL2/TP4 · SHORT SL3/TP4 | " +
-             str(AMOUNT) + " ct | lock " + format(RANGO_UMBRAL_PCT, '.2f') + "% | " + HOST)
+    log.info("Bot " + BASE_ASSET + " | 2m EMA3/21 v3+lock-v2 | LONG SL2/TP4 · SHORT SL3/TP4 | " +
+             str(AMOUNT) + " ct | lock " + format(RANGO_UMBRAL_PCT, '.2f') + "% fail-closed | " + HOST)
     verify_setup()
     while True:
         try:
