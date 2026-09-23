@@ -1,11 +1,15 @@
-# backtest-xlm-4h.py — GSCSI · BACKTEST XLM · LEY SWING 4H
-#   [A] NUEVA LEY:   4H EMA3/15 · LONG SL4/TP6 · SHORT SL3/TP5
-#       + candado anti-rango 0.15% (estandar de flota)
-#       EXTIRPADO: gate 4H viejo · RSI [30-70] (radar jubilado)
-#       Geometria calibrada al patron de la flota (ADA 6H gano con swing)
-#   [B] CONTROL:     15m EMA7/21 SL1/TP1.5 (marco viejo — sentencia previa −22%)
-#   [C] RUIDO:       high-low por vela 4h y 15m
+# backtest-xlm.py — GSCSI · BACKTEST XLM · DESPERTAR LEY EMA3/21 4H
+#   [A] LEY NUEVA:   4H EMA3/21 · LONG SL5/TP7 · SHORT SL3.5/TP5
+#       + candado anti-rango 0.15% (herencia de flota)
+#       SL calibrado con la vela del desastre de HOY (−6.18% diario
+#       → SL 5% sobrevive sustos de esa escala desde entrada razonable)
+#   [B] CONTROL:     15m EMA7/21 SL1/TP1.5 (el marco viejo condenado
+#       en 15m/30m/4H con la vieja geometria — doble veredicto de esta
+#       geometria clásica en el activo)
+#   [C] RUIDO:       high-low por vela 4h
 #   FEES: 0.13% r/t descontados por trade
+#   NOTA: EMA3/21 4H = territorio VIRGEN del expediente XLM
+#     (los probados: 15m EMA7/21 · 30m EMA3/10 · 4H EMA3/15 — los 3 condenados)
 #   Solo lectura publica · my.okx.com · veto USDT · exit 1 en error
 import os
 import sys
@@ -19,10 +23,10 @@ import pandas as pd
 BASE_ASSET    = 'XLM'
 TIMEFRAME_A   = '4h'
 EMA_FAST      = 3
-EMA_SLOW      = 15
-SL_LONG       = 0.040
-TP_LONG       = 0.060
-SL_SHORT      = 0.030
+EMA_SLOW      = 21
+SL_LONG       = 0.050
+TP_LONG       = 0.070
+SL_SHORT      = 0.035
 TP_SHORT      = 0.050
 RANGO_UMBRAL  = 0.15
 WINDOW_A      = (-2, -3)
@@ -37,7 +41,7 @@ BACKTEST_DAYS = 120
 MAX_PAGES     = 40
 
 HOST = 'https://my.okx.com'
-SALIDA = pathlib.Path('data/xlm-4h-backtest.jsonl')
+SALIDA = pathlib.Path('data/xlm-despertar-backtest.jsonl')
 
 exchange = ccxt.okx({
     'enableRateLimit': True,
@@ -114,8 +118,8 @@ def ema(s, n):
 
 
 def rango_veto(efast_v, eslow_v, idx):
-    """🔒 Candado anti-rango v2 — FAIL-CLOSED.
-    True (vetado) si separacion < umbral o si no se puede medir."""
+    """🔒 Candado anti-rango v2 — FAIL-CLOSED (.iloc, positivo).
+    True (vetado) si separacion < umbral o no medible."""
     try:
         ef = float(efast_v[idx])
         es = float(eslow_v[idx])
@@ -248,10 +252,11 @@ def summary(trades, label):
 
 try:
     print("=" * 54)
-    print("  BACKTEST XLM - LEY SWING 4H (el ultimo territorio)")
-    print("  [A] Nueva ley 4H EMA3/15 + candado 0.15%")
-    print("      L: SL4/TP6 · S: SL3/TP5")
-    print("  [B] Control 15m EMA7/21 SL1 TP1.5 (marco viejo)")
+    print("  BACKTEST XLM - DESPERTAR LEY EMA3/21 4H")
+    print("  [A] Nueva ley 4H EMA3/21 + candado 0.15%")
+    print("      L: SL5/TP7 · S: SL3.5/TP5")
+    print("      SL calibrado con la vela del desastre (-6.18% hoy)")
+    print("  [B] Control 15m EMA7/21 SL1 TP1.5 (marco condenado)")
     print("  [C] Ruido high-low por vela 4h")
     print("  FEES 0.13% r/t descontados · my.okx.com · USDT VETADO")
     print("=" * 54)
@@ -282,16 +287,16 @@ try:
     print("== [C] MEDICION DE RUIDO ==")
     n4 = noise_report(d4, "4H")
     n15 = noise_report(d15, "15m")
-    print("  Referencias: SL LONG 4% · SL SHORT 3% · candado 0.15% · fee 0.13%")
+    print("  Referencias: SL L 5% / S 3.5% · candado 0.15% · fee 0.13%")
 
     e3v = ema(d4['close'], EMA_FAST).values
-    e15v = ema(d4['close'], EMA_SLOW).values
+    e21v = ema(d4['close'], EMA_SLOW).values
     print("")
-    print("Simulando [A] Nueva ley 4H EMA3/15 + candado...", flush=True)
-    trA, vetos = simulate_cross_lock(d4, e3v, e15v, SL_LONG, TP_LONG,
+    print("Simulando [A] Nueva ley 4H EMA3/21 + candado...", flush=True)
+    trA, vetos = simulate_cross_lock(d4, e3v, e21v, SL_LONG, TP_LONG,
                                      SL_SHORT, TP_SHORT, WINDOW_A, WARMUP_A,
                                      FEE_RT, use_lock=True)
-    sA = summary(trA, 'A: 4H EMA3/15 L4/6 S3/5')
+    sA = summary(trA, 'A: 4H EMA3/21 L5/7 S3.5/5')
 
     e7v = ema(d15['close'], 7).values
     e21v = ema(d15['close'], 21).values
@@ -344,21 +349,21 @@ try:
     if sA['n'] >= 5:
         edge = sA['exp'] > 0 and sA['wr'] >= sA['be']
         if edge:
-            print("  [A] Ley swing 4H: EXPECTATIVA POSITIVA tras fees")
-            print("      → el territorio 4H EXISTE para XLM — bot puede nacer")
+            print("  [A] Ley de despertar: EXPECTATIVA POSITIVA tras fees")
+            print("      → el territorio EMA3/21 4H EXISTE — la ley puede nacer")
         else:
-            print("  [A] Ley swing 4H: SIN VENTAJA tras fees")
-            print("      → con 15m/30m/4H condenados: MS-0 TOTAL sobre XLM")
+            print("  [A] Ley de despertar: SIN VENTAJA tras fees")
+            print("      → XLM vuelve al dique — este territorio también muere")
         print("      WR " + format(sA['wr'], '.0f') + "% vs breakeven " +
               format(sA['be'], '.0f') + "%")
     else:
-        print("  [A] Ley swing 4H: muestra insuficiente (" + str(sA['n']) + " trades)")
+        print("  [A] muestra insuficiente (" + str(sA['n']) + " trades)")
     if sB['n'] >= 10:
         if sB['exp'] <= 0:
             print("  [B] Marco viejo: SIN ventaja tras fees (WR " +
-                  format(sB['wr'], '.0f') + "%) — doble confirmacion")
+                  format(sB['wr'], '.0f') + "%) — cuadruplica la condena")
         else:
-            print("  [B] Marco viejo: ventaja bruta (WR " +
+            print("  [B] Marco viejo: tenia ventaja bruta (WR " +
                   format(sB['wr'], '.0f') + "%)")
     else:
         print("  [B] Control: muestra insuficiente")
@@ -372,8 +377,9 @@ try:
 
     print("")
     print("=" * 54)
-    print("  ADVERTENCIA: swing 4H = pocas senales, posiciones de dias.")
-    print("  La ley NO simula la cadencia del cron. El Carbono decide.")
+    print("  ADVERTENCIA: la vela del desastre de HOY (-6.18% diario)")
+    print("  esta DENTRO del periodo — el backtest la incluye y")
+    print("  sus SLs la vivieron. Pasado no es futuro. El Carbono decide.")
     print("=" * 54)
 
 except Exception as e:
