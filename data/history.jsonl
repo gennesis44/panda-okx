@@ -38,3 +38,5 @@
 {"inst": "DOGE-USD_UM_XPERP-310404", "base": "DOGE", "dir": "short", "open": "0.09341", "close": "0.09491", "liq": 0.0, "pnl": -0.159416, "uTime": "1790002256464", "posId": "3893920642968522753", "exit": "SL"}
 {"inst": "DOGE-USD_UM_XPERP-310404", "base": "DOGE", "dir": "long", "open": "0.09949", "close": "0.10341", "liq": 0.0, "pnl": 0.3808568, "uTime": "1790049801761", "posId": "3893920642968522753", "exit": "TP"}
 {"inst": "XLM-USD_UM_XPERP-310704", "base": "XLM", "dir": "long", "open": "0.21486", "close": "0.21228", "liq": 0.0, "pnl": -0.279357, "uTime": "1790087380037", "posId": "3898236517662003201", "exit": "SL"}
+{"inst": "FET-USD_UM_XPERP-310912", "base": "FET", "dir": "long", "open": "0.2106", "close": "0.1975", "liq": 0.0, "pnl": -0.2699574800258126, "uTime": "1790172757022", "posId": "3913044415088889856", "exit": "SL"}
+{"inst": "SUI-USD_UM_XPERP-310404", "base": "SUI", "dir": "short", "open": "1.0075", "close": "0.9618", "liq": 0.0, "pnl": 0.4502085, "uTime": "1790172779434", "posId": "3902226027655663617", "exit": "TP"}
