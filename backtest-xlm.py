@@ -1,15 +1,18 @@
-# backtest-xlm.py — GSCSI · BACKTEST XLM · DESPERTAR LEY EMA3/21 4H
-#   [A] LEY NUEVA:   4H EMA3/21 · LONG SL5/TP7 · SHORT SL3.5/TP5
+# backtest-xlm.py — GSCSI · BACKTEST XLM v2 · LEY COMPLETA (cruce + RSI)
+#   [A] LEY CANÓNICA COMPLETA: 4H EMA3/21 + RSI(14) BANDA [30-70]
+#       LONG SL5/TP7 · SHORT SL3.5/TP5
 #       + candado anti-rango 0.15% (herencia de flota)
-#       SL calibrado con la vela del desastre de HOY (−6.18% diario
-#       → SL 5% sobrevive sustos de esa escala desde entrada razonable)
-#   [B] CONTROL:     15m EMA7/21 SL1/TP1.5 (el marco viejo condenado
-#       en 15m/30m/4H con la vieja geometria — doble veredicto de esta
-#       geometria clásica en el activo)
-#   [C] RUIDO:       high-low por vela 4h
+#   v2 — CORRECCIÓN FORENSE: el despertar v1 NO incluyó el RSI.
+#     La ley canónica del bot de XLM era cruce + RSI-juntos. Este
+#     test cierra el expediente con la ley COMPLETA.
+#     FIX adicional: índices POSITIVOS via .iloc (el bug del candado
+#     fail-open de FET nació de índices negativos en pandas).
+#   [B] CONTROL:     15m EMA7/21 SL1/TP1.5 (marco condenado)
+#   [C] RUIDO:       high-low por vela 4h y 15m
 #   FEES: 0.13% r/t descontados por trade
-#   NOTA: EMA3/21 4H = territorio VIRGEN del expediente XLM
-#     (los probados: 15m EMA7/21 · 30m EMA3/10 · 4H EMA3/15 — los 3 condenados)
+#   PREGUNTA DEL TEST: ¿el RSI-candado habría vetado los SLs LONG
+#     consecutivos del desplome? Si sí → el expediente REABRE.
+#     Si no → la condena queda cuádruple y firme.
 #   Solo lectura publica · my.okx.com · veto USDT · exit 1 en error
 import os
 import sys
@@ -24,6 +27,9 @@ BASE_ASSET    = 'XLM'
 TIMEFRAME_A   = '4h'
 EMA_FAST      = 3
 EMA_SLOW      = 21
+RSI_LEN       = 14
+RSI_HI        = 70.0
+RSI_LO        = 30.0
 SL_LONG       = 0.050
 TP_LONG       = 0.070
 SL_SHORT      = 0.035
@@ -41,7 +47,7 @@ BACKTEST_DAYS = 120
 MAX_PAGES     = 40
 
 HOST = 'https://my.okx.com'
-SALIDA = pathlib.Path('data/xlm-despertar-backtest.jsonl')
+SALIDA = pathlib.Path('data/xlm-despertar-v2.jsonl')
 
 exchange = ccxt.okx({
     'enableRateLimit': True,
@@ -117,9 +123,17 @@ def ema(s, n):
     return s.ewm(span=n, adjust=False).mean()
 
 
+def rsi(s, n):
+    delta = s.diff()
+    gain = delta.clip(lower=0).ewm(alpha=1 / n, adjust=False).mean()
+    loss = (-delta.clip(upper=0)).ewm(alpha=1 / n, adjust=False).mean()
+    rs = gain / loss.replace(0, float('nan'))
+    return 100 - (100 / (1 + rs))
+
+
 def rango_veto(efast_v, eslow_v, idx):
-    """🔒 Candado anti-rango v2 — FAIL-CLOSED (.iloc, positivo).
-    True (vetado) si separacion < umbral o no medible."""
+    """🔒 Candado anti-rango v2 — FAIL-CLOSED.
+    True (vetado) si separacion < umbral o si no se puede medir."""
     try:
         ef = float(efast_v[idx])
         es = float(eslow_v[idx])
@@ -131,14 +145,17 @@ def rango_veto(efast_v, eslow_v, idx):
         return True, 0.0
 
 
-def simulate_cross_lock(df, efast_v, eslow_v, sl_l, tp_l, sl_s, tp_s,
-                        window, warmup, fee_rt, use_lock):
+def simulate_full(df, efast_v, eslow_v, rsi_v, sl_l, tp_l, sl_s, tp_s,
+                  window, warmup, fee_rt, use_rsi):
+    """Cruces en ventana + candado anti-rango (opcional) + RSI-banda
+    (opcional) + fees descontados. Entrada a apertura de vela siguiente,
+    SL primero en misma vela (conservador)."""
     n = len(df)
     ts = df['timestamp'].values
     hi = df['high'].values
     lo = df['low'].values
     trades = []
-    vetos_lock = 0
+    vetos_rsi = 0
     i = warmup
     while i < n - 1:
         sig = None
@@ -150,10 +167,10 @@ def simulate_cross_lock(df, efast_v, eslow_v, sl_l, tp_l, sl_s, tp_s,
             up = efast_v[idx - 1] <= eslow_v[idx - 1] and efast_v[idx] > eslow_v[idx]
             dn = efast_v[idx - 1] >= eslow_v[idx - 1] and efast_v[idx] < eslow_v[idx]
             if up or dn:
-                if use_lock:
-                    bloqueado, sep = rango_veto(efast_v, eslow_v, idx)
-                    if bloqueado:
-                        vetos_lock += 1
+                if use_rsi:
+                    r = float(rsi_v[idx])
+                    if not (RSI_LO < r < RSI_HI):
+                        vetos_rsi += 1
                         continue
             if up:
                 sig = 'LONG'
@@ -216,7 +233,7 @@ def simulate_cross_lock(df, efast_v, eslow_v, sl_l, tp_l, sl_s, tp_s,
         if reason == 'OPEN':
             break
         i = exit_i + 1
-    return trades, vetos_lock
+    return trades, vetos_rsi
 
 
 def noise_report(df, label):
@@ -252,11 +269,9 @@ def summary(trades, label):
 
 try:
     print("=" * 54)
-    print("  BACKTEST XLM - DESPERTAR LEY EMA3/21 4H")
-    print("  [A] Nueva ley 4H EMA3/21 + candado 0.15%")
-    print("      L: SL5/TP7 · S: SL3.5/TP5")
-    print("      SL calibrado con la vela del desastre (-6.18% hoy)")
-    print("  [B] Control 15m EMA7/21 SL1 TP1.5 (marco condenado)")
+    print("  BACKTEST XLM v2 - LEY COMPLETA (cruce + RSI)")
+    print("  [A] 4H EMA3/21 + RSI[30-70] · L: SL5/TP7 · S: SL3.5/TP5")
+    print("  [B] Control 15m EMA7/21 SL1 TP1.5")
     print("  [C] Ruido high-low por vela 4h")
     print("  FEES 0.13% r/t descontados · my.okx.com · USDT VETADO")
     print("=" * 54)
@@ -285,25 +300,27 @@ try:
 
     print("")
     print("== [C] MEDICION DE RUIDO ==")
-    n4 = noise_report(d4, "4H")
-    n15 = noise_report(d15, "15m")
-    print("  Referencias: SL L 5% / S 3.5% · candado 0.15% · fee 0.13%")
+    noise_report(d4, "4H")
+    noise_report(d15, "15m")
+    print("  Referencias: SL L 5% / S 3.5% · RSI banda [30-70] · fee 0.13%")
 
     e3v = ema(d4['close'], EMA_FAST).values
     e21v = ema(d4['close'], EMA_SLOW).values
+    r14v = rsi(d4['close'], RSI_LEN).values
+
     print("")
-    print("Simulando [A] Nueva ley 4H EMA3/21 + candado...", flush=True)
-    trA, vetos = simulate_cross_lock(d4, e3v, e21v, SL_LONG, TP_LONG,
-                                     SL_SHORT, TP_SHORT, WINDOW_A, WARMUP_A,
-                                     FEE_RT, use_lock=True)
-    sA = summary(trA, 'A: 4H EMA3/21 L5/7 S3.5/5')
+    print("Simulando [A] Ley completa EMA3/21 + RSI-banda...", flush=True)
+    trA, vetos_rsi = simulate_full(d4, e3v, e21v, r14v, SL_LONG, TP_LONG,
+                                   SL_SHORT, TP_SHORT, WINDOW_A, WARMUP_A,
+                                   FEE_RT, use_rsi=True)
+    sA = summary(trA, 'A: 4H EMA3/21 + RSI')
 
     e7v = ema(d15['close'], 7).values
     e21v = ema(d15['close'], 21).values
     print("Simulando [B] Control 15m EMA7/21 SL1 TP1.5...", flush=True)
-    trB, vetosB = simulate_cross_lock(d15, e7v, e21v, SL_B, TP_B,
-                                      SL_B, TP_B, WINDOW_B, WARMUP_B,
-                                      FEE_RT, use_lock=False)
+    trB, _ = simulate_full(d15, e7v, e21v, None, SL_B, TP_B,
+                           SL_B, TP_B, WINDOW_B, WARMUP_B,
+                           FEE_RT, use_rsi=False)
     sB = summary(trB, 'B: 15m EMA7/21 SL1 TP1.5')
 
     print("")
@@ -342,18 +359,19 @@ try:
                           " " + t['reason'] + " " + format(t['net'] * 100, '+.2f') + "%")
 
     print("")
-    print("  Candado anti-rango [A]: " + str(vetos) + " cruces vetados")
+    print("  Vetos por RSI fuera de banda [A]: " + str(vetos_rsi))
+    print("  (comparativa: la version SIN RSI del despertar v1 dio 15 trades · -13.4%)")
 
     print("")
     print("VEREDICTO:")
     if sA['n'] >= 5:
         edge = sA['exp'] > 0 and sA['wr'] >= sA['be']
         if edge:
-            print("  [A] Ley de despertar: EXPECTATIVA POSITIVA tras fees")
-            print("      → el territorio EMA3/21 4H EXISTE — la ley puede nacer")
+            print("  [A] Ley completa + RSI: EXPECTATIVA POSITIVA tras fees")
+            print("      → el expediente REABRE — la ley completa existe")
         else:
-            print("  [A] Ley de despertar: SIN VENTAJA tras fees")
-            print("      → XLM vuelve al dique — este territorio también muere")
+            print("  [A] Ley completa + RSI: SIN VENTAJA tras fees")
+            print("      → el dique seco se RATIFICA con la ley completa")
         print("      WR " + format(sA['wr'], '.0f') + "% vs breakeven " +
               format(sA['be'], '.0f') + "%")
     else:
@@ -361,9 +379,9 @@ try:
     if sB['n'] >= 10:
         if sB['exp'] <= 0:
             print("  [B] Marco viejo: SIN ventaja tras fees (WR " +
-                  format(sB['wr'], '.0f') + "%) — cuadruplica la condena")
+                  format(sB['wr'], '.0f') + "%) — condena estable")
         else:
-            print("  [B] Marco viejo: tenia ventaja bruta (WR " +
+            print("  [B] Marco viejo: ventaja bruta (WR " +
                   format(sB['wr'], '.0f') + "%)")
     else:
         print("  [B] Control: muestra insuficiente")
@@ -377,9 +395,9 @@ try:
 
     print("")
     print("=" * 54)
-    print("  ADVERTENCIA: la vela del desastre de HOY (-6.18% diario)")
-    print("  esta DENTRO del periodo — el backtest la incluye y")
-    print("  sus SLs la vivieron. Pasado no es futuro. El Carbono decide.")
+    print("  ADVERTENCIA: la vela del desastre de HOY (-6.18%) esta")
+    print("  dentro del periodo. El test responde si el RSI-candado")
+    print("  habria cambiado el veredicto del despertar. El Carbono decide.")
     print("=" * 54)
 
 except Exception as e:
