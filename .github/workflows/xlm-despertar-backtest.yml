@@ -1,0 +1,39 @@
+name: XLM Despertar Backtest
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: xlm-despertar
+  cancel-in-progress: false
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: pip install ccxt pandas
+      - name: Backtest XLM ley de despertar EMA3/21 4H (solo lectura publica)
+        run: python backtest-xlm.py
+      - name: Persistir resultados
+        run: |
+          git config user.name  "gscsi-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git pull --rebase --autostash origin main
+          git add data/xlm-despertar-backtest.jsonl
+          if git diff --cached --quiet; then
+            echo "sin cambios"
+          else
+            git commit -m "XLM despertar backtest $(date -u +'%Y-%m-%dT%H:%MZ')"
+            git push
+          fi
