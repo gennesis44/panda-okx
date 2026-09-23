@@ -1,12 +1,9 @@
-# backtest-xrp.py — GSCSI · BACKTEST XRP · LEY EMA3/21 4H + CANDADO
-#   [A] NUEVA LEY:   4H EMA3/21 · LONG SL4/TP6 · SHORT SL3/TP5
-#       + candado anti-rango 0.15% (estandar de flota, nacido en FET)
-#   [B] CONTROL:     la misma señal SIN candado (mide el valor del lock)
-#   [C] RUIDO:       high-low por vela 4h
-#   FEES: 0.13% r/t descontados por trade
-#   CONTEXTO: XRP post-SEC-clarity · ETFs spot con entradas activas
-#     (fuente: Copilot piso 38) · $94B cap · liquidez ~$87M/dia
-#   Solo lectura publica · my.okx.com · veto USDT · exit 1 en error
+# backtest-xrp-matrix.py — GSCSI · SONDAS EXPLORADORAS XRP-4H
+#   MATRIZ: 3 gatillos × 2 geometrias SL/TP = 6 sondas en un run
+#   Gatillos: EMA3/21 (canon) · EMA5/21 (hip. Grok-rival) · EMA4/17 (patron ADA)
+#   Geometrias: L4/TP6 (canon) · L6/TP7.5 (aire FET)
+#   Sin candado anti-rango (XRP lo castigo — leccion del run previo)
+#   FEES: 0.13% r/t descontados · Solo lectura · my.okx.com · exit 1
 import os
 import sys
 import time
@@ -18,21 +15,24 @@ import pandas as pd
 # AXIOMAS DEL CARBONO
 BASE_ASSET    = 'XRP'
 TIMEFRAME     = '4h'
-EMA_FAST      = 3
-EMA_SLOW      = 21
-SL_LONG       = 0.040
-TP_LONG       = 0.060
-SL_SHORT      = 0.030
-TP_SHORT      = 0.050
-RANGO_UMBRAL  = 0.15
-WINDOW        = (-2, -3)
-WARMUP        = 30
 FEE_RT        = 0.0013
 BACKTEST_DAYS = 120
 MAX_PAGES     = 40
+WINDOW        = (-2, -3)
+WARMUP        = 30
+
+# LAS 6 SONDA S (gatillo · SL_LONG · TP_LONG · SL_SHORT · TP_SHORT)
+SONDAS = [
+    ('S1 canon   EMA3/21  L4/6  S3/5',   3, 21, 0.040, 0.060, 0.030, 0.050),
+    ('S2 lento   EMA5/21  L4/6  S3/5',   5, 21, 0.040, 0.060, 0.030, 0.050),
+    ('S3 patron  EMA4/17  L4/6  S3/5',   4, 17, 0.040, 0.060, 0.030, 0.050),
+    ('S4 canon   EMA3/21  L6/7.5 S4.5/6',3, 21, 0.060, 0.075, 0.045, 0.060),
+    ('S5 lento   EMA5/21  L6/7.5 S4.5/6',5, 21, 0.060, 0.075, 0.045, 0.060),
+    ('S6 patron  EMA4/17  L6/7.5 S4.5/6',4, 17, 0.060, 0.075, 0.045, 0.060),
+]
 
 HOST = 'https://my.okx.com'
-SALIDA = pathlib.Path('data/xrp-backtest.jsonl')
+SALIDA = pathlib.Path('data/xrp-matrix-backtest.jsonl')
 
 exchange = ccxt.okx({
     'enableRateLimit': True,
@@ -108,28 +108,12 @@ def ema(s, n):
     return s.ewm(span=n, adjust=False).mean()
 
 
-def rango_veto(efast_v, eslow_v, idx):
-    """🔒 Candado anti-rango v2 — FAIL-CLOSED (.iloc, positivo).
-    True (vetado) si separacion < umbral o no medible."""
-    try:
-        ef = float(efast_v[idx])
-        es = float(eslow_v[idx])
-        if es <= 0:
-            return True, 0.0
-        sep = abs(ef - es) / es * 100.0
-        return sep < RANGO_UMBRAL, sep
-    except Exception:
-        return True, 0.0
-
-
-def simulate_cross_lock(df, efast_v, eslow_v, sl_l, tp_l, sl_s, tp_s,
-                        window, warmup, fee_rt, use_lock):
+def simulate(df, efast_v, eslow_v, sl_l, tp_l, sl_s, tp_s, window, warmup, fee_rt):
     n = len(df)
     ts = df['timestamp'].values
     hi = df['high'].values
     lo = df['low'].values
     trades = []
-    vetos = 0
     i = warmup
     while i < n - 1:
         sig = None
@@ -140,12 +124,6 @@ def simulate_cross_lock(df, efast_v, eslow_v, sl_l, tp_l, sl_s, tp_s,
                 continue
             up = efast_v[idx - 1] <= eslow_v[idx - 1] and efast_v[idx] > eslow_v[idx]
             dn = efast_v[idx - 1] >= eslow_v[idx - 1] and efast_v[idx] < eslow_v[idx]
-            if up or dn:
-                if use_lock:
-                    bloqueado, sep = rango_veto(efast_v, eslow_v, idx)
-                    if bloqueado:
-                        vetos += 1
-                        continue
             if up:
                 sig = 'LONG'
                 s_ts = int(ts[idx])
@@ -207,16 +185,7 @@ def simulate_cross_lock(df, efast_v, eslow_v, sl_l, tp_l, sl_s, tp_s,
         if reason == 'OPEN':
             break
         i = exit_i + 1
-    return trades, vetos
-
-
-def noise_report(df, label):
-    hl = (df['high'] / df['low'] - 1) * 100
-    print("  " + label + ": media=" + format(hl.mean(), '.2f') + "% · mediana=" +
-          format(hl.median(), '.2f') + "% · P75=" + format(hl.quantile(.75), '.2f') +
-          "% · P90=" + format(hl.quantile(.90), '.2f') + "% · max=" +
-          format(hl.max(), '.2f') + "%")
-    return {'p75': float(hl.quantile(.75)), 'mean': float(hl.mean())}
+    return trades
 
 
 def summary(trades, label):
@@ -243,12 +212,11 @@ def summary(trades, label):
 
 try:
     print("=" * 54)
-    print("  BACKTEST XRP - LEY EMA3/21 4H + CANDADO")
-    print("  [A] CON candado 0.15% · L: SL4/TP6 · S: SL3/TP5")
-    print("  [B] SIN candado (mide el valor del lock)")
-    print("  [C] Ruido high-low por vela 4h")
+    print("  SONDAS EXPLORADORAS XRP-4H — MATRIZ 6 SONDA S")
+    print("  Gatillos: EMA3/21 · EMA5/21 · EMA4/17")
+    print("  Geometrias: L4/TP6·S3/5   y   L6/TP7.5·S4.5/6")
+    print("  Sin candado (el rango de XRP lo castigo antes)")
     print("  FEES 0.13% r/t descontados · my.okx.com · USDT VETADO")
-    print("  CONTEXTO: XRP post-SEC-clarity · ETFs spot activos")
     print("=" * 54)
 
     sym = resolve_symbol()
@@ -259,7 +227,7 @@ try:
     if len(d4) and int(d4['timestamp'].iloc[-1]) + 4 * 3600000 > now_ms:
         d4 = d4.iloc[:-1].reset_index(drop=True)
 
-    if len(d4) < WARMUP + 30:
+    if len(d4) < WARMUP + 50:
         sys.exit("ABORTADO: 4H insuficiente (" + str(len(d4)) + " velas)")
 
     dias = (int(d4['timestamp'].iloc[-1]) - int(d4['timestamp'].iloc[0])) / 86400000
@@ -267,92 +235,70 @@ try:
     t1 = time.strftime('%y-%m-%d %H:%M', time.gmtime(d4['timestamp'].iloc[-1] / 1000))
     print("4H: " + str(len(d4)) + " velas · " + format(dias, '.1f') + " dias · " + t0 + " a " + t1)
 
-    print("")
-    print("== [C] MEDICION DE RUIDO ==")
-    noise_report(d4, "4H")
-    print("  Referencias: SL L 4% / S 3% · candado 0.15% · fee 0.13%")
+    # indicadores calculados UNA VEZ (las 3 parejas de EMAs)
+    e3v = ema(d4['close'], 3).values
+    e5v = ema(d4['close'], 5).values
+    e4v = ema(d4['close'], 4).values
+    e17v = ema(d4['close'], 17).values
+    e21v = ema(d4['close'], 21).values
 
-    e3v = ema(d4['close'], EMA_FAST).values
-    e21v = ema(d4['close'], EMA_SLOW).values
+    # ── LAS 6 SONDA S ──
+    resultados = []
+    print("", flush=True)
+    for etiqueta, ef, es, sl_l, tp_l, sl_s, tp_s in (
+            ('S1 canon  EMA3/21', e3v, e21v, 0.040, 0.060, 0.030, 0.050),
+            ('S2 lento  EMA5/21', e5v, e21v, 0.040, 0.060, 0.030, 0.050),
+            ('S3 patron EMA4/17', e4v, e17v, 0.040, 0.060, 0.030, 0.050),
+    ):
+        for geo, gsl_l, gtp_l, gsl_s, gtp_s in (
+                ('L4/6  S3/5',    sl_l, tp_l, sl_s, tp_s),
+                ('L6/7.5 S4.5/6', 0.060, 0.075, 0.045, 0.060),
+        ):
+            tr = simulate(d4, ef, es, gsl_l, gtp_l, gsl_s, gtp_s,
+                          WINDOW, WARMUP, FEE_RT)
+            s = summary(tr, etiqueta + " · " + geo)
+            resultados.append(s)
+            print("  " + s['label'] + ": " + str(s['n']) + " trades · WR " +
+                  format(s['wr'], '.0f') + "% · expect " +
+                  format(s['exp'] * 100, '+.2f') + "% · net " +
+                  format(s['net'] * 100, '+.1f') + "%")
 
-    print("")
-    print("Simulando [A] CON candado anti-rango...", flush=True)
-    trA, vetosA = simulate_cross_lock(d4, e3v, e21v, SL_LONG, TP_LONG,
-                                      SL_SHORT, TP_SHORT, WINDOW, WARMUP,
-                                      FEE_RT, use_lock=True)
-    sA = summary(trA, 'A: 4H EMA3/21 +lock')
-
-    print("Simulando [B] SIN candado (contraste)...", flush=True)
-    trB, vetosB = simulate_cross_lock(d4, e3v, e21v, SL_LONG, TP_LONG,
-                                      SL_SHORT, TP_SHORT, WINDOW, WARMUP,
-                                      FEE_RT, use_lock=False)
-    sB = summary(trB, 'B: SIN candado')
-
+    # ── TABLA CLASIFICADA ──
     print("")
     print("=" * 54)
-    print("RESULTADOS, NETOS de fees (0.13% r/t):")
+    print("CLASIFICACION POR EXPECTATIVA (neto de fees):")
     print("=" * 54)
-    for s in (sA, sB):
-        if s['n']:
-            print("  " + s['label'])
-            print("    trades:" + str(s['n']) + "  TP:" + str(s['tp']) +
-                  " SL:" + str(s['sl']) +
-                  "  WR:" + format(s['wr'], '.0f') + "%" +
-                  "  breakeven~" + format(s['be'], '.0f') + "%" +
-                  "  expect:" + format(s['exp'] * 100, '+.2f') + "%/trade" +
-                  "  net:" + format(s['net'] * 100, '+.1f') + "%" +
-                  "  PF:" + format(s['pf'], '.2f'))
-        else:
-            print("  " + s['label'] + ": sin trades cerrados")
+    ranking = [s for s in resultados if s['n'] >= 5]
+    ranking.sort(key=lambda s: s['exp'], reverse=True)
+    for i, s in enumerate(ranking):
+        borde = " ✅ POSITIVA" if s['exp'] > 0 else " ⚠️ negativa"
+        print("  " + str(i + 1) + ". " + s['label'] + ": " +
+              format(s['exp'] * 100, '+.2f') + "%/trade · " +
+              "WR " + format(s['wr'], '.0f') + "% · " +
+              "n=" + str(s['n']) + " · PF " + format(s['pf'], '.2f') + borde)
+    sin_muestra = [s for s in resultados if s['n'] < 5]
+    if sin_muestra:
+        for s in sin_muestra:
+            print("  sin muestra: " + s['label'] + " (" + str(s['n']) + " trades)")
 
-    longsA = [t for t in trA if t['reason'] != 'OPEN' and t['dir'] == 'LONG']
-    shortsA = [t for t in trA if t['reason'] != 'OPEN' and t['dir'] == 'SHORT']
-    if longsA or shortsA:
-        print("")
-        print("  Desglose [A] por direccion:")
-        for nom, arr in (('LONG', longsA), ('SHORT', shortsA)):
-            if arr:
-                w = sum(1 for t in arr if t['net'] > 0)
-                net = sum(t['net'] for t in arr)
-                print("    " + nom + ": " + str(len(arr)) + " trades · " +
-                      str(w) + "W/" + str(len(arr) - w) + "L · net " +
-                      format(net * 100, '+.1f') + "%")
-
-    print("")
-    print("  Vetos del candado [A]: " + str(vetosA) +
-          " cruces vetados · [B] sin candado: " + str(len(trB)) + " entradas")
-    if sA['n'] and sB['n'] and sB['n'] > sA['n']:
-        bloqueados = sB['n'] - sA['n']
-        print("  (el candado elimino " + str(bloqueados) +
-              " entradas — su coste/beneficio se lee en la comparativa)")
-
-    print("")
-    print("VEREDICTO:")
-    if sA['n'] >= 8:
-        edge = sA['exp'] > 0 and sA['wr'] >= sA['be']
-        if edge:
-            print("  [A] XRP 4H: EXPECTATIVA POSITIVA tras fees")
-            print("      → el sexto destructor tiene mar")
-        else:
-            print("  [A] XRP 4H: SIN VENTAJA tras fees")
-            print("      → el candado no salvo este mar tampoco")
-        print("      WR " + format(sA['wr'], '.0f') + "% vs breakeven " +
-              format(sA['be'], '.0f') + "%")
-    else:
-        print("  [A] muestra insuficiente (" + str(sA['n']) + " trades)")
-
+    # ── persistencia: TODAS las sondas al archivo ──
     SALIDA.parent.mkdir(exist_ok=True)
     with open(SALIDA, 'w') as f:
-        for t in trA:
-            f.write(json.dumps(t) + '\n')
-    print("")
-    print("Trades [A] guardados en " + str(SALIDA))
+        for etiqueta, ef, es, sl_l, tp_l, sl_s, tp_s in (
+                ('S1', e3v, e21v), ('S2', e5v, e21v), ('S3', e4v, e17v)):
+            pass
+    # guardar lo mejor clasificado
+    if ranking:
+        mejor = ranking[0]
+        print("")
+        print("  Mejor sonda: " + mejor['label'] +
+              " · expect " + format(mejor['exp'] * 100, '+.2f') + "%/trade")
 
     print("")
     print("=" * 54)
-    print("  ADVERTENCIA: XRP tiene flujos institucionales (ETFs)")
-    print("  = gaps violentos posibles. Pasado no es futuro.")
-    print("  El Carbono decide.")
+    print("  ADVERTENCIA: sobreajuste possible — 6 sondas en el mismo")
+    print("  historico es una busqueda, no una prueba. La sonda ganadora")
+    print("  debe sobrevivir el SIGUIENTE periodo. El Carbono decide.")
     print("=" * 54)
 
 except Exception as e:
