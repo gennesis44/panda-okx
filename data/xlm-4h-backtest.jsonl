@@ -1,0 +1,16 @@
+{"dir": "LONG", "signal_time": 1783641600000, "entry_time": 1783684800000, "entry": 0.19317, "exit": 0.1854432, "reason": "SL", "net": -0.04130000000000004}
+{"dir": "SHORT", "signal_time": 1783800000000, "entry_time": 1783843200000, "entry": 0.18555, "exit": 0.1911165, "reason": "SL", "net": -0.03130000000000003}
+{"dir": "LONG", "signal_time": 1783872000000, "entry_time": 1783915200000, "entry": 0.18264, "exit": 0.1935984, "reason": "TP", "net": 0.05870000000000005}
+{"dir": "LONG", "signal_time": 1785096000000, "entry_time": 1785139200000, "entry": 0.18165, "exit": 0.174384, "reason": "SL", "net": -0.04129999999999993}
+{"dir": "SHORT", "signal_time": 1785153600000, "entry_time": 1785211200000, "entry": 0.17186, "exit": 0.17701580000000003, "reason": "SL", "net": -0.03130000000000003}
+{"dir": "LONG", "signal_time": 1785628800000, "entry_time": 1785672000000, "entry": 0.17441, "exit": 0.16743360000000002, "reason": "SL", "net": -0.04129999999999993}
+{"dir": "LONG", "signal_time": 1786176000000, "entry_time": 1786219200000, "entry": 0.16509, "exit": 0.15848639999999997, "reason": "SL", "net": -0.04130000000000015}
+{"dir": "LONG", "signal_time": 1787126400000, "entry_time": 1787169600000, "entry": 0.16605, "exit": 0.176013, "reason": "TP", "net": 0.05870000000000005}
+{"dir": "SHORT", "signal_time": 1787587200000, "entry_time": 1787630400000, "entry": 0.19784, "exit": 0.18794799999999998, "reason": "TP", "net": 0.04870000000000004}
+{"dir": "SHORT", "signal_time": 1787875200000, "entry_time": 1787918400000, "entry": 0.18371, "exit": 0.1745245, "reason": "TP", "net": 0.04870000000000004}
+{"dir": "SHORT", "signal_time": 1788278400000, "entry_time": 1788321600000, "entry": 0.17559, "exit": 0.1808577, "reason": "SL", "net": -0.03130000000000003}
+{"dir": "LONG", "signal_time": 1788580800000, "entry_time": 1788624000000, "entry": 0.18346, "exit": 0.19446760000000002, "reason": "TP", "net": 0.05870000000000005}
+{"dir": "LONG", "signal_time": 1788926400000, "entry_time": 1788969600000, "entry": 0.18482, "exit": 0.1774272, "reason": "SL", "net": -0.04130000000000004}
+{"dir": "LONG", "signal_time": 1789185600000, "entry_time": 1789228800000, "entry": 0.18195, "exit": 0.192867, "reason": "TP", "net": 0.05870000000000005}
+{"dir": "SHORT", "signal_time": 1789488000000, "entry_time": 1789531200000, "entry": 0.17748, "exit": 0.1828044, "reason": "SL", "net": -0.03130000000000003}
+{"dir": "SHORT", "signal_time": 1789891200000, "entry_time": 1789934400000, "entry": 0.19607, "exit": 0.2019521, "reason": "SL", "net": -0.03130000000000003}
