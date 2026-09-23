@@ -1,4 +1,4 @@
-name: XLM v2 Backtest
+name: XLM 4H Backtest
 
 on:
   workflow_dispatch:
@@ -7,7 +7,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: xlm-v2-backtest
+  group: xlm-4h-backtest
   cancel-in-progress: false
 
 jobs:
@@ -23,17 +23,17 @@ jobs:
           python-version: '3.11'
           cache: pip
       - run: pip install ccxt pandas
-      - name: Backtest XLM ley nueva EMA3/10 30m (solo lectura publica)
-        run: python backtest-xlm.py
+      - name: Backtest XLM ley swing 4H (solo lectura publica)
+        run: python backtest-xlm-4h.py
       - name: Persistir resultados
         run: |
           git config user.name  "gscsi-bot"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git pull --rebase --autostash origin main
-          git add data/xlm-v2-backtest.jsonl
+          git add data/xlm-4h-backtest.jsonl
           if git diff --cached --quiet; then
             echo "sin cambios"
           else
-            git commit -m "XLM v2 backtest $(date -u +'%Y-%m-%dT%H:%MZ')"
+            git commit -m "XLM 4H backtest $(date -u +'%Y-%m-%dT%H:%MZ')"
             git push
           fi
