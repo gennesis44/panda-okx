@@ -2,6 +2,7 @@
 #   LEY (sonda ganadora de la matriz): cruce EMA3/21 en velas 4H CERRADAS
 #   LONG  (cruce alcista): SL 6.0% / TP 7.5%   (R:R 1.25 · breakeven ~44%)
 #   SHORT (cruce bajista): SL 4.5% / TP 6.0%   (R:R 1.33 · breakeven ~43%)
+#   TAMANO (ratificado por Carbono): 4 ct = 4 XRP (~$6.02)
 #   Backtest 120 dias (23-sep):
 #     14 trades · WR 64% · expect +2.12%/trade NETO fees · net +29.7% · PF 2.02
 #     MEJOR EXPEDIENTE DE LA FLOTA (empatado con EMA4/17 misma geometria)
@@ -12,7 +13,7 @@
 #     1 gano). La sonda debe sobrevivir el periodo siguiente — el
 #     live con collar pequeno es la validacion en marcha.
 # Ax3: HOST my.okx.com | clOrdId XRP | cooldown fail-closed | no entrar si NO CABE | 51016
-# Ax3.1: unidades honestas (ctVal confirmar en primer run) | posicion primero
+# Ax3.1: unidades honestas (ctVal=1 XRP confirmado por API run 17:46 UTC)
 # Ax3.2: guardia de nocional — unidad sorpresa = bot bloqueado
 # INSTRUMENTO: XPERP XRP/USD (vencimiento) — USDT PROHIBIDO (MiCA/EEE)
 import os
@@ -33,7 +34,7 @@ def _f(x):
 
 # ==================== CONFIGURACIÓN (decreto Carbono) ====================
 BASE_ASSET = 'XRP'
-AMOUNT = 1          # ctVal por confirmar en primer run (log dira la verdad)
+AMOUNT = 4          # 4 ct = 4 XRP (~$6.02) — ctVal=1.0 confirmado por API
 SL_LONG = 0.060     # 6.0%
 TP_LONG = 0.075     # 7.5%
 SL_SHORT = 0.045    # 4.5%
@@ -362,9 +363,8 @@ def capacity_ok(symbol):
         raw = exchange.privateGetAccountBalance()
         details = ((raw or {}).get('data') or [{}])[0].get('details') or []
         total = sum(_f(d.get('eqUsd')) for d in details)
-        log.info("Margen (" + str(AMOUNT) + " ct): ~$" + format(need, '.2f') +
-                 " | colateral: ~$" + format(total, '.2f') +
-                 " -> " + ('CABE' if total >= need else 'NO CABE'))
+        log.info("Margen (4 ct): ~$" + format(need, '.2f') + " | colateral: ~$" +
+                 format(total, '.2f') + " -> " + ('CABE' if total >= need else 'NO CABE'))
         return total >= need
     except Exception as e:
         log.warning("Capacidad: colateral no calculable: " + str(e) + " — BLOQUEO.")
@@ -413,7 +413,7 @@ def run_cycle():
         log.error("Entrada rechazada: " + str(e))
 
 def run_once():
-    log.info("Modo ciclo unico | XRP EMA3/21 4H sin candado | LONG SL6/TP7.5 | SHORT SL4.5/TP6 (XPERP USD).")
+    log.info("Modo ciclo unico | XRP EMA3/21 4H sin candado | LONG SL6/TP7.5 | SHORT SL4.5/TP6 · 4 ct (XPERP USD).")
     verify_setup()
     if TEST_MODE:
         catalog_xrp()
@@ -433,7 +433,7 @@ def main_loop():
         except Exception as e:
             log.error("Error en el ciclo principal: " + str(e))
             time.sleep(60)
-        time.sleep(1800)   # 30 min — las velas 4H son lentas, sobra cobertura
+        time.sleep(1800)   # 30 min — sobra para velas 4H
 
 if __name__ == "__main__":
     if SINGLE_CYCLE:
