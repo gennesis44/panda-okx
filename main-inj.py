@@ -8,16 +8,16 @@
 #     LONG 5W/3L +28.0% · SHORT 4W/4L +11.0% (ambos lados verdes)
 #   SIN RSI: medido 3 veces en la flota — el RSI-candado en cruces
 #     frescos no veto NADA (0 vetos en 120 dias XLM). Decorativo.
-#   SIN CANDADO ANTI-RANGO EXCESIVO: el umbral 0.15% implantado
-#     como estandar de flota — en INJ el ruido 1H es 1.48% medio,
-#     el umbral 0.15% solo bloquea la niebla, no el movimiento.
-#   CONTEXTO: INJ se mueve ~10%/dia (rango diario medido 10.5%).
-#     El activo mas bravo de la flota — collar pequeno obligatorio.
-#     Narrativa IA (misma familia FET) — contagio de sector posible.
+#   CANDADO ANTI-RANGO 0.15%: implantado de nacimiento — validado
+#     en vivo 24-sep (separacion 1.014% medida y pasada legítimamente).
+#   TAMANO (ratificado por Carbono): AMOUNT = 5
+#     ctVal confirmado: 1 ct = 0.1 INJ → 5 ct = 0.5 INJ (~$4.03)
+#   CONTEXTO: INJ se mueve ~10%/dia — el activo mas bravo de la
+#     flota. Narrativa IA (familia FET) — contagio posible.
 # Ax3: HOST my.okx.com | clOrdId INJ | cooldown fail-closed | no entrar si NO CABE | 51016
-# Ax3.1: unidades honestas (ctVal confirmar en primer run) | posicion primero
+# Ax3.1: unidades honestas (ctVal=0.1 INJ confirmado por API 24-sep 14:52)
 # Ax3.2: guardia de nocional — unidad sorpresa = bot bloqueado
-# INSTRUMENTO: XPERP INJ/USD (vencimiento) — USDT PROHIBIDO (MiCA/EEE)
+# INSTRUMENTO: XPERP INJ/USD (venc. jul-2031) — USDT PROHIBIDO (MiCA/EEE)
 import os
 import time
 import logging
@@ -36,7 +36,7 @@ def _f(x):
 
 # ==================== CONFIGURACIÓN (decreto Carbono) ====================
 BASE_ASSET = 'INJ'
-AMOUNT = 1          # ctVal por confirmar en primer run (log dira la verdad)
+AMOUNT = 5          # 5 ct = 0.5 INJ (~$4.03) — ctVal=0.1 confirmado por API
 SL_LONG = 0.070     # 7.0%
 TP_LONG = 0.100     # 10.0%
 SL_SHORT = 0.050    # 5.0%
@@ -394,9 +394,8 @@ def capacity_ok(symbol):
         raw = exchange.privateGetAccountBalance()
         details = ((raw or {}).get('data') or [{}])[0].get('details') or []
         total = sum(_f(d.get('eqUsd')) for d in details)
-        log.info("Margen (" + str(AMOUNT) + " ct): ~$" + format(need, '.2f') +
-                 " | colateral: ~$" + format(total, '.2f') +
-                 " -> " + ('CABE' if total >= need else 'NO CABE'))
+        log.info("Margen (5 ct): ~$" + format(need, '.2f') + " | colateral: ~$" +
+                 format(total, '.2f') + " -> " + ('CABE' if total >= need else 'NO CABE'))
         return total >= need
     except Exception as e:
         log.warning("Capacidad: colateral no calculable: " + str(e) + " — BLOQUEO.")
@@ -446,7 +445,7 @@ def run_cycle():
         log.error("Entrada rechazada: " + str(e))
 
 def run_once():
-    log.info("Modo ciclo unico | INJ EMA3/21 1H sin RSI + CANDADO | LONG SL7/TP10 | SHORT SL5/TP8 (XPERP USD).")
+    log.info("Modo ciclo unico | INJ EMA3/21 1H sin RSI + CANDADO · 5 ct (XPERP USD).")
     verify_setup()
     if TEST_MODE:
         catalog_inj()
