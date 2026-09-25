@@ -1,0 +1,32 @@
+# =====================================================
+#  Configuración backtest HBAR — OKX (EEE / MiCA)
+# =====================================================
+
+exchange:
+  nombre: okx
+  url_api: https://www.okx.com
+  tipo: SPOT
+
+par:
+  inst_id: HBAR-USDC          # USDT vetado en EEE -> solo USDC/USD
+  fallback: HBAR-USD          # si el principal no existe
+
+backtest:
+  timeframes: ["30m", "1H", "4H"]
+  velas: 3000                 # historial por timeframe
+  capital_por_operacion: 50.0 # EUR de reposición en cada compra
+  comision: 0.001             # 0.1% fee spot OKX
+
+estrategia:
+  tipo: ema_stack
+  emas: [3, 4, 10, 21, 27]
+  entrada: "ema3>ema4>ema10>ema21>ema27"   # alineación alcista completa
+  salida: "rotura_stack"                   # ema3 cruza bajo ema4
+
+salida:
+  exportar_csv: true          # guarda trades y equity en /resultados
+  carpeta: resultados
+
+riesgo:                       # reservado (null = desactivado)
+  stop_loss_pct: null
+  take_profit_pct: null
