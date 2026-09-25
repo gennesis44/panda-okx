@@ -41,3 +41,5 @@
 {"inst": "FET-USD_UM_XPERP-310912", "base": "FET", "dir": "long", "open": "0.2106", "close": "0.1975", "liq": 0.0, "pnl": -0.2699574800258126, "uTime": "1790172757022", "posId": "3913044415088889856", "exit": "SL"}
 {"inst": "SUI-USD_UM_XPERP-310404", "base": "SUI", "dir": "short", "open": "1.0075", "close": "0.9618", "liq": 0.0, "pnl": 0.4502085, "uTime": "1790172779434", "posId": "3902226027655663617", "exit": "TP"}
 {"inst": "XRP-USD_UM_XPERP-310404", "base": "XRP", "dir": "short", "open": "1.4558", "close": "1.5212", "liq": 0.0, "pnl": -0.267554, "uTime": "1790260105859", "posId": "3950699991335636998", "exit": "SL"}
+{"inst": "INJ-USD_UM_XPERP-310711", "base": "INJ", "dir": "long", "open": "8.081", "close": "8.249", "liq": 0.0, "pnl": 0.01573915, "uTime": "1790336066714", "posId": "3951341977344348161", "exit": "WIN"}
+{"inst": "SUI-USD_UM_XPERP-310404", "base": "SUI", "dir": "long", "open": "1.0068", "close": "1.0618", "liq": 0.0, "pnl": 0.5366287, "uTime": "1790333318200", "posId": "3902226027655663617", "exit": "TP"}
