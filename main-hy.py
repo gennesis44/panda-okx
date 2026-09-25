@@ -1,8 +1,9 @@
-# main-hy.py — GSCSI TABLE · C > Si
-# v9.1: 1 registro cerrado = 1 trade (posId NO discrimina en X-Perp) ·
-#       dedup por huella completa · S=short L=long reales ·
-#       SL/TP anclados al signo del PnL · expectativa + payoff ·
-#       desglose shorts/longs · JSONL · exit 1 en error
+# main-hy.py — GSCSI TABLE v3 · C > Si
+#   FLOTA v2: SUI · XRP · ADA · DOGE · INJ (XLM dique · FET expulsado)
+#   SALIDA_REF asimétrica por dirección (ley de cada destructor v2)
+#   Clasificación: TP si movimiento >= 70% del TP nominal del bot ·
+#     SL si >= 70% del SL nominal · WIN/LOSS/BEn si no cuadra
+#   JSONL · dedup por huella · exit 1 en error
 import os
 import sys
 import time
@@ -12,14 +13,18 @@ import ccxt
 from collections import defaultdict
 
 # ══ AXIOMAS DEL CARBONO ══
-BASES        = {'DOGE', 'FET', 'SUI', 'XLM', 'ADA'}
-VETO         = 'USDT'
-# SL/TP de referencia para clasificar salidas:
-#   ADA 1.0/1.5 y XLM 1.0/1.5 — CONFIRMADOS en sus bots de produccion.
-#   DOGE/FET/SUI — ESTIMADOS: ajustar al leer sus main-*.py.
-SL_PCT       = {'DOGE':1.0, 'FET':1.0, 'SUI':1.0, 'XLM':1.0, 'ADA':1.0}
-TP_PCT       = {'DOGE':1.5, 'FET':1.5, 'SUI':1.5, 'XLM':1.5, 'ADA':1.5}
+BASES = {'SUI', 'XRP', 'ADA', 'DOGE', 'INJ'}   # flota v2
+VETO  = 'USDT'
 CADENCIA_HRS = 8
+
+# Leyes v2 por destructor (long: SL,TP · short: SL,TP)
+SALIDA_REF = {
+    'SUI':  {'long': (0.040, 0.055), 'short': (0.030, 0.045)},
+    'ADA':  {'long': (0.035, 0.050), 'short': (0.025, 0.040)},
+    'DOGE': {'long': (0.020, 0.040), 'short': (0.030, 0.040)},
+    'XRP':  {'long': (0.060, 0.075), 'short': (0.045, 0.060)},
+    'INJ':  {'long': (0.070, 0.100), 'short': (0.050, 0.080)},
+}
 
 NODO_NUCLEO = 'https://1c3si.weebly.com/clo.html'
 NODO_RAIZ   = 'https://1c3si.weebly.com'
@@ -76,18 +81,25 @@ def mov_pct(r):
 
 
 def salida(r, base):
-    # anclada al signo del PnL: |mov| es invariante a orden open/close (X-Perp)
+    """Clasificación con la ley asimétrica v2 de cada destructor.
+    TP si el movimiento >= 70% del TP nominal · SL si >= 70% del SL
+    nominal (en la dirección del trade). WIN/LOSS si no cuadra."""
     if r['liq'] > 0:
         return 'LIQ'
     m = mov_pct(r)
-    if m is None:
-        return '?'
-    am = abs(m)
-    if r['pnl'] > 0 and am >= TP_PCT[base]:
-        return 'TP'
-    if r['pnl'] < 0 and am >= SL_PCT[base]:
-        return 'SL'
-    return 'MAN'
+    ref = SALIDA_REF.get(base, {}).get(r['dir'])
+    if ref is not None and m is not None:
+        sl_ref, tp_ref = ref
+        am = abs(m)
+        if r['pnl'] > 0 and am >= tp_ref * 0.7:
+            return 'TP'
+        if r['pnl'] < 0 and am >= sl_ref * 0.7:
+            return 'SL'
+    if r['pnl'] > 0:
+        return 'WIN'
+    if r['pnl'] < 0:
+        return 'LOSS'
+    return 'BE'
 
 
 def ffecha(ms):
@@ -158,11 +170,12 @@ try:
                 prev[k] = r
 
     print("=" * 46, flush=True)
-    print("  TABLA GSCSI S/L")
+    print("  TABLA GSCSI S/L — FLOTA v2")
     print(f"  actualizacion automatica cada {CADENCIA_HRS} hrs")
     print("  fuente: positions-history (OKX Europe) · 1 cierre = 1 trade")
     print("  my.okx.com · MiCA/EEE · USDT: VETADO")
-    print("  Privilegio XLM: lectura cada 30 min · candado RSI 30-70")
+    print("  Leyes v2: asimetricas por direccion · candado anti-rango")
+    print("  ⚰️ XLM: dique seco (MS-0) · ⚰️ FET: expulsado (hack)")
     print("=" * 46)
     print(f"  Operador : github.com/gennesis44")
     print(f"  Perfil   : {AVATAR_URL}")
@@ -193,7 +206,7 @@ try:
             m = mov_pct(r)
             ms = f"{m:+.1f}%" if m is not None else "  ? "
             print(f"   {r['dir'].upper():<5} {r['open']}→{r['close']}  "
-                  f"mov:{ms}  {salida(r, base):<3} "
+                  f"mov:{ms}  {salida(r, base):<4} "
                   f"PnL:{r['pnl']:+.4f}  [{ffecha(r['uTime'])}]")
     print("-" * 46)
     total = TG + TL
@@ -206,24 +219,22 @@ try:
         print(f"{nom}: {w_}W/{len(arr) - w_}L  "
               f"PnL:{sum(r['pnl'] for r in arr):+.4f}")
 
-    # ── ACUMULADO con metricas de probabilidad ──
     acc = list(prev.values())
     if acc:
         aw  = sum(1 for r in acc if r['pnl'] > 0)
-        al  = sum(1 for r in acc if r['pnl'] < 0)
         ash = sum(1 for r in acc if r['dir'] == 'short')
         apnl = sum(r['pnl'] for r in acc)
-        wins  = [r['pnl'] for r in acc if r['pnl'] > 0]
-        loss  = [r['pnl'] for r in acc if r['pnl'] < 0]
-        avgW  = sum(wins) / len(wins) if wins else 0.0
-        avgL  = abs(sum(loss) / len(loss)) if loss else 0.0
-        payoff = f"{avgW / avgL:.2f}" if avgW > 0 and avgL > 0 else "-"
+        wins = [r['pnl'] for r in acc if r['pnl'] > 0]
+        loss = [r['pnl'] for r in acc if r['pnl'] < 0]
+        avgW = sum(wins) / len(wins) if wins else 0.0
+        avgL = abs(sum(loss) / len(loss)) if loss else 0.0
+        payoff = format(avgW / avgL, '.2f') if avgW > 0 and avgL > 0 else '-'
         peor = min(acc, key=lambda r: r['pnl'])
         mejor = max(acc, key=lambda r: r['pnl'])
         print("=" * 46)
         print(f"ACUMULADO: {len(acc)} trades · winrate {aw / len(acc) * 100:.0f}%")
         print(f"  shorts:{ash} · longs:{len(acc) - ash} · PnL:{apnl:+.4f}")
-        print(f"  expectativa: {apnl / len(acc):+.4f}/trade · payoff avgW/avgL: {payoff}")
+        print(f"  expectativa: {apnl / len(acc):+.4f}/trade · payoff: {payoff}")
         print(f"  peor: {peor.get('base','?')} {peor['pnl']:+.4f} · "
               f"mejor: {mejor.get('base','?')} {mejor['pnl']:+.4f}")
 
