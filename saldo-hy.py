@@ -1,8 +1,9 @@
-# saldo-hy.py — GSCSI · CUENTA COMPLETA EN UNA CORRIDA
+# saldo-hy.py — GSCSI · CUENTA COMPLETA EN UNA CORRIDA · v2
 #   [1] Patrimonio + balances por moneda
-#   [2] Posiciones ABIERTAS (futuros, con PnL flotante y % recorrido)
-#   [3] CIERRES recientes (positions-history, con PnL realizado)
-# Solo lectura · sin órdenes · my.okx.com · EEE · fail-closed (exit 1)
+#   [2] Posiciones ABIERTAS (futuros, PnL flotante, % recorrido, andamios)
+#   [3] CIERRES recientes (positions-history, PnL realizado)
+#   v2: marca MANUAL? eliminada (FET expulsado — la flota es v2)
+#   Solo lectura · sin órdenes · my.okx.com · EEE · fail-closed (exit 1)
 import os
 import sys
 import time
@@ -31,12 +32,6 @@ def ffecha(ms):
     except (TypeError, ValueError):
         return '?'
 
-def fnum(x, dec=6):
-    try:
-        return f"{float(x):,.{dec}g}"
-    except (TypeError, ValueError):
-        return '?'
-
 
 def seccion_patrimonio():
     print("== [1] PATRIMONIO (margen unificado) ==")
@@ -61,7 +56,7 @@ def seccion_patrimonio():
     print(f"  {'MONEDA':<8}{'EQUITY':>16}{'DISPONIBLE':>16}{'CONGELADO':>14}")
     print("  " + "-" * 56)
     for ccy, eq, disp, frz in sorted(filas, key=lambda x: -x[1]):
-        print(f"  {ccy:<8}{fnum(eq):>16}{fnum(disp):>16}{fnum(frz, 2):>14}")
+        print(f"  {ccy:<8}{float(eq):>16,.4f}{float(disp):>16,.4f}{float(frz):>14,.4f}")
 
 
 def seccion_abiertas():
@@ -99,7 +94,6 @@ def seccion_abiertas():
         print(f"  {base:<6} {lado:<6} {contr:g} ct @ {entrada:.5f} → {actual:.5f}  "
               f"| PnL flot: {upl:+.4f} ({pct:+.2f}%)  | {lev}x {mgn}  | liq: {liq}")
 
-    # andamios SL/TP pendientes por instrumento
     print("  --- SL/TP pendientes (algo) ---")
     vistos = set()
     for p in abiertas:
@@ -136,7 +130,6 @@ def seccion_cierres():
         print("  ✓ Sin cierres recientes visibles.")
         return
 
-    # dedup por huella, más recientes primero
     vistos, limpios = set(), []
     for h in hist:
         k = (h.get('instId'), h.get('direction'), h.get('openAvgPx'),
@@ -152,22 +145,21 @@ def seccion_cierres():
     for h in limpios[:10]:
         base = (h.get('instId') or '?').split('-')[0]
         pnl  = float(h.get('realizedPnl') or 0)
-        marca = ' ←← MANUAL?' if pnl != 0 and abs(pnl) < 0.2 and base in ('FET',) else ''
         print(f"  {base:<6}{(h.get('direction') or '?').upper():<7}"
-              f"{fnum(h.get('openAvgPx'), 5):>11}{fnum(h.get('closeAvgPx'), 5):>11}"
-              f"{pnl:>+11.4f}  [{ffecha(h.get('uTime'))}]{marca}")
+              f"{float(h.get('openAvgPx') or 0):>11.5f}{float(h.get('closeAvgPx') or 0):>11.5f}"
+              f"{pnl:>+11.4f}  [{ffecha(h.get('uTime'))}]")
 
 
 try:
     print("=" * 56)
     print("  CUENTA GSCSI COMPLETA — solo lectura")
-    print("  my.okx.com · EEE · USDT: VETADO")
+    print("  my.okx.com · EEE · USDT: VETADO · Flota v2")
     print(f"  Emitido: {time.strftime('%Y-%m-%d %H:%M UTC', time.gmtime())}")
     print("=" * 56)
     seccion_patrimonio()
     seccion_abiertas()
     seccion_cierres()
-    print("\n  USDT/USDC disponible = capital arrancable directo.")
+    print("\n  USDC disponible = colateral arrancable directo.")
 except Exception as e:
     print(f"ERROR FATAL: {e}", flush=True)
     sys.exit(1)
