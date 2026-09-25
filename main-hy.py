@@ -1,8 +1,10 @@
-# main-hy.py — GSCSI TABLE v3 · C > Si
+# main-hy.py — GSCSI TABLE v3.1 · C > Si
 #   FLOTA v2: SUI · XRP · ADA · DOGE · INJ (XLM dique · FET expulsado)
+#   v3.1 FIX: SALIDA_REF en unidades de PORCENTAJE (coherente con mov_pct)
+#     — el bug v3 mezclaba decimal vs % → clasificaciones falsas
 #   SALIDA_REF asimétrica por dirección (ley de cada destructor v2)
-#   Clasificación: TP si movimiento >= 70% del TP nominal del bot ·
-#     SL si >= 70% del SL nominal · WIN/LOSS/BEn si no cuadra
+#   Clasificación: TP si |mov| >= 70% del TP · SL si >= 70% del SL ·
+#     WIN/LOSS/BE si no cuadra
 #   JSONL · dedup por huella · exit 1 en error
 import os
 import sys
@@ -17,13 +19,14 @@ BASES = {'SUI', 'XRP', 'ADA', 'DOGE', 'INJ'}   # flota v2
 VETO  = 'USDT'
 CADENCIA_HRS = 8
 
-# Leyes v2 por destructor (long: SL,TP · short: SL,TP)
+# Leyes v2 en UNIDADES DE PORCENTAJE (coherente con mov_pct)
+#   formato: base → direccion → (SL%, TP%)
 SALIDA_REF = {
-    'SUI':  {'long': (0.040, 0.055), 'short': (0.030, 0.045)},
-    'ADA':  {'long': (0.035, 0.050), 'short': (0.025, 0.040)},
-    'DOGE': {'long': (0.020, 0.040), 'short': (0.030, 0.040)},
-    'XRP':  {'long': (0.060, 0.075), 'short': (0.045, 0.060)},
-    'INJ':  {'long': (0.070, 0.100), 'short': (0.050, 0.080)},
+    'SUI':  {'long': (4.0, 5.5),  'short': (3.0, 4.5)},
+    'ADA':  {'long': (3.5, 5.0),  'short': (2.5, 4.0)},
+    'DOGE': {'long': (2.0, 4.0),  'short': (3.0, 4.0)},
+    'XRP':  {'long': (6.0, 7.5),  'short': (4.5, 6.0)},
+    'INJ':  {'long': (7.0, 10.0), 'short': (5.0, 8.0)},
 }
 
 NODO_NUCLEO = 'https://1c3si.weebly.com/clo.html'
@@ -81,9 +84,9 @@ def mov_pct(r):
 
 
 def salida(r, base):
-    """Clasificación con la ley asimétrica v2 de cada destructor.
-    TP si el movimiento >= 70% del TP nominal · SL si >= 70% del SL
-    nominal (en la dirección del trade). WIN/LOSS si no cuadra."""
+    """Clasificación con la ley asimétrica v2 (unidades de %).
+    TP si |mov| >= 70% del TP · SL si |mov| >= 70% del SL
+    (en la dirección del trade). WIN/LOSS si no cuadra."""
     if r['liq'] > 0:
         return 'LIQ'
     m = mov_pct(r)
