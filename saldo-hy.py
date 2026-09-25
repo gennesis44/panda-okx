@@ -1,9 +1,9 @@
-# saldo-hy.py — GSCSI · CUENTA COMPLETA EN UNA CORRIDA · v2
-#   [1] Patrimonio + balances por moneda
-#   [2] Posiciones ABIERTAS (futuros, PnL flotante, % recorrido, andamios)
-#   [3] CIERRES recientes (positions-history, PnL realizado)
-#   v2: marca MANUAL? eliminada (FET expulsado — la flota es v2)
-#   Solo lectura · sin órdenes · my.okx.com · EEE · fail-closed (exit 1)
+# saldo-hy.py — GSCSI · CUENTA COMPLETA · v3
+#   FIX: parse de privateGetAccountPositions (formato raw OKX)
+#     — campos: instId · posSide · pos · avgPx · markPx · upl · lever
+#     — net mode: pos puede ser negativo (short) — se maneja el signo
+#   [1] Patrimonio + balances · [2] Posiciones ABIERTAS · [3] CIERRES
+#   Solo lectura · my.okx.com · EEE · fail-closed (exit 1)
 import os
 import sys
 import time
@@ -22,7 +22,7 @@ exchange = ccxt.okx({
     'password':  PASSPHRASE,
     'enableRateLimit': True,
     'options':   {'defaultType': 'swap'},
-    'urls':      {'api': {'rest': 'https://my.okx.com'}},   # EEE — obligatorio
+    'urls':      {'api': {'rest': 'https://my.okx.com'}},
 })
 
 
@@ -60,45 +60,51 @@ def seccion_patrimonio():
 
 
 def seccion_abiertas():
-    print("\n== [2] POSICIONES ABIERTAS ==")
+    print("\n== [2] POSICIONES ABIERTAS (formato raw OKX) ==")
     raw = []
     try:
         raw = exchange.privateGetAccountPositions({}).get('data', [])
-    except Exception:
-        pass
-    if not raw:
-        try:
-            raw = exchange.fetch_positions()
-        except Exception as e:
-            print(f"  ✗ No se pudieron leer posiciones: {str(e)[:200]}")
-            return
+    except Exception as e:
+        print(f"  ✗ No se pudieron leer posiciones: {str(e)[:200]}")
+        return
 
-    abiertas = [p for p in raw if float(p.get('contracts') or p.get('pos') or 0) > 0]
+    abiertas = []
+    for p in raw:
+        pos_val = float(p.get('pos') or 0)
+        if abs(pos_val) > 0:
+            abiertas.append(p)
+
     if not abiertas:
         print("  ✓ Sin posiciones abiertas.")
         return
 
     for p in abiertas:
-        info = p.get('info') or {}
-        iid  = info.get('instId') or (p.get('symbol') or '?')
+        iid  = p.get('instId') or '?'
         base = iid.split('-')[0]
-        lado = (p.get('side') or info.get('posSide') or '?').upper()
-        contr= float(p.get('contracts') or p.get('pos') or 0)
-        entrada = float(p.get('entryPrice') or info.get('avgPx') or 0)
-        actual  = float(p.get('markPrice') or info.get('markPx') or 0)
-        upl     = float(p.get('unrealizedPnl') or info.get('upl') or 0)
+        pos_val = float(p.get('pos') or 0)
+        pos_side = p.get('posSide') or ''
+        # net mode: pos negativo = short, positivo = long
+        if pos_side in ('long', 'short'):
+            lado = pos_side.upper()
+        elif pos_val >= 0:
+            lado = 'LONG'
+        else:
+            lado = 'SHORT'
+            pos_val = abs(pos_val)
+        entrada = float(p.get('avgPx') or 0)
+        actual  = float(p.get('markPx') or 0)
+        upl     = float(p.get('upl') or 0)
         pct     = (actual / entrada - 1) * 100 if entrada > 0 else 0.0
-        lev     = info.get('lever') or info.get('leverage') or '?'
-        mgn     = info.get('mgnMode') or '?'
-        liq     = info.get('liqPx') or info.get('liq_price') or '-'
-        print(f"  {base:<6} {lado:<6} {contr:g} ct @ {entrada:.5f} → {actual:.5f}  "
+        lev     = p.get('lever') or '?'
+        mgn     = p.get('mgnMode') or '?'
+        liq     = p.get('liqPx') or '-'
+        print(f"  {base:<6} {lado:<6} {abs(pos_val):g} ct @ {entrada:.5f} → {actual:.5f}  "
               f"| PnL flot: {upl:+.4f} ({pct:+.2f}%)  | {lev}x {mgn}  | liq: {liq}")
 
     print("  --- SL/TP pendientes (algo) ---")
     vistos = set()
     for p in abiertas:
-        info = p.get('info') or {}
-        iid  = info.get('instId') or '?'
+        iid  = p.get('instId') or '?'
         base = iid.split('-')[0]
         if base in vistos:
             continue
