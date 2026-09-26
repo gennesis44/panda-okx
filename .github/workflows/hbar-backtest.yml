@@ -1,0 +1,26 @@
+name: HBAR Backtest
+
+on:
+  workflow_dispatch:     # botón manual "Run workflow"
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Instalar dependencias
+        run: pip install requests pandas pyyaml
+
+      - name: Ejecutar backtest
+        run: python backtest_futuros.py
+
+      - name: Guardar resultados CSV
+        uses: actions/upload-artifact@v4
+        with:
+          name: resultados-hbar
+          path: resultados/
