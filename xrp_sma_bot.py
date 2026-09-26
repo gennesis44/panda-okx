@@ -1,12 +1,7 @@
 """
-okx_bot.py — Bot de trading para OKX (my.okx.com), par por defecto XRP/USDC.
-Versión mejorada: solo 1 posición activa de 3 contratos. Detecta posición real por balance.
-
-⚠️ ADVERTENCIA IMPORTANTE ⚠️
-- Este bot opera con dinero real si PAPER_TRADING=False. Úsalo bajo tu
-  propio riesgo. El trading algorítmico puede perder dinero rápidamente.
-- Por defecto arranca en modo PAPEL.
-- Prueba primero en modo papel varios días antes de activar dinero real.
+xrp_sma_bot.py — Bot de trading para OKX, par XRP/USDC.
+Versión corregida: detecta posición por balance + manejo seguro si falta la passphrase.
+Solo 1 posición activa de 3 contratos.
 """
 
 import argparse
@@ -60,10 +55,7 @@ class Config:
     take_profit_pct: float = _get_float("TAKE_PROFIT_PCT", 4.0)
     max_open_positions: int = int(os.getenv("MAX_OPEN_POSITIONS", "1"))
 
-    # Cantidad fija por entrada (3 XRP)
     contract_amount: float = _get_float("CONTRACT_AMOUNT", 3.0)
-
-    # Umbral para considerar que hay posición abierta (por si hay polvo residual)
     min_position_threshold: float = 1.5
 
     poll_seconds: int = int(os.getenv("POLL_SECONDS", "60"))
@@ -164,6 +156,7 @@ class OkxTradingBot:
         self.stop_loss_price = None
         self.take_profit_price = None
         self._running = True
+        self._can_check_balance = True  # se pone False si falta la passphrase
 
     def _build_exchange(self) -> ccxt.okx:
         exchange = ccxt.okx(
@@ -192,26 +185,28 @@ class OkxTradingBot:
         return ohlcv_to_dataframe(ohlcv)
 
     def fetch_base_balance(self) -> float:
-        """Devuelve el balance libre del activo base (XRP)."""
+        """Devuelve el balance libre de XRP. Si falla autenticación, devuelve 0."""
         if config.paper_trading:
-            # En papel simulamos que no hay posición al inicio de cada ciclo
             return 0.0
-        balance = self.exchange.fetch_balance()
-        base_ccy = self.symbol.split("/")[0]
-        return float(balance.get("free", {}).get(base_ccy, 0.0))
-
-    def fetch_quote_balance(self) -> float:
-        if config.paper_trading:
-            return 1000.0
-        balance = self.exchange.fetch_balance()
-        quote_ccy = self.symbol.split("/")[1]
-        return float(balance.get("free", {}).get(quote_ccy, 0.0))
+        try:
+            balance = self.exchange.fetch_balance()
+            base_ccy = self.symbol.split("/")[0]
+            return float(balance.get("free", {}).get(base_ccy, 0.0))
+        except ccxt.AuthenticationError as e:
+            log.error(
+                "Error de autenticación (falta OKX_API_PASSWORD o es incorrecta): %s", e
+            )
+            self._can_check_balance = False
+            return 0.0
+        except Exception as e:
+            log.warning("No se pudo leer balance: %s", e)
+            return 0.0
 
     def sync_position_from_exchange(self):
-        """
-        Sincroniza el estado interno con el balance real de OKX.
-        Si hay ≥ 1.5 XRP libres → consideramos que hay una posición activa.
-        """
+        """Detecta si hay posición abierta mirando el balance real."""
+        if not self._can_check_balance:
+            return
+
         free_base = self.fetch_base_balance()
         if free_base >= config.min_position_threshold:
             self.in_position = True
@@ -223,7 +218,6 @@ class OkxTradingBot:
             self.take_profit_price = None
 
     def place_buy(self, price: float):
-        # Doble seguridad: no comprar si ya hay posición
         if self.in_position:
             log.warning("Intento de compra bloqueado: ya hay una posición activa.")
             return
@@ -236,8 +230,7 @@ class OkxTradingBot:
         )
 
         log.info(
-            "SEÑAL DE COMPRA | precio=%.6f | cantidad=%.4f XRP (fijo) | monto≈%.2f USDC | "
-            "SL=%.6f | TP=%.6f",
+            "SEÑAL DE COMPRA | precio=%.6f | cantidad=%.4f XRP | monto≈%.2f USDC | SL=%.6f | TP=%.6f",
             price, plan.base_amount, plan.quote_amount,
             plan.stop_loss_price, plan.take_profit_price,
         )
@@ -245,13 +238,17 @@ class OkxTradingBot:
         if config.paper_trading:
             log.info("[PAPEL] Orden de compra simulada.")
         else:
-            order = self.exchange.create_order(
-                symbol=self.symbol,
-                type="market",
-                side="buy",
-                amount=plan.base_amount,
-            )
-            log.info("Orden de compra REAL enviada: %s", order.get("id"))
+            try:
+                order = self.exchange.create_order(
+                    symbol=self.symbol,
+                    type="market",
+                    side="buy",
+                    amount=plan.base_amount,
+                )
+                log.info("Orden de compra REAL enviada: %s", order.get("id"))
+            except ccxt.AuthenticationError as e:
+                log.error("No se pudo enviar orden (falta passphrase): %s", e)
+                return
 
         self.in_position = True
         self.entry_price = price
@@ -263,20 +260,23 @@ class OkxTradingBot:
 
         if config.paper_trading:
             log.info("[PAPEL] Orden de venta simulada.")
-            amount = config.contract_amount
         else:
             amount = self.fetch_base_balance()
             if amount < 0.1:
-                log.warning("No hay suficiente balance de XRP para vender (%.4f).", amount)
+                log.warning("No hay suficiente XRP para vender (%.4f).", amount)
                 self.in_position = False
                 return
-            order = self.exchange.create_order(
-                symbol=self.symbol,
-                type="market",
-                side="sell",
-                amount=amount,
-            )
-            log.info("Orden de venta REAL enviada: %s | cantidad=%.4f", order.get("id"), amount)
+            try:
+                order = self.exchange.create_order(
+                    symbol=self.symbol,
+                    type="market",
+                    side="sell",
+                    amount=amount,
+                )
+                log.info("Orden de venta REAL enviada: %s | cantidad=%.4f", order.get("id"), amount)
+            except ccxt.AuthenticationError as e:
+                log.error("No se pudo enviar orden de venta (falta passphrase): %s", e)
+                return
 
         self.in_position = False
         self.entry_price = None
@@ -284,10 +284,6 @@ class OkxTradingBot:
         self.take_profit_price = None
 
     def check_stop_loss_take_profit(self, current_price: float):
-        """
-        Solo funciona de forma fiable dentro del mismo ciclo.
-        Entre ciclos se apoya principalmente en la señal SELL de las medias.
-        """
         if not self.in_position or self.stop_loss_price is None:
             return
         if current_price <= self.stop_loss_price:
@@ -296,28 +292,21 @@ class OkxTradingBot:
             self.place_sell(current_price, reason="take-profit")
 
     def run_once(self):
-        # 1. Sincronizar estado con el balance real de OKX
+        # Sincronizar posición (si es posible)
         self.sync_position_from_exchange()
 
         df = self.fetch_candles()
         current_price = float(df["close"].iloc[-1])
 
-        # 2. Revisar SL / TP si hay posición y tenemos precios guardados
         self.check_stop_loss_take_profit(current_price)
 
-        # 3. Si ya hay posición → solo esperar a que se cierre
         if self.in_position:
-            log.info(
-                "Posición activa | precio=%.6f | esperando cierre (SELL / SL / TP)",
-                current_price,
-            )
-            # Aun así revisamos si hay señal de venta fuerte
+            log.info("Posición activa | precio=%.6f | esperando cierre", current_price)
             signal_ = compute_signal(df, config.sma_fast, config.sma_slow)
             if signal_ == Signal.SELL:
                 self.place_sell(current_price, reason="cruce bajista")
             return
 
-        # 4. No hay posición → podemos buscar entrada
         signal_ = compute_signal(df, config.sma_fast, config.sma_slow)
         log.info("Precio=%.6f | señal=%s | sin posición", current_price, signal_.value)
 
@@ -337,7 +326,7 @@ class OkxTradingBot:
             try:
                 self.run_once()
             except ccxt.NetworkError as e:
-                log.warning("Error de red, reintentando: %s", e)
+                log.warning("Error de red: %s", e)
             except ccxt.ExchangeError as e:
                 log.error("Error del exchange: %s", e)
             except Exception as e:
@@ -356,7 +345,7 @@ def parse_args():
     parser.add_argument(
         "--once",
         action="store_true",
-        help="Ejecuta un solo ciclo y termina (ideal para GitHub Actions).",
+        help="Ejecuta un solo ciclo y termina.",
     )
     return parser.parse_args()
 
