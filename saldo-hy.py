@@ -1,6 +1,8 @@
-# saldo.py — Saldo OKX v2 · my.okx.com (EEE/MiCA)
+# saldo-hy.py — Saldo OKX v2 · my.okx.com (EEE/MiCA)
+#   Usa las KEYS DE SUI (misma cuenta que el Destructor HBAR)
 #   Colateral total (USD) + balances por moneda + posiciones abiertas
 #   Secrets: OKX_API_KEY, OKX_SECRET_KEY, OKX_PASSWORD
+#   (acepta tambien OKX_HY_PASSWORD como fallback de contraseña)
 import os
 import time
 import logging
@@ -21,7 +23,7 @@ HOST = 'https://my.okx.com'
 exchange = ccxt.okx({
     'apiKey':    os.getenv('OKX_API_KEY', ''),
     'secret':    os.getenv('OKX_SECRET_KEY', ''),
-    'password':  os.getenv('OKX_PASSWORD', ''),
+    'password':  os.getenv('OKX_PASSWORD', '') or os.getenv('OKX_HY_PASSWORD', ''),
     'enableRateLimit': True,
     'options':   {'defaultType': 'swap'},
     'urls':      {'api': {'rest': HOST}},
@@ -37,7 +39,7 @@ def verificar_saldo():
     total = sum(_f(d.get('eqUsd')) for d in details)
 
     log.info("=" * 56)
-    log.info("SALDO OKX | host=" + HOST)
+    log.info("SALDO OKX | host=" + HOST + " | keys: SUI")
     log.info("Colateral total: ~$" + format(total, '.2f'))
     log.info("-" * 56)
     for d in details:
@@ -68,7 +70,7 @@ def verificar_saldo():
     log.info("=" * 56)
 
 if __name__ == "__main__":
-    log.info(">>> saldo.py v2 (" + time.strftime('%Y-%m-%d %H:%M:%S') + ")")
+    log.info(">>> saldo-hy.py v2 (" + time.strftime('%Y-%m-%d %H:%M:%S') + ")")
     try:
         verificar_saldo()
     except Exception as e:
