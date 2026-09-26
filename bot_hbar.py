@@ -1,10 +1,13 @@
-# bot_hbar.py — Ax2-HBAR · EL DESTRUCTOR · chasis Catamaran (SUI)
+# bot_hbar.py — Ax2-HBAR · EL DESTRUCTOR v2 · chasis Catamaran (SUI)
 #   SENAL: stack EMA 3/4/10/21/27 en velas 30m CERRADAS (ventana -2/-3/-4)
 #     LONG  (stack se forma alcista): SL 3.0% / TP 2.0%
 #     SHORT (stack se rompe):         SL 3.0% / TP 2.0%
-#   Backtest 30m XPERP: 154 trades · WR ~64-69% · SL3/TP2 ganador (110.84 EUR @50EUR)
-#   TAMANO: 1 contrato = 100 HBAR (~$9.34 nocional) · guardia $15 lo protege
-#   HOST my.okx.com | clOrdId HBAR | cooldown fail-closed | USDT PROHIBIDO (MiCA/EEE)
+#   v2 · Ax4: CIERRE POR SENAL CONTRARIA (flip) — fiel al backtest:
+#     largo + senal SHORT  -> cierra y abre corto
+#     corto + senal LONG   -> cierra y abre largo
+#   Backtest 30m XPERP: 154 trades · WR ~64-69% · SL3/TP2 ganador
+#   TAMANO: 1 contrato = 100 HBAR (~$9.34 nocional) · guardia $15
+#   HOST my.okx.com | clOrdId HBAR | cooldown fail-closed | USDT PROHIBIDO
 import os
 import time
 import logging
@@ -14,6 +17,8 @@ import pandas as pd
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 log = logging.getLogger(__name__)
+
+VERSION = "2"
 
 def _f(x):
     try:
@@ -170,7 +175,7 @@ def get_open_position(symbol):
         log.error("Error consultando posiciones: " + str(e))
     return None
 
-# ==================== ENTRADA CON SL/TP ADJUNTOS ====================
+# ==================== ÓRDENES ====================
 def _post_trade_order(req):
     method = getattr(exchange, 'privatePostTradeOrder', None) or exchange.private_post_trade_order
     return method(req)
@@ -252,6 +257,34 @@ def execute_order(side, symbol, ref_price, amount, candle_ts):
         raise ccxt.ExchangeError("OKX rechazo la entrada: " + str(d0.get('sMsg') or resp.get('msg')))
     log.info("HBAR " + side + " ejecutada con SL/TP adjuntos. ordId: " +
              str(d0.get('ordId')) + " | SL: " + str(sl) + " | TP: " + str(tp))
+    return True
+
+# ==================== v2: CIERRE POR SENAL CONTRARIA ====================
+def close_position(pos, symbol):
+    """Cierra la posicion a mercado (reduceOnly). Fail-closed: lanza si OKX rechaza."""
+    sz = exchange.amount_to_precision(symbol, abs(_f(pos.get('contracts'))))
+    if _f(sz) <= 0:
+        raise RuntimeError("Tamano de posicion ilegible — no cierro a ciegas.")
+    req = {
+        'instId': exchange.market(symbol)['id'],
+        'tdMode': TD_MODE,
+        'side': 'sell' if pos.get('side') == 'long' else 'buy',
+        'ordType': 'optimal_limit_ioc',
+        'sz': sz,
+        'reduceOnly': 'true',
+    }
+    pos_side = str((pos.get('info') or {}).get('posSide') or 'net')
+    if pos_side in ('long', 'short'):          # modo hedge: etiqueta el lado
+        req['posSide'] = pos_side
+    resp = _post_trade_order(req)
+    data = resp.get('data') or []
+    d0 = data[0] if isinstance(data, list) and data else {}
+    s_code = str(d0.get('sCode', resp.get('code', '1')))
+    if s_code != '0':
+        raise ccxt.ExchangeError("OKX rechazo el cierre: " +
+                                 str(d0.get('sMsg') or resp.get('msg')))
+    log.info("HBAR posicion " + str(pos.get('side')) + " CERRADA por senal contraria. " +
+             "ordId: " + str(d0.get('ordId')))
     return True
 
 # ==================== COOLDOWN POST-PÉRDIDA ====================
@@ -357,7 +390,7 @@ def verify_setup():
     total = sum(_f(d.get('eqUsd')) for d in details)
     log.info("Autenticacion OK | host=" + HOST + " | Colateral real (USD): ~" + format(total, '.2f'))
 
-# ==================== CICLO ====================
+# ==================== CICLO (v2: evalua senal SIEMPRE, con o sin posicion) ====================
 def run_cycle():
     symbol = resolve_symbol()
 
@@ -366,21 +399,40 @@ def run_cycle():
     except Exception as e:
         log.warning("No se pudo fijar apalancamiento (se usa el de OKX): " + str(e))
 
+    signal, price, candle_ts = evaluate_signal(symbol)
+
     pos = get_open_position(symbol)
+    flipped = False
     if pos:
-        log.info("Posicion abierta (" + str(pos['side']) + "). Esperando SL/TP.")
+        lado = str(pos.get('side'))
+        contrario = ((lado == 'long' and signal == 'SHORT') or
+                     (lado == 'short' and signal == 'LONG'))
+        if not contrario:
+            log.info("Posicion abierta (" + lado + "). Sin senal contraria. Esperando SL/TP.")
+            return
+        log.info("SENAL CONTRARIA (" + str(signal) + ") — girando posicion " + lado + "...")
+        try:
+            close_position(pos, symbol)
+        except Exception as e:
+            log.error("Cierre por senal FALLO: " + str(e) + " — no abro nada encima. Fail-closed.")
+            return
+        # verificacion post-cierre: si quedo residual, no operar este ciclo
+        residual = get_open_position(symbol)
+        if residual:
+            log.warning("Cierre parcial/pendiente (quedan " +
+                        str(residual.get('contracts')) + " ct). No abro nada este ciclo.")
+            return
+        flipped = True
+
+    if not signal:
         return
 
     if not capacity_ok(symbol):
         log.info("Sin capacidad. Vigilando.")
         return
 
-    if cooldown_active(symbol):
+    if not flipped and cooldown_active(symbol):
         log.info("Vigilando (cooldown activo).")
-        return
-
-    signal, price, candle_ts = evaluate_signal(symbol)
-    if not signal:
         return
 
     if candle_already_traded(symbol, candle_ts):
@@ -393,7 +445,8 @@ def run_cycle():
         log.error("Entrada rechazada: " + str(e))
 
 def run_once():
-    log.info("Modo ciclo unico | HBAR DESTRUCTOR stack EMA 3/4/10/21/27 30m | SL3/TP2 (XPERP USD).")
+    log.info(">>> DESTRUCTOR v" + str(VERSION) +
+             " | HBAR stack EMA 3/4/10/21/27 30m | SL3/TP2 | flip por senal | XPERP USD.")
     verify_setup()
     if TEST_MODE:
         catalog_hbar()
@@ -401,9 +454,9 @@ def run_once():
     run_cycle()
 
 def main_loop():
-    log.info("Bot " + BASE_ASSET + " DESTRUCTOR | 30m stack EMA " + str(EMAS) +
-             " | SL3/TP2 | " + str(AMOUNT) + " ct | cooldown " + str(COOLDOWN_MIN) +
-             "m | " + HOST)
+    log.info("Bot " + BASE_ASSET + " DESTRUCTOR v" + str(VERSION) +
+             " | 30m stack EMA " + str(EMAS) + " | SL3/TP2 | flip senal contraria | " +
+             str(AMOUNT) + " ct | cooldown " + str(COOLDOWN_MIN) + "m | " + HOST)
     verify_setup()
     while True:
         try:
