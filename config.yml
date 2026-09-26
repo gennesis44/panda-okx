@@ -2,9 +2,9 @@ exchange:
   url_api: "https://www.okx.com"
 
 mercado:
-  tipo: "SWAP"
+  tipo: "FUTURES"
   uly: "HBAR-USD"
-  inst_id: "HBAR-USD-SWAP"
+  inst_id: "HBAR-USD_UM_XPERP-310815"
   contrato_mas_lejano: false
 
 backtest:
@@ -19,13 +19,20 @@ estrategia:
 
 optimizacion:
   activar: true
-  sl_pct: [1, 2, 3]
-  tp_pct: [2, 4, 6]
+  sl_pct: [2, 3, 4, 5]
+  tp_pct: [2, 3, 4, 6]
 
 salida:
   exportar_csv: true
   carpeta: "resultados"
 
 riesgo:
-  stop_loss_pct: 2
-  take_profit_pct: 4
+  stop_loss_pct: 3
+  take_profit_pct: 2
+
+bot:
+  timeframe: "30m"
+  contratos: 1          # 1 ct = ~9.34 USD de exposición
+  apalancamiento: 3
+  margen: "isolated"
+  demo: false           # true solo si usas API keys de demo
