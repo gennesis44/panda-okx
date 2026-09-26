@@ -21,6 +21,14 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
+      - name: Listar archivos (debug)
+        run: |
+          echo "Contenido de la raíz del repo:"
+          ls -la
+          echo ""
+          echo "Buscando okx_bot.py en todo el repo:"
+          find . -iname "*okx_bot*"
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
