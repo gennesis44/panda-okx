@@ -43,3 +43,4 @@
 {"inst": "XRP-USD_UM_XPERP-310404", "base": "XRP", "dir": "short", "open": "1.4558", "close": "1.5212", "liq": 0.0, "pnl": -0.267554, "uTime": "1790260105859", "posId": "3950699991335636998", "exit": "SL"}
 {"inst": "INJ-USD_UM_XPERP-310711", "base": "INJ", "dir": "long", "open": "8.081", "close": "8.249", "liq": 0.0, "pnl": 0.01573915, "uTime": "1790336066714", "posId": "3951341977344348161", "exit": "WIN"}
 {"inst": "SUI-USD_UM_XPERP-310404", "base": "SUI", "dir": "long", "open": "1.0068", "close": "1.0618", "liq": 0.0, "pnl": 0.5366287, "uTime": "1790333318200", "posId": "3902226027655663617", "exit": "TP"}
+{"inst": "INJ-USD_UM_XPERP-310711", "base": "INJ", "dir": "short", "open": "8.169", "close": "7.531", "liq": 0.0, "pnl": 0.31626965, "uTime": "1790455207062", "posId": "3951341977344348161", "exit": "TP"}
