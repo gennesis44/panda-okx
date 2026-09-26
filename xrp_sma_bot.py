@@ -1,28 +1,14 @@
 """
 okx_bot.py — Bot de trading para OKX (my.okx.com), par por defecto XRP/USDC.
-Todo en un solo archivo para que sea fácil de subir y mantener desde el móvil.
+Versión mejorada: solo 1 posición activa de 3 contratos. Detecta posición real por balance.
 
 ⚠️ ADVERTENCIA IMPORTANTE ⚠️
 - Este bot opera con dinero real si PAPER_TRADING=False. Úsalo bajo tu
-  propio riesgo. El trading algorítmico puede perder dinero rápidamente,
-  especialmente con configuraciones sin probar.
-- Por defecto arranca en modo PAPEL (simulado): no envía órdenes reales,
-  solo registra en el log lo que HABRÍA hecho.
-- Prueba primero en modo papel, revisa los logs varios días, y solo
-  después considera activar dinero real con un monto pequeño.
-- Este código es una plantilla educativa, no un sistema de trading
-  probado ni una recomendación de inversión.
-
-Requisitos:
-    pip install -r requirements.txt   (ccxt, python-dotenv, pandas)
-
-Configuración: copia .env.example a .env y completa tus datos
-(o, si lo corres en GitHub Actions, usa Secrets del repo — ver README).
-
-Ejecución:
-    python okx_bot.py            # corre en loop infinito (uso local)
-    python okx_bot.py --once     # un solo ciclo y termina (uso en cron/Actions)
+  propio riesgo. El trading algorítmico puede perder dinero rápidamente.
+- Por defecto arranca en modo PAPEL.
+- Prueba primero en modo papel varios días antes de activar dinero real.
 """
+
 import argparse
 import logging
 import os
@@ -37,10 +23,8 @@ import pandas as pd
 
 try:
     from dotenv import load_dotenv
-    load_dotenv()  # si no hay archivo .env (ej. en GitHub Actions), simplemente no hace nada
+    load_dotenv()
 except ImportError:
-    # python-dotenv no está instalado. No pasa nada: en GitHub Actions los
-    # secrets ya llegan como variables de entorno, así que no hace falta.
     pass
 
 
@@ -61,33 +45,28 @@ def _get_float(name: str, default: float) -> float:
 
 @dataclass
 class Config:
-    # --- Credenciales OKX ---
     api_key: str = os.getenv("OKX_API_KEY", "")
     api_secret: str = os.getenv("OKX_API_SECRET", "")
-    api_password: str = os.getenv("OKX_API_PASSWORD", "")  # passphrase de la API
+    api_password: str = os.getenv("OKX_API_PASSWORD", "")
 
-    # --- Mercado ---
-    symbol: str = os.getenv("SYMBOL", "XRP/USDC")   # par a operar
-    timeframe: str = os.getenv("TIMEFRAME", "15m")  # velas: 1m,5m,15m,1h,4h,1d...
+    symbol: str = os.getenv("SYMBOL", "XRP/USDC")
+    timeframe: str = os.getenv("TIMEFRAME", "15m")
 
-    # --- Estrategia (cruce de medias móviles) ---
     sma_fast: int = int(os.getenv("SMA_FAST", "9"))
     sma_slow: int = int(os.getenv("SMA_SLOW", "21"))
 
-    # --- Gestión de riesgo ---
-    risk_per_trade_pct: float = _get_float("RISK_PER_TRADE_PCT", 2.0)   # % del balance en USDC por operación
-    stop_loss_pct: float = _get_float("STOP_LOSS_PCT", 2.0)            # % por debajo del precio de entrada
-    take_profit_pct: float = _get_float("TAKE_PROFIT_PCT", 4.0)        # % por encima del precio de entrada
+    risk_per_trade_pct: float = _get_float("RISK_PER_TRADE_PCT", 2.0)
+    stop_loss_pct: float = _get_float("STOP_LOSS_PCT", 2.0)
+    take_profit_pct: float = _get_float("TAKE_PROFIT_PCT", 4.0)
     max_open_positions: int = int(os.getenv("MAX_OPEN_POSITIONS", "1"))
 
-    # --- Tamaño fijo de posición (en unidades del activo, ej. XRP) ---
-    # Si CONTRACT_AMOUNT > 0, el bot compra esa cantidad fija en vez de
-    # calcular el monto como % del balance (risk_per_trade_pct se ignora).
+    # Cantidad fija por entrada (3 XRP)
     contract_amount: float = _get_float("CONTRACT_AMOUNT", 3.0)
 
-    # --- Operación del bot ---
+    # Umbral para considerar que hay posición abierta (por si hay polvo residual)
+    min_position_threshold: float = 1.5
+
     poll_seconds: int = int(os.getenv("POLL_SECONDS", "60"))
-    # ¡ojo! si el secret/variable queda vacío, esto usa el default seguro (True)
     paper_trading: bool = _get_bool("PAPER_TRADING", True)
     log_level: str = os.getenv("LOG_LEVEL", "INFO")
 
@@ -102,7 +81,7 @@ log = logging.getLogger("okx_bot")
 
 
 # ====================================================================== #
-# 2. ESTRATEGIA (cruce de medias móviles simples)
+# 2. ESTRATEGIA
 # ====================================================================== #
 class Signal(Enum):
     BUY = "buy"
@@ -120,7 +99,7 @@ def ohlcv_to_dataframe(ohlcv: list) -> pd.DataFrame:
 
 def compute_signal(df: pd.DataFrame, fast: int, slow: int) -> Signal:
     if len(df) < slow + 2:
-        return Signal.HOLD  # no hay suficientes velas todavía
+        return Signal.HOLD
 
     df = df.copy()
     df["sma_fast"] = df["close"].rolling(fast).mean()
@@ -140,38 +119,14 @@ def compute_signal(df: pd.DataFrame, fast: int, slow: int) -> Signal:
 
 
 # ====================================================================== #
-# 3. GESTIÓN DE RIESGO (tamaño de posición, stop-loss, take-profit)
+# 3. PLAN DE POSICIÓN
 # ====================================================================== #
 @dataclass
 class PositionPlan:
-    quote_amount: float   # cuánto USDC se va a usar en la compra
-    base_amount: float    # cuánta cantidad del activo (ej. XRP) se compra
+    quote_amount: float
+    base_amount: float
     stop_loss_price: float
     take_profit_price: float
-
-
-def build_position_plan(
-    entry_price: float,
-    available_quote_balance: float,
-    risk_per_trade_pct: float,
-    stop_loss_pct: float,
-    take_profit_pct: float,
-) -> PositionPlan:
-    if entry_price <= 0:
-        raise ValueError("entry_price debe ser mayor que 0")
-
-    quote_amount = available_quote_balance * (risk_per_trade_pct / 100.0)
-    base_amount = quote_amount / entry_price
-
-    stop_loss_price = entry_price * (1 - stop_loss_pct / 100.0)
-    take_profit_price = entry_price * (1 + take_profit_pct / 100.0)
-
-    return PositionPlan(
-        quote_amount=quote_amount,
-        base_amount=base_amount,
-        stop_loss_price=stop_loss_price,
-        take_profit_price=take_profit_price,
-    )
 
 
 def build_fixed_position_plan(
@@ -180,16 +135,11 @@ def build_fixed_position_plan(
     stop_loss_pct: float,
     take_profit_pct: float,
 ) -> PositionPlan:
-    """
-    Igual que build_position_plan, pero con una cantidad FIJA de unidades
-    (ej. 3 XRP) en vez de calcular el monto como % del balance.
-    quote_amount aquí es solo informativo: precio_por_unidad * cantidad.
-    """
     if entry_price <= 0:
         raise ValueError("entry_price debe ser mayor que 0")
 
     base_amount = contract_amount
-    quote_amount = base_amount * entry_price  # informativo: costo total en USDC
+    quote_amount = base_amount * entry_price
 
     stop_loss_price = entry_price * (1 - stop_loss_pct / 100.0)
     take_profit_price = entry_price * (1 + take_profit_pct / 100.0)
@@ -203,7 +153,7 @@ def build_fixed_position_plan(
 
 
 # ====================================================================== #
-# 4. BOT (conexión con OKX vía ccxt y loop principal)
+# 4. BOT
 # ====================================================================== #
 class OkxTradingBot:
     def __init__(self):
@@ -220,7 +170,7 @@ class OkxTradingBot:
             {
                 "apiKey": config.api_key,
                 "secret": config.api_secret,
-                "password": config.api_password,  # passphrase de OKX
+                "password": config.api_password,
                 "enableRateLimit": True,
                 "options": {"defaultType": "spot"},
             }
@@ -241,16 +191,43 @@ class OkxTradingBot:
         )
         return ohlcv_to_dataframe(ohlcv)
 
-    def fetch_quote_balance(self) -> float:
-        """Balance disponible en la moneda quote (USDC)."""
+    def fetch_base_balance(self) -> float:
+        """Devuelve el balance libre del activo base (XRP)."""
         if config.paper_trading:
-            # En modo papel usamos un balance simulado fijo; cámbialo si quieres.
+            # En papel simulamos que no hay posición al inicio de cada ciclo
+            return 0.0
+        balance = self.exchange.fetch_balance()
+        base_ccy = self.symbol.split("/")[0]
+        return float(balance.get("free", {}).get(base_ccy, 0.0))
+
+    def fetch_quote_balance(self) -> float:
+        if config.paper_trading:
             return 1000.0
         balance = self.exchange.fetch_balance()
         quote_ccy = self.symbol.split("/")[1]
         return float(balance.get("free", {}).get(quote_ccy, 0.0))
 
+    def sync_position_from_exchange(self):
+        """
+        Sincroniza el estado interno con el balance real de OKX.
+        Si hay ≥ 1.5 XRP libres → consideramos que hay una posición activa.
+        """
+        free_base = self.fetch_base_balance()
+        if free_base >= config.min_position_threshold:
+            self.in_position = True
+            log.info("Posición activa detectada por balance: %.4f XRP", free_base)
+        else:
+            self.in_position = False
+            self.entry_price = None
+            self.stop_loss_price = None
+            self.take_profit_price = None
+
     def place_buy(self, price: float):
+        # Doble seguridad: no comprar si ya hay posición
+        if self.in_position:
+            log.warning("Intento de compra bloqueado: ya hay una posición activa.")
+            return
+
         plan = build_fixed_position_plan(
             entry_price=price,
             contract_amount=config.contract_amount,
@@ -259,13 +236,14 @@ class OkxTradingBot:
         )
 
         log.info(
-            "SEÑAL DE COMPRA | precio=%.6f | cantidad=%.6f XRP (fijo) | monto=%.2f USDC | "
-            "stop_loss=%.6f | take_profit=%.6f",
-            price, plan.base_amount, plan.quote_amount, plan.stop_loss_price, plan.take_profit_price,
+            "SEÑAL DE COMPRA | precio=%.6f | cantidad=%.4f XRP (fijo) | monto≈%.2f USDC | "
+            "SL=%.6f | TP=%.6f",
+            price, plan.base_amount, plan.quote_amount,
+            plan.stop_loss_price, plan.take_profit_price,
         )
 
         if config.paper_trading:
-            log.info("[PAPEL] Orden de compra simulada, no enviada a OKX.")
+            log.info("[PAPEL] Orden de compra simulada.")
         else:
             order = self.exchange.create_order(
                 symbol=self.symbol,
@@ -284,18 +262,21 @@ class OkxTradingBot:
         log.info("SEÑAL DE VENTA (%s) | precio=%.6f", reason, price)
 
         if config.paper_trading:
-            log.info("[PAPEL] Orden de venta simulada, no enviada a OKX.")
+            log.info("[PAPEL] Orden de venta simulada.")
+            amount = config.contract_amount
         else:
-            balance = self.exchange.fetch_balance()
-            base_ccy = self.symbol.split("/")[0]
-            amount = float(balance.get("free", {}).get(base_ccy, 0.0))
-            if amount > 0:
-                order = self.exchange.create_order(
-                    symbol=self.symbol, type="market", side="sell", amount=amount
-                )
-                log.info("Orden de venta REAL enviada: %s", order.get("id"))
-            else:
-                log.warning("No hay balance del activo base para vender.")
+            amount = self.fetch_base_balance()
+            if amount < 0.1:
+                log.warning("No hay suficiente balance de XRP para vender (%.4f).", amount)
+                self.in_position = False
+                return
+            order = self.exchange.create_order(
+                symbol=self.symbol,
+                type="market",
+                side="sell",
+                amount=amount,
+            )
+            log.info("Orden de venta REAL enviada: %s | cantidad=%.4f", order.get("id"), amount)
 
         self.in_position = False
         self.entry_price = None
@@ -303,7 +284,11 @@ class OkxTradingBot:
         self.take_profit_price = None
 
     def check_stop_loss_take_profit(self, current_price: float):
-        if not self.in_position:
+        """
+        Solo funciona de forma fiable dentro del mismo ciclo.
+        Entre ciclos se apoya principalmente en la señal SELL de las medias.
+        """
+        if not self.in_position or self.stop_loss_price is None:
             return
         if current_price <= self.stop_loss_price:
             self.place_sell(current_price, reason="stop-loss")
@@ -311,31 +296,41 @@ class OkxTradingBot:
             self.place_sell(current_price, reason="take-profit")
 
     def run_once(self):
+        # 1. Sincronizar estado con el balance real de OKX
+        self.sync_position_from_exchange()
+
         df = self.fetch_candles()
         current_price = float(df["close"].iloc[-1])
 
-        # Primero revisa si hay que cerrar la posición abierta por SL/TP
+        # 2. Revisar SL / TP si hay posición y tenemos precios guardados
         self.check_stop_loss_take_profit(current_price)
 
+        # 3. Si ya hay posición → solo esperar a que se cierre
         if self.in_position:
-            log.debug("En posición, precio actual=%.6f", current_price)
+            log.info(
+                "Posición activa | precio=%.6f | esperando cierre (SELL / SL / TP)",
+                current_price,
+            )
+            # Aun así revisamos si hay señal de venta fuerte
+            signal_ = compute_signal(df, config.sma_fast, config.sma_slow)
+            if signal_ == Signal.SELL:
+                self.place_sell(current_price, reason="cruce bajista")
             return
 
+        # 4. No hay posición → podemos buscar entrada
         signal_ = compute_signal(df, config.sma_fast, config.sma_slow)
-        log.info("Precio=%.6f | señal=%s", current_price, signal_.value)
+        log.info("Precio=%.6f | señal=%s | sin posición", current_price, signal_.value)
 
         if signal_ == Signal.BUY:
             self.place_buy(current_price)
-        # Señal SELL sin posición abierta no hace nada (nada que vender)
 
     def run(self):
-        """Loop infinito — para uso local, NO para GitHub Actions."""
         signal.signal(signal.SIGINT, self.stop)
         signal.signal(signal.SIGTERM, self.stop)
 
         log.info(
-            "Bot iniciado | símbolo=%s | timeframe=%s | paper_trading=%s",
-            self.symbol, config.timeframe, config.paper_trading,
+            "Bot iniciado | símbolo=%s | timeframe=%s | paper=%s | contratos=%.1f",
+            self.symbol, config.timeframe, config.paper_trading, config.contract_amount,
         )
 
         while self._running:
@@ -345,7 +340,7 @@ class OkxTradingBot:
                 log.warning("Error de red, reintentando: %s", e)
             except ccxt.ExchangeError as e:
                 log.error("Error del exchange: %s", e)
-            except Exception as e:  # noqa: BLE001
+            except Exception as e:
                 log.exception("Error inesperado: %s", e)
 
             time.sleep(config.poll_seconds)
@@ -361,8 +356,7 @@ def parse_args():
     parser.add_argument(
         "--once",
         action="store_true",
-        help="Ejecuta un solo ciclo de revisión/trading y termina "
-        "(ideal para GitHub Actions con cron, en vez de dejarlo corriendo).",
+        help="Ejecuta un solo ciclo y termina (ideal para GitHub Actions).",
     )
     return parser.parse_args()
 
@@ -372,7 +366,7 @@ if __name__ == "__main__":
     bot = OkxTradingBot()
     try:
         if args.once:
-            log.info("Modo --once: un solo ciclo y salida (uso típico: GitHub Actions).")
+            log.info("Modo --once: un solo ciclo y salida.")
             bot.run_once()
         else:
             bot.run()
