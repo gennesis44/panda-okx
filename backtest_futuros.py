@@ -1,9 +1,8 @@
 """
 =====================================================
  Backtest EMAs (3,4,10,21,27) — HBAR-USD OKX (EEE/MiCA)
- 30m/1H/4H | 50 EUR/operación | cruces EMAs + SL/TP
- VERSION 3: descubre solo el instrumento HBAR-USD
- disponible (futuros USD / perpetuo / spot / proxy USDT)
+ 30m/1H/4H | cruces EMAs + SL/TP + valor del contrato
+ VERSION 4: informa precio actual y valor por contrato
  Requisitos: pip install requests pandas pyyaml
 =====================================================
 """
@@ -11,7 +10,7 @@
 import requests, time, math, os, yaml
 import pandas as pd
 
-VERSION = "3"
+VERSION = "4"
 
 # ------------- CONFIG (tolerante) -------------
 try:
@@ -34,7 +33,7 @@ ULY        = cfg_get("mercado.uly", "HBAR-USD")
 INST_ID    = cfg_get("mercado.inst_id", "") or cfg_get("par.inst_id", "") or ""
 TIMEFRAMES = cfg_get("backtest.timeframes", ["30m", "1H", "4H"])
 VELAS      = int(cfg_get("backtest.velas", 1000))
-CAPITAL    = float(cfg_get("backtest.capital_por_operacion", 50))
+CAPITAL    = float(cfg_get("backtest.capital_por_operacion", 5))
 COMISION   = float(cfg_get("backtest.comision", 0.0005))
 EMAS       = cfg_get("estrategia.emas", [3, 4, 10, 21, 27])
 CORTO      = bool(cfg_get("estrategia.permitir_corto", True))
@@ -66,6 +65,15 @@ def vols_24h(inst_type, uly=None):
     except Exception:
         return {}
 
+def obtener_precio(inst_id):
+    try:
+        r = requests.get(f"{API}/api/v5/market/ticker",
+                         params={"instId": inst_id}, timeout=10)
+        d = r.json().get("data") or []
+        return float(d[0]["last"]) if d else None
+    except Exception:
+        return None
+
 def obtener_specs(inst_type, inst_id):
     d = instrumentos(inst_type, instId=inst_id)
     if not d:
@@ -78,25 +86,20 @@ def obtener_specs(inst_type, inst_id):
 
 def elegir_instrumento():
     """Devuelve (instType, instId) del mejor HBAR-USD disponible."""
-    # 0) inst_id fijo en config, solo si existe de verdad
     if INST_ID and "-USD" in INST_ID:
         for t in ("SWAP", "FUTURES", "SPOT"):
             if instrumentos(t, instId=INST_ID):
                 return t, INST_ID
-    # 1) perpetuo margen USD
     d = instrumentos("SWAP", uly=ULY)
     if d:
         return "SWAP", d[0]["instId"]
-    # 2) futuros USD: el de mayor volumen 24h
     d = instrumentos("FUTURES", uly=ULY)
     if d:
         vols = vols_24h("FUTURES", ULY)
         par = max((c["instId"] for c in d), key=lambda i: vols.get(i, 0))
         return "FUTURES", par
-    # 3) spot USD
     if instrumentos("SPOT", instId=ULY):
         return "SPOT", ULY
-    # 4) proxy USDT (solo si no hay nada USD)
     if instrumentos("SWAP", instId="HBAR-USDT-SWAP"):
         return "SWAP", "HBAR-USDT-SWAP"
     return None, None
@@ -245,7 +248,7 @@ def optimizar(df, specs):
 
 # ------------- MAIN -------------
 def main():
-    print(f">>> backtest_futuros.py VERSION {VERSION} (auto-descubre instrumento)")
+    print(f">>> backtest_futuros.py VERSION {VERSION} (valor por contrato)")
     if EXPORTAR:
         os.makedirs(CARPETA, exist_ok=True)
 
@@ -268,15 +271,23 @@ def main():
         raise SystemExit(f"{par} no existe como {tipo} en OKX.")
 
     print(f"\nInstrumento : {par} ({tipo})")
-    if specs["listTime"]:
-        try:
-            print(f"  Listado   : {pd.to_datetime(int(specs['listTime']), unit='ms').date()}")
-        except Exception:
-            pass
     print(f"  ctVal     : {specs['ctVal']} HBAR/contrato")
     print(f"  minSz     : {specs['minSz']} | lotSz: {specs['lotSz']}")
-    if par == "HBAR-USDT-SWAP":
-        print("  [AVISO] No existe HBAR-USD: se usa HBAR-USDT-SWAP como proxy.")
+
+    # ---- VALOR DEL CONTRATO AHORA MISMO ----
+    precio = obtener_precio(par)
+    if precio:
+        v_ct  = specs["ctVal"] * precio              # valor de 1 contrato
+        v_min = specs["minSz"] * v_ct                # orden mínima
+        n_ct  = math.floor(CAPITAL / v_ct / specs["lotSz"]) * specs["lotSz"]
+        print(f"  Precio actual : {precio} USD")
+        print(f"  1 contrato    = {specs['ctVal']:.0f} HBAR = {v_ct:.4f} USD")
+        print(f"  Orden mínima  = {specs['minSz']} ct = {v_min:.4f} USD")
+        print(f"  {CAPITAL} EUR/op permiten ~{n_ct} contratos "
+              f"({n_ct * v_ct:.2f} USD de exposición)")
+        if CAPITAL < v_min:
+            print(f"  [AVISO] {CAPITAL} EUR no llega a 1 contrato mínimo "
+                  f"({v_min:.2f} USD). Sube capital_por_operacion en config.yml")
 
     mejores = []
     for bar in TIMEFRAMES:
