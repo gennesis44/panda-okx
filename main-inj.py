@@ -1,4 +1,4 @@
-# main-inj.py — Ax2-INJ · EL SEPTO DESTRUCTOR · decreto Carbono (24-sep)
+# main-inj.py — Ax2-INJ · EL SEPTIMO DESTRUCTOR · decreto Carbono (24-sep)
 #   LEY (backtest 60 dias — el mejor de la flota):
 #     cruce EMA3/21 en velas 1H CERRADAS (ventana -2/-3)
 #     LONG  (cruce alcista): SL 7.0% / TP 10.0%
@@ -8,8 +8,9 @@
 #     LONG 5W/3L +28.0% · SHORT 4W/4L +11.0% (ambos lados verdes)
 #   SIN RSI: medido 3 veces en la flota — el RSI-candado en cruces
 #     frescos no veto NADA (0 vetos en 120 dias XLM). Decorativo.
-#   CANDADO ANTI-RANGO 0.15%: implantado de nacimiento — validado
-#     en vivo 24-sep (separacion 1.014% medida y pasada legítimamente).
+#   SIN CANDADO ANTI-RANGO (26-sep): EXTIRPADO por decreto del
+#     experimento A/B HBAR-30m/1H/4H — el filtro cuesta trades y
+#     no aporta retorno (misma leccion que XRP-4H: el aire ES el edge).
 #   TAMANO (ratificado por Carbono): AMOUNT = 5
 #     ctVal confirmado: 1 ct = 0.1 INJ → 5 ct = 0.5 INJ (~$4.03)
 #   CONTEXTO: INJ se mueve ~10%/dia — el activo mas bravo de la
@@ -52,7 +53,6 @@ SINGLE_CYCLE = os.getenv('SINGLE_CYCLE') == '1'
 MAX_NOTIONAL_USD = _f(os.getenv('OKX_INJ_MAX_NOTIONAL', '25.0')) or 25.0
 SIGNAL_WINDOW = (-2, -3)
 WARMUP_1H = 30
-RANGO_UMBRAL_PCT = 0.15
 
 HOST = 'https://my.okx.com'
 
@@ -294,28 +294,14 @@ def cooldown_active(symbol):
         log.warning("No se pudo verificar cooldown (" + str(e) + "); BLOQUEO fail-closed.")
         return True
 
-# ==================== 🔒 CANDADO ANTI-RANGO v2 (FAIL-CLOSED) ====================
-def rango_activo(efast, eslow, idx_pos):
-    """True si las EMAs estan pegadas (< umbral %) en idx_pos (POSITIVO).
-    FAIL-CLOSED: si no se puede medir → VETO."""
-    try:
-        ef = float(efast.iloc[idx_pos])
-        es = float(eslow.iloc[idx_pos])
-        if es <= 0:
-            return True, 0.0
-        sep = abs(ef - es) / es * 100.0
-        return sep < RANGO_UMBRAL_PCT, sep
-    except Exception:
-        return True, 0.0
-
-# ==================== SEÑAL: CRUCE EMA3/21 1H + CANDADO ====================
+# ==================== SEÑAL: CRUCE EMA3/21 1H (SIN CANDADO) ====================
 def evaluate_signal(symbol):
     """[El Septimo — decreto Carbono, backtest +2.43%/trade]
     SENAL UNICA: cruce EMA3/EMA21 en velas 1H CERRADAS.
     LONG  (alcista): SL 7% / TP 10%
     SHORT (bajista): SL 5% / TP 8%
-    🔒 CANDADO: en la vela de la senal, si |EMA3-EMA21| < 0.15%
-    del precio → rango → cruce VETADO.
+    SIN candado anti-rango: extirpado 26-sep por experimento A/B
+    (el filtro cuesta ganadoras — mismo veredicto que XRP-4H).
     Ventana -2/-3 cubre la cadencia del cron."""
     try:
         df = fetch_data(symbol, TIMEFRAME, limit=100)
@@ -351,25 +337,11 @@ def evaluate_signal(symbol):
                     and e3.iloc[idx] < e21.iloc[idx])
 
             if up:
-                bloqueado, sep = rango_activo(e3, e21, idx)
-                if bloqueado:
-                    log.info("Cruce ALCISTA VETADO por candado: separacion " +
-                             format(sep, '.3f') + "% < " +
-                             format(RANGO_UMBRAL_PCT, '.2f') + "%. [anti-rango]")
-                    continue
-                log.info("Cruce ALCISTA VALIDO (separacion " +
-                         format(sep, '.3f') + "%). Senal LONG.")
+                log.info("Cruce ALCISTA EMA3/21 detectado. Senal LONG.")
                 return 'LONG', price, candle_ts
 
             if down:
-                bloqueado, sep = rango_activo(e3, e21, idx)
-                if bloqueado:
-                    log.info("Cruce BAJISTA VETADO por candado: separacion " +
-                             format(sep, '.3f') + "% < " +
-                             format(RANGO_UMBRAL_PCT, '.2f') + "%. [anti-rango]")
-                    continue
-                log.info("Cruce BAJISTA VALIDO (separacion " +
-                         format(sep, '.3f') + "%). Senal SHORT.")
+                log.info("Cruce BAJISTA EMA3/21 detectado. Senal SHORT.")
                 return 'SHORT', price, candle_ts
 
         log.info("Sin cruce EMA3/21 en la ventana. Vigilando.")
@@ -437,7 +409,7 @@ def run_cycle():
     if candle_already_traded(symbol, candle_ts):
         return
 
-    log.info("Senal " + signal + " (cruce EMA3/21 1H VALIDADO). Abriendo " +
+    log.info("Senal " + signal + " (cruce EMA3/21 1H). Abriendo " +
              str(AMOUNT) + " contrato...")
     try:
         execute_order(signal, symbol, price, AMOUNT, candle_ts)
@@ -445,7 +417,7 @@ def run_cycle():
         log.error("Entrada rechazada: " + str(e))
 
 def run_once():
-    log.info("Modo ciclo unico | INJ EMA3/21 1H sin RSI + CANDADO · 5 ct (XPERP USD).")
+    log.info("Modo ciclo unico | INJ EMA3/21 1H sin RSI sin candado · 5 ct (XPERP USD).")
     verify_setup()
     if TEST_MODE:
         catalog_inj()
@@ -453,7 +425,7 @@ def run_once():
     run_cycle()
 
 def main_loop():
-    log.info("Bot " + BASE_ASSET + " | 1H EMA3/21+lock | LONG SL7/TP10 · SHORT SL5/TP8 | " +
+    log.info("Bot " + BASE_ASSET + " | 1H EMA3/21 | LONG SL7/TP10 · SHORT SL5/TP8 | " +
              str(AMOUNT) + " ct | cooldown " + str(COOLDOWN_MIN) + "m | " + HOST)
     verify_setup()
     while True:
