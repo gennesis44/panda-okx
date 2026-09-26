@@ -34,9 +34,14 @@ from enum import Enum
 
 import ccxt
 import pandas as pd
-from dotenv import load_dotenv
 
-load_dotenv()  # si no hay archivo .env (ej. en GitHub Actions), simplemente no hace nada
+try:
+    from dotenv import load_dotenv
+    load_dotenv()  # si no hay archivo .env (ej. en GitHub Actions), simplemente no hace nada
+except ImportError:
+    # python-dotenv no está instalado. No pasa nada: en GitHub Actions los
+    # secrets ya llegan como variables de entorno, así que no hace falta.
+    pass
 
 
 # ====================================================================== #
