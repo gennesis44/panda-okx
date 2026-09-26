@@ -2,7 +2,7 @@
 =====================================================
  Backtest EMAs (3,4,10,21,27) — HBAR-USD Futuros OKX
  my.okx.com (EEE/MiCA) | 30m/1H/4H | 50 EUR/operación
- - Autodetecta el vencimiento más lejano (o perpetuo)
+ - Elige vencimiento más lejano (o perpetuo SWAP)
  - Exporta todos los cruces históricos de las EMAs
  - Optimiza SL/TP (rejilla) y recomienda timeframe
  Requisitos: pip install requests pandas pyyaml
@@ -12,27 +12,50 @@
 import requests, time, math, os, yaml
 import pandas as pd
 
-with open("config.yml", "r", encoding="utf-8") as f:
-    CFG = yaml.safe_load(f)
+# ---------------- CONFIG (tolerante: funciona con config nuevo o antiguo) ----------------
+try:
+    with open("config.yml", "r", encoding="utf-8") as f:
+        CFG = yaml.safe_load(f) or {}
+except FileNotFoundError:
+    print("config.yml no encontrado: usando valores por defecto.")
+    CFG = {}
 
-API        = CFG["exchange"]["url_api"]
-INST_TYPE  = CFG["mercado"]["tipo"].upper()
-ULY        = CFG["mercado"]["uly"]
-INST_ID    = CFG["mercado"].get("inst_id", "")
-MAS_LEJANO = CFG["mercado"].get("contrato_mas_lejano", True)
-TIMEFRAMES = CFG["backtest"]["timeframes"]
-VELAS      = CFG["backtest"]["velas"]
-CAPITAL    = CFG["backtest"]["capital_por_operacion"]
-COMISION   = CFG["backtest"]["comision"]
-EMAS       = CFG["estrategia"]["emas"]
-CORTO      = CFG["estrategia"].get("permitir_corto", False)
-OPT_ACTIVA = CFG["optimizacion"]["activar"]
-SL_GRID    = CFG["optimizacion"]["sl_pct"]
-TP_GRID    = CFG["optimizacion"]["tp_pct"]
-EXPORTAR   = CFG["salida"]["exportar_csv"]
-CARPETA    = CFG["salida"]["carpeta"]
-SL_DEF     = CFG["riesgo"]["stop_loss_pct"]
-TP_DEF     = CFG["riesgo"]["take_profit_pct"]
+def cfg_get(ruta, default=None):
+    nodo = CFG
+    for clave in ruta.split("."):
+        if not isinstance(nodo, dict) or clave not in nodo:
+            return default
+        nodo = nodo[clave]
+    return nodo
+
+API        = cfg_get("exchange.url_api", "https://www.okx.com")
+INST_TYPE  = str(cfg_get("mercado.tipo", "SWAP")).upper()
+ULY        = cfg_get("mercado.uly", "HBAR-USD")
+MAS_LEJANO = bool(cfg_get("mercado.contrato_mas_lejano", False))
+TIMEFRAMES = cfg_get("backtest.timeframes", ["30m", "1H", "4H"])
+VELAS      = cfg_get("backtest.velas", 1000)
+CAPITAL    = cfg_get("backtest.capital_por_operacion", 50)
+COMISION   = cfg_get("backtest.comision", 0.0005)
+EMAS       = cfg_get("estrategia.emas", [3, 4, 10, 21, 27])
+CORTO      = bool(cfg_get("estrategia.permitir_corto", True))
+OPT_ACTIVA = bool(cfg_get("optimizacion.activar", True))
+SL_GRID    = cfg_get("optimizacion.sl_pct", [1, 2, 3])
+TP_GRID    = cfg_get("optimizacion.tp_pct", [2, 4, 6])
+EXPORTAR   = bool(cfg_get("salida.exportar_csv", True))
+CARPETA    = cfg_get("salida.carpeta", "resultados")
+SL_DEF     = cfg_get("riesgo.stop_loss_pct", 2)
+TP_DEF     = cfg_get("riesgo.take_profit_pct", 4)
+
+# inst_id: admite config nuevo (mercado.inst_id) o antiguo (par.inst_id estilo spot)
+INST_ID = cfg_get("mercado.inst_id", "")
+if not INST_ID:
+    viejo = cfg_get("par.inst_id", "") or ""
+    if viejo.endswith("-USDT"):
+        INST_ID = viejo.replace("-USDT", "") + "-USD-SWAP"
+    elif viejo.endswith("-USD"):
+        INST_ID = viejo + "-SWAP"
+    else:
+        INST_ID = "HBAR-USD-SWAP"
 
 # ---------------- CONTRATOS Y SPECS ----------------
 def listar_futuros(uly):
@@ -66,6 +89,8 @@ def descargar_velas(inst_id, bar, total):
         velas += lote
         after = lote[-1][0]
         time.sleep(0.15)
+    if not velas:
+        return pd.DataFrame(columns=["ts", "open", "high", "low", "close", "vol"])
     df = pd.DataFrame(velas, columns=[
         "ts", "open", "high", "low", "close", "vol", "vccy", "vquote", "confirm"])
     df["ts"] = pd.to_datetime(df["ts"].astype("int64"), unit="ms")
@@ -74,23 +99,25 @@ def descargar_velas(inst_id, bar, total):
     return df.sort_values("ts").reset_index(drop=True)[
         ["ts", "open", "high", "low", "close", "vol"]]
 
-# ---------------- SEÑALES Y CRUCES ----------------
+# ---------------- SEÑALES Y CRUCES (CORREGIDO) ----------------
 def generar_senales(df):
     for p in EMAS:
         df[f"ema{p}"] = df["close"].ewm(span=p, adjust=False).mean()
-    alcista = (
-        (df["ema3"] > df["ema4"]) & (df["ema4"] > df["ema10"]) &
-        (df["ema10"] > df["ema21"]) & (df["ema21"] > df["ema27"])
-    )
+
+    # Stack alcista: cada EMA por encima de la siguiente (orden dinámico)
+    alcista = pd.Series(True, index=df.index)
+    for a, b in zip(EMAS, EMAS[1:]):
+        alcista &= df[f"ema{a}"] > df[f"ema{b}"]
+
     df["compra"] = alcista & ~alcista.shift(1, fill_value=False)
     df["venta"]  = ~alcista & alcista.shift(1, fill_value=False)
 
+    cols = ["ts", "direccion", "close"] + [f"ema{p}" for p in EMAS]
     cruces = df[df["compra"] | df["venta"]].copy()
+    if cruces.empty:
+        return df, pd.DataFrame(columns=cols)
     cruces["direccion"] = ["alcista" if c else "bajista" for c in cruces["compra"]]
-    return df, cruces[["ts", "direccion", "close"] +
-                       [f"ema{p}" for p in EMAS] +
-                       [f"ema{p}".replace("ema", "e") for p in EMAS]].rename(
-                       columns={f"ema{p}": f"ema{p}" for p in EMAS})
+    return df, cruces[cols]
 
 # ---------------- BACKTEST (largos y cortos) ----------------
 def backtest(df, specs, sl, tp, permitir_corto):
@@ -101,7 +128,7 @@ def backtest(df, specs, sl, tp, permitir_corto):
 
     def abrir(direccion, f):
         nonlocal contratos, pos, entrada, sl_p, tp_p, descartadas
-        raw = CAPITAL * (1 - COMISION) / (f["close"] * ctval)   # nº de contratos
+        raw = CAPITAL * (1 - COMISION) / (f["close"] * ctval)
         c = math.floor(raw / lot_sz) * lot_sz
         if c < min_sz:
             descartadas += 1
@@ -132,15 +159,15 @@ def backtest(df, specs, sl, tp, permitir_corto):
     for _, f in df.iterrows():
         p = f["close"]
 
-        # --- SL/TP intravela (SL primero: conservador) ---
+        # SL/TP intravela (SL primero: conservador)
         if pos == 1:
-            if sl_p and f["low"] <= sl_p:  cerrar(sl_p, f["ts"], "SL")
+            if sl_p and f["low"] <= sl_p:    cerrar(sl_p, f["ts"], "SL")
             elif tp_p and f["high"] >= tp_p: cerrar(tp_p, f["ts"], "TP")
         elif pos == -1:
-            if sl_p and f["high"] >= sl_p: cerrar(sl_p, f["ts"], "SL")
-            elif tp_p and f["low"] <= tp_p: cerrar(tp_p, f["ts"], "TP")
+            if sl_p and f["high"] >= sl_p:   cerrar(sl_p, f["ts"], "SL")
+            elif tp_p and f["low"] <= tp_p:  cerrar(tp_p, f["ts"], "TP")
 
-        # --- señales de cruce ---
+        # Señales de cruce
         if f["compra"]:
             if pos == -1: cerrar(p, f["ts"], "señal")
             if pos == 0:  abrir(1, f)
@@ -148,9 +175,9 @@ def backtest(df, specs, sl, tp, permitir_corto):
             if pos == 1:  cerrar(p, f["ts"], "señal")
             if pos == 0 and permitir_corto: abrir(-1, f)
 
-        # --- equity marca a mercado ---
+        # Equity marca a mercado
         flot = 0.0
-        if pos == 1:  flot = CAPITAL * (p / entrada["precio"] - 1)
+        if pos == 1:    flot = CAPITAL * (p / entrada["precio"] - 1)
         elif pos == -1: flot = CAPITAL * (1 - p / entrada["precio"])
         equity.append({"ts": f["ts"], "eq": CAPITAL + pnl_cerrado + flot})
 
@@ -205,15 +232,17 @@ def main():
             raise SystemExit(f"No hay futuros para {ULY} en OKX.")
         print(f"Vencimientos disponibles de {ULY}:")
         for c in sorted(contratos, key=lambda x: int(x["expTime"])):
-            print(f"  {c['instId']}  -> "
+            print(f"  {c['instId']} -> "
                   f"{pd.to_datetime(int(c['expTime']), unit='ms').date()}")
-        if MAS_LEJANO:
-            elegido = max(contratos, key=lambda c: int(c["expTime"]))
-            par = elegido["instId"]
-        else:
+        ids = {c["instId"] for c in contratos}
+        if INST_ID in ids:
             par = INST_ID
+        else:
+            clave = lambda c: int(c["expTime"])
+            par = (max(contratos, key=clave) if MAS_LEJANO
+                   else min(contratos, key=clave))["instId"]
     else:
-        par = INST_ID or (f"{ULY}-SWAP" if INST_TYPE == "SWAP" else ULY)
+        par = INST_ID or f"{ULY}-SWAP"
 
     specs = obtener_specs(INST_TYPE, par)
     if specs is None:
@@ -223,17 +252,22 @@ def main():
     print(f"  ctVal     : {specs['ctVal']} HBAR/contrato")
     print(f"  minSz     : {specs['minSz']} contratos | lotSz: {specs['lotSz']}")
 
+    # 2) Backtest por timeframe
     mejores = []
     for bar in TIMEFRAMES:
-        df, cruces = generar_senales(descargar_velas(par, bar, VELAS))
+        raw = descargar_velas(par, bar, VELAS)
+        if len(raw) < 50:
+            print(f"\n {par} {bar}: solo {len(raw)} velas — se omite (poco historial).")
+            continue
 
-        # Cruces históricos de EMAs
+        df, cruces = generar_senales(raw)
+        print(f"\n {bar}: {len(df)} velas | {len(cruces)} cruces de EMAs")
+
         if EXPORTAR and not cruces.empty:
-            f = f"{CARPETA}/cruces_{par}_{bar}.csv"
-            cruces.to_csv(f, index=False)
-            print(f"\n Cruces EMA guardados: {f}  ({len(cruces)} cruces)")
+            fc = f"{CARPETA}/cruces_{par}_{bar}.csv"
+            cruces.to_csv(fc, index=False)
+            print(f" Cruces guardados: {fc}")
 
-        # Backtest con SL/TP por defecto
         trades, eq, desc = backtest(df, specs, SL_DEF, TP_DEF, CORTO)
         tdf, eqdf = informe(par, bar, df, trades, eq, desc)
         if EXPORTAR:
@@ -241,7 +275,6 @@ def main():
             tdf.to_csv(f"{CARPETA}/trades_{par}_{suf}.csv", index=False)
             eqdf.to_csv(f"{CARPETA}/equity_{par}_{suf}.csv", index=False)
 
-        # Optimización de SL/TP
         if OPT_ACTIVA:
             tabla = optimizar(df, specs)
             best = tabla.iloc[0]
@@ -249,15 +282,15 @@ def main():
             print(f"\n Optimización SL/TP en {bar} (top 3):")
             print(tabla.head(3).to_string(index=False))
 
-    # Recomendación global
+    # 3) Recomendación global
     if OPT_ACTIVA and mejores:
-        ganador = max(mejores, key=lambda m: m["retorno_eur"])
-        print(f"\n{'='*62}\n RECOMENDACIÓN: timeframe {ganador['tf']} | "
-              f"SL {ganador['SL_%']}% | TP {ganador['TP_%']}% | "
-              f"{ganador['retorno_eur']} EUR")
+        g = max(mejores, key=lambda m: m["retorno_eur"])
+        print(f"\n{'='*62}")
+        print(f" RECOMENDACIÓN: timeframe {g['tf']} | SL {g['SL_%']}% | "
+              f"TP {g['TP_%']}% | {g['retorno_eur']} EUR")
         print(f"{'='*62}")
-        print(f"Config: 50 EUR/op | EMAs {EMAS} | fee {COMISION*100:.3f}% | "
-              f"cortos: {'sí' if CORTO else 'no'}")
+    print(f"\nConfig: {CAPITAL} EUR/op | EMAs {EMAS} | fee {COMISION*100:.3f}% | "
+          f"cortos: {'sí' if CORTO else 'no'}")
 
 if __name__ == "__main__":
     main()
