@@ -50,6 +50,7 @@ jobs:
           RISK_PER_TRADE_PCT: "2.0"
           STOP_LOSS_PCT: "2.0"
           TAKE_PROFIT_PCT: "4.0"
+          CONTRACT_AMOUNT: "3"
           # ⚠️ Deja esto en "True" hasta que hayas revisado varios días de logs.
           PAPER_TRADING: ${{ secrets.PAPER_TRADING }}
           LOG_LEVEL: "INFO"
