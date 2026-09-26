@@ -51,7 +51,7 @@ jobs:
           STOP_LOSS_PCT: "2.0"
           TAKE_PROFIT_PCT: "4.0"
           CONTRACT_AMOUNT: "3"
-          # ⚠️ Deja esto en "True" hasta que hayas revisado varios días de logs.
-          PAPER_TRADING: ${{ secrets.PAPER_TRADING }}
+          # ⚠️ MODO REAL ACTIVADO
+          PAPER_TRADING: "false"
           LOG_LEVEL: "INFO"
         run: python xrp_sma_bot.py --once
