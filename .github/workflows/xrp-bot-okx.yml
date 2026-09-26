@@ -1,0 +1,55 @@
+name: XRP Bot OKX
+
+# Corre cada 15 minutos y también permite lanzarlo manualmente
+# desde la pestaña "Actions" de GitHub ("Run workflow").
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch: {}
+
+# Evita que dos corridas se pisen si una tarda más de 15 min.
+concurrency:
+  group: xrp-bot-okx
+  cancel-in-progress: false
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Listar archivos (debug)
+        run: |
+          echo "Contenido de la raíz del repo:"
+          ls -la
+          echo ""
+          echo "Buscando okx_bot.py en todo el repo:"
+          find . -iname "*okx_bot*"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Instalar dependencias
+        run: pip install -r requirements.txt
+
+      - name: Ejecutar un ciclo del bot
+        env:
+          OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
+          OKX_API_SECRET: ${{ secrets.OKX_API_SECRET }}
+          OKX_API_PASSWORD: ${{ secrets.OKX_API_PASSWORD }}
+          SYMBOL: "XRP/USDC"
+          TIMEFRAME: "15m"
+          SMA_FAST: "9"
+          SMA_SLOW: "21"
+          RISK_PER_TRADE_PCT: "2.0"
+          STOP_LOSS_PCT: "2.0"
+          TAKE_PROFIT_PCT: "4.0"
+          # ⚠️ Deja esto en "True" hasta que hayas revisado varios días de logs.
+          PAPER_TRADING: ${{ secrets.PAPER_TRADING }}
+          LOG_LEVEL: "INFO"
+        run: python okx_bot.py --once
