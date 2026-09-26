@@ -1,0 +1,31 @@
+exchange:
+  url_api: "https://www.okx.com"
+
+mercado:
+  tipo: "FUTURES"
+  uly: "HBAR-USD"
+  inst_id: "HBAR-USD-SWAP"
+  contrato_mas_lejano: true
+
+backtest:
+  timeframes: ["30m", "1H", "4H"]
+  velas: 1000
+  capital_por_operacion: 50
+  comision: 0.0005
+
+estrategia:
+  emas: [3, 4, 10, 21, 27]
+  permitir_corto: true
+
+optimizacion:
+  activar: true
+  sl_pct: [1, 2, 3]
+  tp_pct: [2, 4, 6]
+
+salida:
+  exportar_csv: true
+  carpeta: "resultados"
+
+riesgo:
+  stop_loss_pct: 2
+  take_profit_pct: 4
