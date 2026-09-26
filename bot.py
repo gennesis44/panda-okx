@@ -1,5 +1,6 @@
 """
-Bot de trading para OKX (my.okx.com), par por defecto XRP/USDC.
+okx_bot.py — Bot de trading para OKX (my.okx.com), par por defecto XRP/USDC.
+Todo en un solo archivo para que sea fácil de subir y mantener desde el móvil.
 
 ⚠️ ADVERTENCIA IMPORTANTE ⚠️
 - Este bot opera con dinero real si PAPER_TRADING=False. Úsalo bajo tu
@@ -13,24 +14,75 @@ Bot de trading para OKX (my.okx.com), par por defecto XRP/USDC.
   probado ni una recomendación de inversión.
 
 Requisitos:
-    pip install ccxt python-dotenv pandas
+    pip install -r requirements.txt   (ccxt, python-dotenv, pandas)
 
-Configuración: copia .env.example a .env y completa tus datos.
+Configuración: copia .env.example a .env y completa tus datos
+(o, si lo corres en GitHub Actions, usa Secrets del repo — ver README).
 
 Ejecución:
-    python bot.py
+    python okx_bot.py            # corre en loop infinito (uso local)
+    python okx_bot.py --once     # un solo ciclo y termina (uso en cron/Actions)
 """
 import argparse
 import logging
-import time
+import os
 import signal
 import sys
+import time
+from dataclasses import dataclass
+from enum import Enum
 
 import ccxt
+import pandas as pd
+from dotenv import load_dotenv
 
-from config import config
-from strategy import ohlcv_to_dataframe, compute_signal, Signal
-from risk import build_position_plan
+load_dotenv()  # si no hay archivo .env (ej. en GitHub Actions), simplemente no hace nada
+
+
+# ====================================================================== #
+# 1. CONFIGURACIÓN
+# ====================================================================== #
+def _get_bool(name: str, default: bool) -> bool:
+    val = os.getenv(name)
+    if val is None or val.strip() == "":
+        return default
+    return val.strip().lower() in ("1", "true", "yes", "on")
+
+
+def _get_float(name: str, default: float) -> float:
+    val = os.getenv(name)
+    return float(val) if val not in (None, "") else default
+
+
+@dataclass
+class Config:
+    # --- Credenciales OKX ---
+    api_key: str = os.getenv("OKX_API_KEY", "")
+    api_secret: str = os.getenv("OKX_API_SECRET", "")
+    api_password: str = os.getenv("OKX_API_PASSWORD", "")  # passphrase de la API
+
+    # --- Mercado ---
+    symbol: str = os.getenv("SYMBOL", "XRP/USDC")   # par a operar
+    timeframe: str = os.getenv("TIMEFRAME", "15m")  # velas: 1m,5m,15m,1h,4h,1d...
+
+    # --- Estrategia (cruce de medias móviles) ---
+    sma_fast: int = int(os.getenv("SMA_FAST", "9"))
+    sma_slow: int = int(os.getenv("SMA_SLOW", "21"))
+
+    # --- Gestión de riesgo ---
+    risk_per_trade_pct: float = _get_float("RISK_PER_TRADE_PCT", 2.0)   # % del balance en USDC por operación
+    stop_loss_pct: float = _get_float("STOP_LOSS_PCT", 2.0)            # % por debajo del precio de entrada
+    take_profit_pct: float = _get_float("TAKE_PROFIT_PCT", 4.0)        # % por encima del precio de entrada
+    max_open_positions: int = int(os.getenv("MAX_OPEN_POSITIONS", "1"))
+
+    # --- Operación del bot ---
+    poll_seconds: int = int(os.getenv("POLL_SECONDS", "60"))
+    # ¡ojo! si el secret/variable queda vacío, esto usa el default seguro (True)
+    paper_trading: bool = _get_bool("PAPER_TRADING", True)
+    log_level: str = os.getenv("LOG_LEVEL", "INFO")
+
+
+config = Config()
 
 logging.basicConfig(
     level=getattr(logging, config.log_level.upper(), logging.INFO),
@@ -39,6 +91,82 @@ logging.basicConfig(
 log = logging.getLogger("okx_bot")
 
 
+# ====================================================================== #
+# 2. ESTRATEGIA (cruce de medias móviles simples)
+# ====================================================================== #
+class Signal(Enum):
+    BUY = "buy"
+    SELL = "sell"
+    HOLD = "hold"
+
+
+def ohlcv_to_dataframe(ohlcv: list) -> pd.DataFrame:
+    df = pd.DataFrame(
+        ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"]
+    )
+    df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
+    return df
+
+
+def compute_signal(df: pd.DataFrame, fast: int, slow: int) -> Signal:
+    if len(df) < slow + 2:
+        return Signal.HOLD  # no hay suficientes velas todavía
+
+    df = df.copy()
+    df["sma_fast"] = df["close"].rolling(fast).mean()
+    df["sma_slow"] = df["close"].rolling(slow).mean()
+
+    prev = df.iloc[-2]
+    curr = df.iloc[-1]
+
+    crossed_up = prev["sma_fast"] <= prev["sma_slow"] and curr["sma_fast"] > curr["sma_slow"]
+    crossed_down = prev["sma_fast"] >= prev["sma_slow"] and curr["sma_fast"] < curr["sma_slow"]
+
+    if crossed_up:
+        return Signal.BUY
+    if crossed_down:
+        return Signal.SELL
+    return Signal.HOLD
+
+
+# ====================================================================== #
+# 3. GESTIÓN DE RIESGO (tamaño de posición, stop-loss, take-profit)
+# ====================================================================== #
+@dataclass
+class PositionPlan:
+    quote_amount: float   # cuánto USDC se va a usar en la compra
+    base_amount: float    # cuánta cantidad del activo (ej. XRP) se compra
+    stop_loss_price: float
+    take_profit_price: float
+
+
+def build_position_plan(
+    entry_price: float,
+    available_quote_balance: float,
+    risk_per_trade_pct: float,
+    stop_loss_pct: float,
+    take_profit_pct: float,
+) -> PositionPlan:
+    if entry_price <= 0:
+        raise ValueError("entry_price debe ser mayor que 0")
+
+    quote_amount = available_quote_balance * (risk_per_trade_pct / 100.0)
+    base_amount = quote_amount / entry_price
+
+    stop_loss_price = entry_price * (1 - stop_loss_pct / 100.0)
+    take_profit_price = entry_price * (1 + take_profit_pct / 100.0)
+
+    return PositionPlan(
+        quote_amount=quote_amount,
+        base_amount=base_amount,
+        stop_loss_price=stop_loss_price,
+        take_profit_price=take_profit_price,
+    )
+
+
+# ====================================================================== #
+# 4. BOT (conexión con OKX vía ccxt y loop principal)
+# ====================================================================== #
 class OkxTradingBot:
     def __init__(self):
         self.exchange = self._build_exchange()
@@ -49,9 +177,6 @@ class OkxTradingBot:
         self.take_profit_price = None
         self._running = True
 
-    # ------------------------------------------------------------------ #
-    # Setup
-    # ------------------------------------------------------------------ #
     def _build_exchange(self) -> ccxt.okx:
         exchange = ccxt.okx(
             {
@@ -72,10 +197,7 @@ class OkxTradingBot:
         log.info("Señal de apagado recibida. Cerrando el bot...")
         self._running = False
 
-    # ------------------------------------------------------------------ #
-    # Datos de mercado
-    # ------------------------------------------------------------------ #
-    def fetch_candles(self):
+    def fetch_candles(self) -> pd.DataFrame:
         ohlcv = self.exchange.fetch_ohlcv(
             self.symbol, timeframe=config.timeframe, limit=max(config.sma_slow + 5, 50)
         )
@@ -90,9 +212,6 @@ class OkxTradingBot:
         quote_ccy = self.symbol.split("/")[1]
         return float(balance.get("free", {}).get(quote_ccy, 0.0))
 
-    # ------------------------------------------------------------------ #
-    # Ejecución de órdenes
-    # ------------------------------------------------------------------ #
     def place_buy(self, price: float):
         quote_balance = self.fetch_quote_balance()
         plan = build_position_plan(
@@ -147,9 +266,6 @@ class OkxTradingBot:
         self.stop_loss_price = None
         self.take_profit_price = None
 
-    # ------------------------------------------------------------------ #
-    # Ciclo principal
-    # ------------------------------------------------------------------ #
     def check_stop_loss_take_profit(self, current_price: float):
         if not self.in_position:
             return
@@ -177,6 +293,7 @@ class OkxTradingBot:
         # Señal SELL sin posición abierta no hace nada (nada que vender)
 
     def run(self):
+        """Loop infinito — para uso local, NO para GitHub Actions."""
         signal.signal(signal.SIGINT, self.stop)
         signal.signal(signal.SIGTERM, self.stop)
 
@@ -200,6 +317,9 @@ class OkxTradingBot:
         log.info("Bot detenido.")
 
 
+# ====================================================================== #
+# 5. PUNTO DE ENTRADA
+# ====================================================================== #
 def parse_args():
     parser = argparse.ArgumentParser(description="Bot de trading OKX")
     parser.add_argument(
