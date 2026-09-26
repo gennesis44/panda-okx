@@ -1,4 +1,4 @@
-name: XRP Bot OKX
+name: XRP SMA Bot OKX
 
 # Corre cada 15 minutos y también permite lanzarlo manualmente
 # desde la pestaña "Actions" de GitHub ("Run workflow").
@@ -8,8 +8,9 @@ on:
   workflow_dispatch: {}
 
 # Evita que dos corridas se pisen si una tarda más de 15 min.
+# Nombre único para no chocar con tu otro bot de XRP que ya corre.
 concurrency:
-  group: xrp-bot-okx
+  group: xrp-sma-bot-okx
   cancel-in-progress: false
 
 jobs:
@@ -26,8 +27,8 @@ jobs:
           echo "Contenido de la raíz del repo:"
           ls -la
           echo ""
-          echo "Buscando okx_bot.py en todo el repo:"
-          find . -iname "*okx_bot*"
+          echo "Buscando xrp_sma_bot.py en todo el repo:"
+          find . -iname "*xrp_sma_bot*"
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -52,4 +53,4 @@ jobs:
           # ⚠️ Deja esto en "True" hasta que hayas revisado varios días de logs.
           PAPER_TRADING: ${{ secrets.PAPER_TRADING }}
           LOG_LEVEL: "INFO"
-        run: python okx_bot.py --once
+        run: python xrp_sma_bot.py --once
