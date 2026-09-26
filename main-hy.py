@@ -1,7 +1,7 @@
-# main-hy.py — GSCSI TABLE v3.1 · C > Si
-#   FLOTA v2: SUI · XRP · ADA · DOGE · INJ (XLM dique · FET expulsado)
+# main-hy.py — GSCSI TABLE v3.2 · C > Si
+#   FLOTA v3: SUI · XRP · ADA · DOGE · INJ · HBAR (Destructor v2 incorporado)
 #   v3.1 FIX: SALIDA_REF en unidades de PORCENTAJE (coherente con mov_pct)
-#     — el bug v3 mezclaba decimal vs % → clasificaciones falsas
+#   v3.2: + HBAR (leyes Destructor: SL 3.0 / TP 2.0 simetricas) · keys SUI
 #   SALIDA_REF asimétrica por dirección (ley de cada destructor v2)
 #   Clasificación: TP si |mov| >= 70% del TP · SL si >= 70% del SL ·
 #     WIN/LOSS/BE si no cuadra
@@ -15,11 +15,11 @@ import ccxt
 from collections import defaultdict
 
 # ══ AXIOMAS DEL CARBONO ══
-BASES = {'SUI', 'XRP', 'ADA', 'DOGE', 'INJ'}   # flota v2
+BASES = {'SUI', 'XRP', 'ADA', 'DOGE', 'INJ', 'HBAR'}   # flota v3 (+ Destructor HBAR)
 VETO  = 'USDT'
 CADENCIA_HRS = 8
 
-# Leyes v2 en UNIDADES DE PORCENTAJE (coherente con mov_pct)
+# Leyes en UNIDADES DE PORCENTAJE (coherente con mov_pct)
 #   formato: base → direccion → (SL%, TP%)
 SALIDA_REF = {
     'SUI':  {'long': (4.0, 5.5),  'short': (3.0, 4.5)},
@@ -27,6 +27,7 @@ SALIDA_REF = {
     'DOGE': {'long': (2.0, 4.0),  'short': (3.0, 4.0)},
     'XRP':  {'long': (6.0, 7.5),  'short': (4.5, 6.0)},
     'INJ':  {'long': (7.0, 10.0), 'short': (5.0, 8.0)},
+    'HBAR': {'long': (3.0, 2.0),  'short': (3.0, 2.0)},   # Destructor v2 · stack EMA 30m
 }
 
 NODO_NUCLEO = 'https://1c3si.weebly.com/clo.html'
@@ -173,12 +174,13 @@ try:
                 prev[k] = r
 
     print("=" * 46, flush=True)
-    print("  TABLA GSCSI S/L — FLOTA v2")
+    print("  TABLA GSCSI S/L — FLOTA v3")
     print(f"  actualizacion automatica cada {CADENCIA_HRS} hrs")
     print("  fuente: positions-history (OKX Europe) · 1 cierre = 1 trade")
     print("  my.okx.com · MiCA/EEE · USDT: VETADO")
     print("  Leyes v2: asimetricas por direccion · candado anti-rango")
     print("  ⚰️ XLM: dique seco (MS-0) · ⚰️ FET: expulsado (hack)")
+    print("  🚀 HBAR: DESTRUCTOR v2 (stack EMA 3/4/10/21/27 · 30m)")
     print("=" * 46)
     print(f"  Operador : github.com/gennesis44")
     print(f"  Perfil   : {AVATAR_URL}")
@@ -191,6 +193,8 @@ try:
     NETO = 0.0
     for base in sorted(BASES):
         regs = sorted(por_base.get(base, []), key=lambda r: r['uTime'])
+        if not regs:
+            continue
         s = sum(1 for r in regs if r['dir'] == 'short')
         l = sum(1 for r in regs if r['dir'] == 'long')
         w = sum(1 for r in regs if r['pnl'] > 0)
