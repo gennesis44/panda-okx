@@ -1,8 +1,8 @@
 """
 =====================================================
  Backtest EMAs (3,4,10,21,27) — HBAR-USD OKX (EEE/MiCA)
- 30m/1H/4H | cruces EMAs + SL/TP + valor del contrato
- VERSION 4: informa precio actual y valor por contrato
+ VERSION 5: experimento CANDADO ANTI-RANGO
+   separacion EMA3-EMA27 vs entrada (A/B por umbral)
  Requisitos: pip install requests pandas pyyaml
 =====================================================
 """
@@ -10,7 +10,7 @@
 import requests, time, math, os, yaml
 import pandas as pd
 
-VERSION = "4"
+VERSION = "5"
 
 # ------------- CONFIG (tolerante) -------------
 try:
@@ -38,12 +38,14 @@ COMISION   = float(cfg_get("backtest.comision", 0.0005))
 EMAS       = cfg_get("estrategia.emas", [3, 4, 10, 21, 27])
 CORTO      = bool(cfg_get("estrategia.permitir_corto", True))
 OPT_ACTIVA = bool(cfg_get("optimizacion.activar", True))
-SL_GRID    = cfg_get("optimizacion.sl_pct", [1, 2, 3])
-TP_GRID    = cfg_get("optimizacion.tp_pct", [2, 4, 6])
+SL_GRID    = cfg_get("optimizacion.sl_pct", [2, 3, 4, 5])
+TP_GRID    = cfg_get("optimizacion.tp_pct", [2, 3, 4, 6])
+SEP_GRID   = cfg_get("optimizacion.sep_grid",
+                     [0.0, 0.1, 0.2, 0.3, 0.5, 0.8, 1.0])
 EXPORTAR   = bool(cfg_get("salida.exportar_csv", True))
 CARPETA    = cfg_get("salida.carpeta", "resultados")
-SL_DEF     = cfg_get("riesgo.stop_loss_pct", 2)
-TP_DEF     = cfg_get("riesgo.take_profit_pct", 4)
+SL_DEF     = cfg_get("riesgo.stop_loss_pct", 3)
+TP_DEF     = cfg_get("riesgo.take_profit_pct", 2)
 
 # ------------- HELPERS DE API -------------
 def instrumentos(inst_type, **params):
@@ -85,7 +87,6 @@ def obtener_specs(inst_type, inst_id):
             "listTime": d.get("listTime") or ""}
 
 def elegir_instrumento():
-    """Devuelve (instType, instId) del mejor HBAR-USD disponible."""
     if INST_ID and "-USD" in INST_ID:
         for t in ("SWAP", "FUTURES", "SPOT"):
             if instrumentos(t, instId=INST_ID):
@@ -149,9 +150,21 @@ def generar_senales(df):
     cruces["direccion"] = ["alcista" if c else "bajista" for c in cruces["compra"]]
     return df, cruces[cols]
 
-# ------------- BACKTEST (largos y cortos) -------------
-def backtest(df, specs, sl, tp, permitir_corto):
+# ------------- BACKTEST (con candado opcional) -------------
+def backtest(df, specs, sl, tp, permitir_corto, sep_min=0.0):
     ctval, lot_sz, min_sz = specs["ctVal"], specs["lotSz"], specs["minSz"]
+
+    # CANDADO ANTI-RANGO (v5): separacion EMA rapida - lenta en % del precio
+    if sep_min > 0:
+        ef, es = df[f"ema{EMAS[0]}"], df[f"ema{EMAS[-1]}"]
+        sep = (ef - es) / df["close"] * 100
+        # LONG: el stack formado debe tener fuerza >= sep_min
+        # SHORT: el stack QUE SE ROMPE debia tener fuerza >= sep_min
+        compra = df["compra"] & (sep >= sep_min)
+        venta  = df["venta"] & (sep.shift(1, fill_value=0.0) >= sep_min)
+    else:
+        compra, venta = df["compra"], df["venta"]
+
     pos, contratos = 0, 0.0
     entrada, sl_p, tp_p = None, None, None
     trades, equity, pnl_cerrado, descartadas = [], [], 0.0, 0
@@ -180,13 +193,12 @@ def backtest(df, specs, sl, tp, permitir_corto):
             "entrada": entrada["ts"], "salida": ts,
             "p_entrada": round(entrada["precio"], 5),
             "p_salida": round(precio_sal, 5),
-            "contratos": round(contratos, 2),
             "pnl_eur": round(pnl, 2),
             "pnl_%": round(pnl / CAPITAL * 100, 2),
             "motivo": motivo})
         pos, entrada, sl_p, tp_p = 0, None, None, None
 
-    for _, f in df.iterrows():
+    for i, f in df.iterrows():
         p = f["close"]
         if pos == 1:
             if sl_p and f["low"] <= sl_p:    cerrar(sl_p, f["ts"], "SL")
@@ -195,10 +207,10 @@ def backtest(df, specs, sl, tp, permitir_corto):
             if sl_p and f["high"] >= sl_p:   cerrar(sl_p, f["ts"], "SL")
             elif tp_p and f["low"] <= tp_p:  cerrar(tp_p, f["ts"], "TP")
 
-        if f["compra"]:
+        if compra.loc[i]:
             if pos == -1: cerrar(p, f["ts"], "señal")
             if pos == 0:  abrir(1, f)
-        elif f["venta"]:
+        elif venta.loc[i]:
             if pos == 1:  cerrar(p, f["ts"], "señal")
             if pos == 0 and permitir_corto: abrir(-1, f)
 
@@ -221,34 +233,52 @@ def informe(par, bar, df, trades, eq, descartadas):
     print(f" Periodo        : {df['ts'].iloc[0]}  ->  {df['ts'].iloc[-1]}")
     print(f" Operaciones    : {len(trades)}   (descartadas minSz: {descartadas})")
     print(f" Win rate       : {wins/len(trades)*100 if trades else 0:.1f} %")
-    print(f" PnL cerrado    : {pnl:+.2f} EUR")
-    print(f" Abierta        : {flot:+.2f} EUR")
     print(f" Retorno total  : {eq['eq'].iloc[-1] - CAPITAL:+.2f} EUR")
     print(f" Buy & Hold     : {bh:+.2f} %")
     print(f" Max drawdown   : {dd:.2f} %")
-    if trades:
-        tdf = pd.DataFrame(trades)
-        print(f" Mejor trade    : {tdf['pnl_%'].max():+.2f} %   "
-              f"Peor: {tdf['pnl_%'].min():+.2f} %")
-        return tdf, eq.reset_index()
-    return pd.DataFrame(), eq.reset_index()
 
-# ------------- OPTIMIZADOR SL/TP -------------
-def optimizar(df, specs):
+# ------------- EXPERIMENTO CANDADO (v5) -------------
+def experimento_candado(df, specs, bar, par):
     filas = []
-    for sl in SL_GRID:
-        for tp in TP_GRID:
-            trades, eq, _ = backtest(df, specs, sl, tp, CORTO)
-            wins = sum(1 for t in trades if t["pnl_eur"] > 0)
-            filas.append({"SL_%": sl, "TP_%": tp,
-                          "retorno_eur": round(eq["eq"].iloc[-1] - CAPITAL, 2),
-                          "trades": len(trades),
-                          "win%": round(wins/len(trades)*100, 1) if trades else 0.0})
-    return pd.DataFrame(filas).sort_values("retorno_eur", ascending=False)
+    for um in SEP_GRID:
+        trades, eq, _ = backtest(df, specs, SL_DEF, TP_DEF, CORTO, sep_min=float(um))
+        wins = sum(1 for t in trades if t["pnl_eur"] > 0)
+        dd = ((eq["eq"].cummax() - eq["eq"]) / eq["eq"].cummax()).max() * 100
+        filas.append({"sep_min_%": float(um),
+                      "trades": len(trades),
+                      "win%": round(wins/len(trades)*100, 1) if trades else 0.0,
+                      "retorno_eur": round(eq["eq"].iloc[-1] - CAPITAL, 2),
+                      "maxDD%": round(dd, 2)})
+    tabla = pd.DataFrame(filas)
+
+    print(f"\n EXPERIMENTO CANDADO ANTI-RANGO en {bar} "
+          f"(SL {SL_DEF}% / TP {TP_DEF}%):")
+    print("   sep_min = separacion minima EMA3-EMA27 en % del precio")
+    print("   0.0 = SIN candado (como el bot en vivo)")
+    print(tabla.to_string(index=False))
+
+    if EXPORTAR:
+        tabla.to_csv(f"{CARPETA}/candado_{par}_{bar}.csv", index=False)
+
+    base = tabla[tabla["sep_min_%"] == 0.0]
+    base_ret = float(base.iloc[0]["retorno_eur"]) if not base.empty else 0.0
+    best = tabla.loc[tabla["retorno_eur"].idxmax()]
+    delta = float(best["retorno_eur"]) - base_ret
+
+    print(f"\n VEREDICTO {bar}: mejor umbral = {best['sep_min_%']}% "
+          f"({best['retorno_eur']} EUR vs {base_ret} EUR sin candado -> "
+          f"{delta:+.2f} EUR, {best['trades']} trades)")
+    if delta >= 1.0:
+        print("   -> El CANDADO AYUDA: conviene implantarlo con ese umbral.")
+    elif delta <= -1.0:
+        print("   -> El candado PERJUDICA: extirpar (no filtrar).")
+    else:
+        print("   -> NEUTRO (diferencia < 1 EUR): no justifica el implante.")
+    return tabla, best, delta
 
 # ------------- MAIN -------------
 def main():
-    print(f">>> backtest_futuros.py VERSION {VERSION} (valor por contrato)")
+    print(f">>> backtest_futuros.py VERSION {VERSION} (experimento candado)")
     if EXPORTAR:
         os.makedirs(CARPETA, exist_ok=True)
 
@@ -257,76 +287,44 @@ def main():
     if tipo is None:
         raise SystemExit("OKX no lista ningún instrumento HBAR-USD (ni proxy USDT).")
 
-    if tipo == "FUTURES":
-        vols = vols_24h("FUTURES", ULY)
-        print(f"Vencimientos {ULY} (volumen 24h):")
-        for c in sorted(instrumentos("FUTURES", uly=ULY),
-                        key=lambda x: int(x.get("expTime") or 0)):
-            exp = (pd.to_datetime(int(c["expTime"]), unit="ms").date()
-                   if c.get("expTime") else "?")
-            print(f"  {c['instId']} -> {exp} | vol24h {vols.get(c['instId'], 0):,.0f}")
-
     specs = obtener_specs(tipo, par)
     if specs is None:
         raise SystemExit(f"{par} no existe como {tipo} en OKX.")
+    print(f"\nInstrumento : {par} ({tipo}) | ctVal {specs['ctVal']} HBAR")
 
-    print(f"\nInstrumento : {par} ({tipo})")
-    print(f"  ctVal     : {specs['ctVal']} HBAR/contrato")
-    print(f"  minSz     : {specs['minSz']} | lotSz: {specs['lotSz']}")
-
-    # ---- VALOR DEL CONTRATO AHORA MISMO ----
-    precio = obtener_precio(par)
-    if precio:
-        v_ct  = specs["ctVal"] * precio              # valor de 1 contrato
-        v_min = specs["minSz"] * v_ct                # orden mínima
-        n_ct  = math.floor(CAPITAL / v_ct / specs["lotSz"]) * specs["lotSz"]
-        print(f"  Precio actual : {precio} USD")
-        print(f"  1 contrato    = {specs['ctVal']:.0f} HBAR = {v_ct:.4f} USD")
-        print(f"  Orden mínima  = {specs['minSz']} ct = {v_min:.4f} USD")
-        print(f"  {CAPITAL} EUR/op permiten ~{n_ct} contratos "
-              f"({n_ct * v_ct:.2f} USD de exposición)")
-        if CAPITAL < v_min:
-            print(f"  [AVISO] {CAPITAL} EUR no llega a 1 contrato mínimo "
-                  f"({v_min:.2f} USD). Sube capital_por_operacion en config.yml")
-
-    mejores = []
+    verdictos = []
     for bar in TIMEFRAMES:
         raw = descargar_velas(par, bar, VELAS)
         if len(raw) < 50:
-            print(f"\n {par} {bar}: solo {len(raw)} velas — se omite (poco historial).")
+            print(f"\n {par} {bar}: solo {len(raw)} velas — se omite.")
             continue
 
-        dias = (raw["ts"].iloc[-1] - raw["ts"].iloc[0]).days
         df, cruces = generar_senales(raw)
-        print(f"\n {bar}: {len(df)} velas (~{dias} días) | {len(cruces)} cruces de EMAs")
+        print(f"\n {bar}: {len(df)} velas | {len(cruces)} cruces de EMAs")
 
-        if EXPORTAR and not cruces.empty:
-            fc = f"{CARPETA}/cruces_{par}_{bar}.csv"
-            cruces.to_csv(fc, index=False)
-            print(f" Cruces guardados: {fc}")
-
+        # Backtest base (sin candado) — igual que el bot vivo
         trades, eq, desc = backtest(df, specs, SL_DEF, TP_DEF, CORTO)
-        tdf, eqdf = informe(par, bar, df, trades, eq, desc)
+        informe(par, bar, df, trades, eq, desc)
         if EXPORTAR:
             suf = bar.replace("m", "min").replace("H", "h")
-            tdf.to_csv(f"{CARPETA}/trades_{par}_{suf}.csv", index=False)
-            eqdf.to_csv(f"{CARPETA}/equity_{par}_{suf}.csv", index=False)
+            pd.DataFrame(trades).to_csv(f"{CARPETA}/trades_{par}_{suf}.csv", index=False)
+            eq.reset_index().to_csv(f"{CARPETA}/equity_{par}_{suf}.csv", index=False)
 
-        if OPT_ACTIVA:
-            tabla = optimizar(df, specs)
-            best = tabla.iloc[0]
-            mejores.append({"tf": bar, **best.to_dict()})
-            print(f"\n Optimización SL/TP en {bar} (top 3):")
-            print(tabla.head(3).to_string(index=False))
+        # Experimento candado
+        tabla, best, delta = experimento_candado(df, specs, bar, par)
+        verdictos.append({"tf": bar, "umbral": best["sep_min_%"],
+                          "retorno": best["retorno_eur"], "delta": delta})
 
-    if OPT_ACTIVA and mejores:
-        g = max(mejores, key=lambda m: m["retorno_eur"])
-        print(f"\n{'='*62}")
-        print(f" RECOMENDACIÓN: timeframe {g['tf']} | SL {g['SL_%']}% | "
-              f"TP {g['TP_%']}% | {g['retorno_eur']} EUR")
-        print(f"{'='*62}")
-    print(f"\nConfig: {CAPITAL} EUR/op | EMAs {EMAS} | fee {COMISION*100:.3f}% | "
-          f"cortos: {'sí' if CORTO else 'no'}")
+    if verdictos:
+        print(f"\n{'='*62}\n RESUMEN CANDADO ANTI-RANGO (flota HBAR)\n{'='*62}")
+        for v in verdictos:
+            print(f"  {v['tf']:<4} mejor umbral {v['umbral']}% -> "
+                  f"{v['retorno']} EUR ({v['delta']:+.2f} vs sin candado)")
+        ganador = max(verdictos, key=lambda v: v["retorno"])
+        print(f"\n CONCLUSION: en {ganador['tf']} el candado optimo es "
+              f"{ganador['umbral']}%.")
+        print(" Si el umbral optimo es 0.0 en todos los marcos -> EXTIRPAR")
+        print(" el implante en los destructores (el filtro solo cuesta trades).")
 
 if __name__ == "__main__":
     main()
