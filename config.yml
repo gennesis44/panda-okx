@@ -2,10 +2,10 @@ exchange:
   url_api: "https://www.okx.com"
 
 mercado:
-  tipo: "FUTURES"
+  tipo: "SWAP"
   uly: "HBAR-USD"
   inst_id: "HBAR-USD-SWAP"
-  contrato_mas_lejano: true
+  contrato_mas_lejano: false
 
 backtest:
   timeframes: ["30m", "1H", "4H"]
