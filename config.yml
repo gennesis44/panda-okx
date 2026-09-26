@@ -10,7 +10,7 @@ mercado:
 backtest:
   timeframes: ["30m", "1H", "4H"]
   velas: 1000
-  capital_por_operacion: 50
+  capital_por_operacion: 5
   comision: 0.0005
 
 estrategia:
