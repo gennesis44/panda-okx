@@ -80,6 +80,11 @@ class Config:
     take_profit_pct: float = _get_float("TAKE_PROFIT_PCT", 4.0)        # % por encima del precio de entrada
     max_open_positions: int = int(os.getenv("MAX_OPEN_POSITIONS", "1"))
 
+    # --- Tamaño fijo de posición (en unidades del activo, ej. XRP) ---
+    # Si CONTRACT_AMOUNT > 0, el bot compra esa cantidad fija en vez de
+    # calcular el monto como % del balance (risk_per_trade_pct se ignora).
+    contract_amount: float = _get_float("CONTRACT_AMOUNT", 3.0)
+
     # --- Operación del bot ---
     poll_seconds: int = int(os.getenv("POLL_SECONDS", "60"))
     # ¡ojo! si el secret/variable queda vacío, esto usa el default seguro (True)
@@ -169,6 +174,34 @@ def build_position_plan(
     )
 
 
+def build_fixed_position_plan(
+    entry_price: float,
+    contract_amount: float,
+    stop_loss_pct: float,
+    take_profit_pct: float,
+) -> PositionPlan:
+    """
+    Igual que build_position_plan, pero con una cantidad FIJA de unidades
+    (ej. 3 XRP) en vez de calcular el monto como % del balance.
+    quote_amount aquí es solo informativo: precio_por_unidad * cantidad.
+    """
+    if entry_price <= 0:
+        raise ValueError("entry_price debe ser mayor que 0")
+
+    base_amount = contract_amount
+    quote_amount = base_amount * entry_price  # informativo: costo total en USDC
+
+    stop_loss_price = entry_price * (1 - stop_loss_pct / 100.0)
+    take_profit_price = entry_price * (1 + take_profit_pct / 100.0)
+
+    return PositionPlan(
+        quote_amount=quote_amount,
+        base_amount=base_amount,
+        stop_loss_price=stop_loss_price,
+        take_profit_price=take_profit_price,
+    )
+
+
 # ====================================================================== #
 # 4. BOT (conexión con OKX vía ccxt y loop principal)
 # ====================================================================== #
@@ -218,19 +251,17 @@ class OkxTradingBot:
         return float(balance.get("free", {}).get(quote_ccy, 0.0))
 
     def place_buy(self, price: float):
-        quote_balance = self.fetch_quote_balance()
-        plan = build_position_plan(
+        plan = build_fixed_position_plan(
             entry_price=price,
-            available_quote_balance=quote_balance,
-            risk_per_trade_pct=config.risk_per_trade_pct,
+            contract_amount=config.contract_amount,
             stop_loss_pct=config.stop_loss_pct,
             take_profit_pct=config.take_profit_pct,
         )
 
         log.info(
-            "SEÑAL DE COMPRA | precio=%.6f | monto=%.2f USDC | cantidad=%.6f | "
+            "SEÑAL DE COMPRA | precio=%.6f | cantidad=%.6f XRP (fijo) | monto=%.2f USDC | "
             "stop_loss=%.6f | take_profit=%.6f",
-            price, plan.quote_amount, plan.base_amount, plan.stop_loss_price, plan.take_profit_price,
+            price, plan.base_amount, plan.quote_amount, plan.stop_loss_price, plan.take_profit_price,
         )
 
         if config.paper_trading:
