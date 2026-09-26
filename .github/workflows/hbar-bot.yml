@@ -8,16 +8,17 @@ on:
 jobs:
   trade:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - run: pip install requests pyyaml
-      - name: Ejecutar bot
+      - run: pip install ccxt pandas
+      - name: Ejecutar bot (ciclo unico)
         env:
-          OKX_API_KEY: ${{ secrets.OKX_API_KEY_V2 }}
-          OKX_API_SECRET: ${{ secrets.OKX_API_SECRET_V2 }}
-          OKX_API_PASSPHRASE: ${{ secrets.OKX_API_PASSWORD_V2 }}
+          OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
+          OKX_SECRET_KEY: ${{ secrets.OKX_SECRET_KEY }}
+          OKX_PASSWORD: ${{ secrets.OKX_PASSWORD }}
+          SINGLE_CYCLE: '1'
         run: python bot_hbar.py
