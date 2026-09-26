@@ -1,0 +1,31 @@
+exchange:
+  url_api: "https://www.okx.com"
+
+mercado:
+  tipo: "FUTURES"            # SPOT | SWAP | FUTURES
+  uly: "HBAR-USD"            # subyacente (sin USDT)
+  inst_id: "HBAR-USD-SWAP"   # usado si tipo=SWAP o SPOT
+  contrato_mas_lejano: true  # FUTURES: elige el vencimiento más largo
+
+backtest:
+  timeframes: ["30m", "1H", "4H"]
+  velas: 1000
+  capital_por_operacion: 50
+  comision: 0.0005           # taker futuros OKX ~0.05%
+
+estrategia:
+  emas: [3, 4, 10, 21, 27]
+  permitir_corto: true       # en futuros también bajistas
+
+optimizacion:
+  activar: true
+  sl_pct: [1, 2, 3]          # rejilla de stop-loss (%)
+  tp_pct: [2, 4, 6]          # rejilla de take-profit (%)
+
+salida:
+  exportar_csv: true
+  carpeta: "resultados"
+
+riesgo:
+  stop_loss_pct: 2
+  take_profit_pct: 4
