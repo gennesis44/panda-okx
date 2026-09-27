@@ -1,25 +1,35 @@
 """
 ════════════════════════════════════════════════════════════════════
-  DECRETO DE DESPLIEGUE — BUQUE: AVAX, "El Octavo"   [v2 revisado]
+  DECRETO DE DESPLIEGUE — BUQUE: AVAX, "El Octavo"   [v3 ley validada]
 ════════════════════════════════════════════════════════════════════
   Instrumento : XPERP AVAX/USD, futuro de vencimiento más lejano
                 (fallback SWAP AVAX-USD si no hay futuro disponible)
   Host        : https://my.okx.com (MiCA/EEE — USDT PROHIBIDO)
-  Ley (provisional hasta validación de backtest-avax.py en Actions):
-      Timeframe : 4H | EMA 8/21 | SL 4.0% / TP 5.5% | Cooldown 60 min
-      Collar    : ~6-9 USD nocional · guardia dura 15 USD
-  v2 FIXES (revision Carbono-Silicio, previos al despliegue):
+  LEY VALIDADA (backtest-avax.py, run 27-sep — única que pasa los 4
+  criterios de robustez de la rejilla completa):
+      Timeframe : 1H
+      EMA       : rápida 8 / lenta 34
+      SL / TP   : 4.0% / 5.5%
+      Backtest  : 27 trades · WR 37.0% (BE 27.3%) · PF 1.57 ·
+                  expectativa +0.476%/trade · maxDD -10.33% · +12.86%
+      Descartada la provisional 4H/8/21: WR 27.6%, PF 0.74, -15.3%
+      (todo el marco 4H resultó tóxico para AVAX en backtest)
+  Contrato    : ctVal = 10 AVAX (confirmado por API) · guardia $15
+  Axiomas de la flota:
+      - Solo velas CERRADAS (confirm==1)
+      - Señal por cruce EMA, ventana -2/-3/-4 (cubre cadencia del cron)
+      - Sin RSI. SIN candado anti-rango (extirpado por A/B en HBAR,
+        confirmado en XRP: el filtro expulsa ganadoras. El aire ES el edge)
+      - Posición abierta = no operar. SL/TP viven en el exchange
+      - Fail-closed: lectura crítica dudosa = BLOQUEO
+  v2/v3 FIXES (revisión Carbono-Silicio, previos al despliegue):
       FIX-1: unidades honestas — nocional = ctVal x PRECIO (ctValCcy
-             es la moneda base en futures coin-margined, NO USD)
-      FIX-2: position_open via /account/positions?instId= (instId crudo,
-             sin mapeo ccxt) — elimina riesgo de re-entrada multiple
+             es la moneda base, NO USD)
+      FIX-2: position_open via /account/positions?instId= (sin mapeo
+             ccxt) — elimina riesgo de re-entrada múltiple
       FIX-3: SL/TP redondeados al tickSz real del contrato
-      FIX-4: idempotencia por vela restaurada (clOrdId=AVAX+candle_ts,
-             candle_already_traded con fail-closed)
+      FIX-4: idempotencia por vela restaurada (clOrdId=AVAX+candle_ts)
       FIX-5: precio de entrada desde ticker (no close de vela vieja)
-  Axiomas: velas CERRADAS · ventana -2/-3/-4 · sin RSI · SIN candado
-  anti-rango (extirpado por A/B HBAR+XRP: el aire ES el edge) ·
-  posicion abierta = no operar · fail-closed en toda lectura critica.
 ════════════════════════════════════════════════════════════════════
 """
 
@@ -30,10 +40,10 @@ import math
 import logging
 import ccxt
 
-# ══════════════════ LEY PARAMETRIZADA (provisional) ══════════════════
-TIMEFRAME = "4H"
+# ══════════════════ LEY PARAMETRIZADA (VALIDADA) ══════════════════
+TIMEFRAME = "1H"
 EMA_FAST = 8
-EMA_SLOW = 21
+EMA_SLOW = 34
 SL_PCT = {"long": 0.040, "short": 0.040}
 TP_PCT = {"long": 0.055, "short": 0.055}
 COOLDOWN_MINUTES = 60
@@ -404,7 +414,8 @@ def run_cycle():
 
 
 def main():
-    log.info(f"=== AVAX 'El Octavo' v2 — inicio (TEST_MODE={TEST_MODE}, SINGLE_CYCLE={SINGLE_CYCLE}) ===")
+    log.info(f"=== AVAX 'El Octavo' v3 (1H EMA8/34 SL4/TP5.5) — inicio "
+             f"(TEST_MODE={TEST_MODE}, SINGLE_CYCLE={SINGLE_CYCLE}) ===")
     try:
         run_cycle()
     except Exception as e:
