@@ -1,39 +1,40 @@
+# .github/workflows/doge-backtest.yml — DOGE Backtest · validador de la ley v2
 name: DOGE Backtest
 
 on:
   workflow_dispatch:
-
-permissions:
-  contents: write
-
-concurrency:
-  group: doge-backtest
-  cancel-in-progress: false
+  push:
+    paths:
+      - 'backtest-doge.py'
+      - '.github/workflows/doge-backtest.yml'
 
 jobs:
   backtest:
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 30
+    env:
+      OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
+      OKX_SECRET_KEY: ${{ secrets.OKX_SECRET_KEY }}
+      OKX_PASSWORD: ${{ secrets.OKX_PASSWORD }}
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
-      - uses: actions/setup-python@v5
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Python 3.11
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-          cache: pip
-      - run: pip install -r requirements.txt
-      - name: Backtest DOGE EMA3/21 2m (solo lectura publica)
-        run: python doge-hy.py
-      - name: Persistir resultados
-        run: |
-          git config user.name  "gscsi-bot"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git pull --rebase --autostash origin main
-          git add data/doge-backtest.jsonl
-          if git diff --cached --quiet; then
-            echo "sin cambios"
-          else
-            git commit -m "DOGE backtest $(date -u +'%Y-%m-%dT%H:%MZ')"
-            git push
-          fi
+
+      - name: Instalar dependencias
+        run: pip install ccxt pandas numpy
+
+      - name: Ejecutar validador DOGE
+        run: python backtest-doge.py
+
+      - name: Subir resultados (CSV)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: doge-backtest-resultados
+          path: backtest_results_doge.csv
+          if-no-files-found: ignore
