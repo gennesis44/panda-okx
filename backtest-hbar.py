@@ -1,20 +1,13 @@
-# backtest-hbar.py — Ax-HBAR · DESTRUCTOR v2 · COMPARADOR DE STACKS (rev.2)
-#   MISION: decidir con datos si se quita una EMA al stack de HBAR.
-#   La queja del Carbono: el stack 3/4/10/21/27 frena la entrada (candado excesivo).
-#   STACKS comparados:
-#     A (linea base) : 3/4/10/21/27 · 30m  — confirmar cuantas senales da hoy
-#     B (candidato)  : 3/10/21/27  · 30m  — sin EMA4 (redundante con EMA3)
-#     C (liviano)    : 3/10/21     · 30m  — cuanto rango se cuela con menos candado
-#     D (hermano SUI): 3/15        · 1H   — el estandar ya validado por la flota
-#   METRICA CLAVE: senales por semana (frecuencia) + WR/PF/DD/retorno de siempre.
-#   SENAL DE STACK: alineacion perfecta de todas las EMAs del set
-#     LONG  = e1>e2>...>en recien alineado (transicion)
-#     SHORT = e1<e2<...<en recien alineado (transicion)
-#   Motor sin lookahead: senal al cierre -> entrada en apertura siguiente;
-#     SL/TP intravela (peor caso si ambos); cruce contrario cierra en close.
-#   Instrumento: cadena de fallback USDT-VETADO (SWAP USDC > SWAP USD > XPERP > SPOT).
-#   KEYS: variables de entorno — mismo fragmento que los bots. Endpoints publicos.
-#   Salida: backtest_results_hbar.csv
+# backtest-hbar.py — Ax-HBAR · DESTRUCTOR v2 · COMPARADOR DE STACKS (rev.3)
+#   REV.3: CORRECCION DE BUG — win_rate de rev.2 sumaba montos, no contaba
+#     ganadores (WR invalido). Ahora: WR = ganadores/trades (conteo real).
+#   NUEVO: trades ejecutados/semana (frecuencia honesta), desglose de
+#     cierres TP/SL/CRUCE, PnL medio por trade.
+#   STACKS: A 3/4/10/21/27 ·30m (base) | B 3/10/21/27 ·30m | C 3/10/21 ·30m
+#           | D 3/15 ·1H (hermano SUI)
+#   HALLAZGO rev.2 (valido): A dio 73 trades en 44 dias (~1.6/dia) ->
+#     el stack NO es el freno del bot live. Investigar main-hbar.py/log.
+#   Motor sin lookahead. USDT vetado. Endpoints publicos. Keys: entorno.
 import os
 import sys
 import time
@@ -43,20 +36,18 @@ GUARDIA_USD = 15.0
 MIN_TRADES_BEST = 5
 
 STACKS_30M = [
-    ('A', [3, 4, 10, 21, 27]),   # linea base actual (Destructor v2)
-    ('B', [3, 10, 21, 27]),      # candidato: sin EMA4
-    ('C', [3, 10, 21]),          # liviano: menos candado
+    ('A', [3, 4, 10, 21, 27]),
+    ('B', [3, 10, 21, 27]),
+    ('C', [3, 10, 21]),
 ]
 STACKS_1H = [
-    ('D', [3, 15]),              # hermano SUI (referencia)
+    ('D', [3, 15]),
 ]
 SL_GRID = [0.010, 0.015, 0.020, 0.030]
 TP_GRID = [0.015, 0.020, 0.030, 0.045, 0.055]
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 RESULTS_CSV = os.path.join(BASE_DIR, 'backtest_results_hbar.csv')
-
-TF_MS = {'30m': 1800000, '1H': 3600000}
 
 # ==================== CLIENTE (MISMO FRAGMENTO DE KEYS) ====================
 exchange = ccxt.okx({
@@ -84,7 +75,7 @@ def _is_forbidden(m):
 def dump_catalog():
     exchange.load_markets()
     n = 0
-    log.info("---- CATALOGO %s en OKX (diagnostico) ----", BASE_ASSET)
+    log.info("---- CATALOGO %s en OKX (diagnostico rev.3) ----", BASE_ASSET)
     for m in exchange.markets.values():
         info = m.get('info') or {}
         iid = str(info.get('instId') or m.get('id') or '').upper()
@@ -260,15 +251,17 @@ def add_stack_signals(df, emas):
 def count_signals(df):
     return int((df['signal'] != 0).sum())
 
-# ==================== MOTOR DE BACKTEST ====================
+# ==================== MOTOR DE BACKTEST (rev.3: WR corregido) ====================
 def run_backtest(df, sl_pct, tp_pct, fee, pos_pct=1.0):
     fee = float(fee)
     equity = 1.0
     peak = 1.0
     max_dd = 0.0
     n_trades = 0
-    wins = 0.0
-    losses = 0.0
+    n_wins = 0                      # REV.3: conteo real de ganadores
+    sum_wins = 0.0
+    sum_losses = 0.0
+    reasons = {'TP': 0, 'SL': 0, 'CRUCE': 0}
     pos = None
     pending = 0
 
@@ -290,20 +283,21 @@ def run_backtest(df, sl_pct, tp_pct, fee, pos_pct=1.0):
 
         if pos is not None:
             exit_px = None
+            reason = ''
             if pos['side'] == 1:
                 if l[i] <= pos['sl']:
-                    exit_px = pos['sl']
+                    exit_px, reason = pos['sl'], 'SL'
                 elif h[i] >= pos['tp']:
-                    exit_px = pos['tp']
+                    exit_px, reason = pos['tp'], 'TP'
                 elif sig[i] == -1:
-                    exit_px = c[i]
+                    exit_px, reason = c[i], 'CRUCE'
             else:
                 if h[i] >= pos['sl']:
-                    exit_px = pos['sl']
+                    exit_px, reason = pos['sl'], 'SL'
                 elif l[i] <= pos['tp']:
-                    exit_px = pos['tp']
+                    exit_px, reason = pos['tp'], 'TP'
                 elif sig[i] == 1:
-                    exit_px = c[i]
+                    exit_px, reason = c[i], 'CRUCE'
 
             if exit_px is not None:
                 gross = pos['side'] * (exit_px / pos['entry'] - 1.0)
@@ -312,10 +306,12 @@ def run_backtest(df, sl_pct, tp_pct, fee, pos_pct=1.0):
                 peak = max(peak, equity)
                 max_dd = max(max_dd, 1 - equity / peak)
                 n_trades += 1
+                reasons[reason] = reasons.get(reason, 0) + 1
                 if net > 0:
-                    wins += net
+                    n_wins += 1
+                    sum_wins += net
                 else:
-                    losses += abs(net)
+                    sum_losses += abs(net)
                 if sig[i] != 0 and ((pos['side'] == 1 and sig[i] == -1)
                                     or (pos['side'] == -1 and sig[i] == 1)):
                     pending = sig[i]
@@ -324,17 +320,21 @@ def run_backtest(df, sl_pct, tp_pct, fee, pos_pct=1.0):
         if pos is None and pending == 0 and sig[i] != 0:
             pending = sig[i]
 
-    pnls_wr = (wins / n_trades) if n_trades else 0.0
-    pf = (wins / losses) if losses > 0 else (np.inf if wins > 0 else 0.0)
-    return {'total_return': equity - 1.0, 'n_trades': n_trades,
-            'win_rate': pnls_wr, 'profit_factor': pf, 'max_drawdown': max_dd}
+    pf = (sum_wins / sum_losses) if sum_losses > 0 else (np.inf if sum_wins > 0 else 0.0)
+    return {'total_return': equity - 1.0,
+            'n_trades': n_trades,
+            'n_wins': n_wins,
+            'win_rate': (n_wins / n_trades) if n_trades else 0.0,   # REV.3: conteo
+            'profit_factor': pf,
+            'avg_net': ((sum_wins - sum_losses) / n_trades) if n_trades else 0.0,
+            'max_drawdown': max_dd,
+            'r_tp': reasons['TP'], 'r_sl': reasons['SL'], 'r_cruce': reasons['CRUCE']}
 
 # ==================== MAIN ====================
 def main():
-    log.info("HBAR DESTRUCTOR — COMPARADOR DE STACKS rev.2 | host=%s | USDT prohibido", HOST)
+    log.info("HBAR DESTRUCTOR — COMPARADOR DE STACKS rev.3 (WR corregido) | host=%s | USDT prohibido", HOST)
     dump_catalog()
 
-    # 1) instrumento BACKTEST -----------------------------------
     symbol = pick_swap_backtest()
     origen = 'SWAP perpetuo USD/USDC'
     if not symbol:
@@ -349,7 +349,6 @@ def main():
     log.info("Instrumento BACKTEST: %s [%s]", symbol, origen)
     print_contract_report(contract_meta(symbol), 'BACKTEST')
 
-    # 2) historicos ----------------------------------------------
     hist = {}
     for bar in ('30m', '1H'):
         log.info("Descargando historico %s %s ...", symbol, bar)
@@ -365,9 +364,8 @@ def main():
         log.info("%s: %d velas cerradas (%s -> %s) = %.1f dias", bar, len(df), d0, d1, days)
         hist[bar] = {'df': df, 'days': max(days, 1.0)}
 
-    # 3) comparador de stacks ------------------------------------
-    log.info("================ COMPARADOR DE STACKS ================")
-    log.info("Senales/semana = frecuencia de entrada del candado (la metrica de la queja)")
+    log.info("================ COMPARADOR DE STACKS (rev.3) ================")
+    log.info("signals = crudos (incluye en posicion) | trades/sem = ejecutados (frecuencia real)")
     results = []
     for bar, stacks in (('30m', STACKS_30M), ('1H', STACKS_1H)):
         h = hist.get(bar)
@@ -377,16 +375,15 @@ def main():
         for nombre, emas in stacks:
             dfs = add_stack_signals(df, emas)
             n_sig = count_signals(dfs)
-            sig_sem = n_sig * 7.0 / days
-            log.info("Stack %s %s · %s | senales: %d (%.1f/semana)",
-                     nombre, emas, bar, n_sig, sig_sem)
+            log.info("Stack %s %s · %s | senales crudas: %d (%.1f/semana)",
+                     nombre, emas, bar, n_sig, n_sig * 7.0 / days)
             for sl in SL_GRID:
                 for tp in TP_GRID:
                     m = run_backtest(dfs, sl, tp, FEE_TAKER)
                     m.update({'stack': nombre, 'emas': '/'.join(str(x) for x in emas),
                               'timeframe': bar, 'sl_pct': sl, 'tp_pct': tp,
-                              'signals': n_sig, 'signals_per_week': round(sig_sem, 2),
-                              'days': round(days, 1)})
+                              'signals': n_sig, 'days': round(days, 1),
+                              'trades_per_week': round(m['n_trades'] * 7.0 / days, 2)})
                     results.append(m)
 
     if not results:
@@ -397,7 +394,6 @@ def main():
     res.to_csv(RESULTS_CSV, index=False)
     log.info("Resultados completos -> %s", RESULTS_CSV)
 
-    # 4) sintesis por stack (mejor config con >= MIN_TRADES_BEST) --
     log.info("================ SINTESIS (mejor config por stack) ================")
     for (nombre, emas), bar in [(s, '30m') for s in STACKS_30M] + [(s, '1H') for s in STACKS_1H]:
         sub = res[(res['stack'] == nombre) & (res['timeframe'] == bar)]
@@ -406,16 +402,17 @@ def main():
         viable = sub[sub['n_trades'] >= MIN_TRADES_BEST]
         elegir = viable if len(viable) else sub
         best = elegir.sort_values('total_return', ascending=False).iloc[0]
-        aviso = '' if len(viable) else ('  << OJO: <' + str(MIN_TRADES_BEST) + ' trades (muestra debil)')
-        log.info("Stack %s [%s] %s | SL %.1f%% TP %.1f%% | ret %+.2f%% | trades %d | "
-                 "sen/sem %.1f | WR %.1f%% | PF %.2f | DD %.1f%%%s",
+        aviso = '' if len(viable) else ('  << OJO: <' + str(MIN_TRADES_BEST) + ' trades')
+        log.info("Stack %s [%s] %s | SL %.1f%% TP %.1f%% | ret %+.2f%% | trades %d (%.1f/sem) | "
+                 "WR %.1f%% | PF %.2f | DD %.1f%% | TP/SL/CRUCE %d/%d/%d | avg %+.3f%%/trade%s",
                  nombre, best['emas'], bar, best['sl_pct'] * 100, best['tp_pct'] * 100,
-                 best['total_return'] * 100, int(best['n_trades']),
-                 best['signals_per_week'], best['win_rate'] * 100,
-                 min(best['profit_factor'], 99.99), best['max_drawdown'] * 100, aviso)
+                 best['total_return'] * 100, int(best['n_trades']), best['trades_per_week'],
+                 best['win_rate'] * 100, min(best['profit_factor'], 99.99),
+                 best['max_drawdown'] * 100, int(best['r_tp']), int(best['r_sl']),
+                 int(best['r_cruce']), best['avg_net'] * 100, aviso)
 
-    log.info("El Carbono decide: mantener A, cortar a B, abrir a C o migrar a D.")
-    log.info("Activacion de cambios en main: SOLO con este veredicto ratificado.")
+    log.info("Veredicto pendiente del Carbono. NOTA rev.2: A operaba ~1.6 trades/dia ->")
+    log.info("el freno del bot live NO es el stack: revisar log de bot_hbar.py (flip/senal/capacidad).")
 
 if __name__ == "__main__":
     main()
