@@ -1,20 +1,12 @@
-# backtest-stx.py — Ax2-STX · EL CATAMARAN · BACKTEST pre-activacion
-#   MISION: decidir con datos la estrategia STX ANTES de activar live.
-#   Entregables:
-#     - Marco temporal ganador (1H / 4H / 1D)
-#     - SL/TP optimos por grid-search (incluye proporciones decreto SUI: 4/5.5 y 3/4.5)
-#     - Valor de 1 contrato y minimo por orden (leido de la API, no suposiciones)
-#   Instrumento BACKTEST: SWAP USDC (maxima historia) — USDT PROHIBIDO (MiCA/EEE)
-#   Instrumento VIVO (referencia): XPERP STX/USD vencimiento mas lejano, fallback SWAP USD
-#   KEYS: variables de entorno — MISMO fragmento que main-sui.py
-#     Termux/Linux: export OKX_API_KEY='...' ; export OKX_SECRET_KEY='...' ; export OKX_PASSWORD='...'
-#   NOTA: usa SOLO endpoints publicos (no gasta keys ni fondos).
+# backtest-stx.py — Ax2-STX · EL CATAMARAN · BACKTEST pre-activacion (rev.3)
+#   REV.3: seleccion de instrumento robusta + veto USDT reforzado:
+#     - Veto USDT revisa instId + settleCcy + ctValCcy + quote (cubre X-Perp)
+#     - SWAP: acepta cualquier perpétuo STX USD/USDC NO-USDT (prioridad settle USDC)
+#     - FUTURES: XPERP vencimiento mas lejano (igual que SUI live)
+#     - SPOT: ultimo recurso (proxy de precio)
+#     - CATALOGO completo en el log SIEMPRE (diagnostico a la vista)
+#   USDT PROHIBIDO en todo el arbol (MiCA/EEE). KEYS: variables de entorno.
 #   Salidas: backtest_results_stx.csv | trades_mejor_set_stx.csv
-#   Requisitos: pip install ccxt pandas numpy pyyaml
-#   Reglas del motor (sin lookahead):
-#     - Senal al CIERRE de vela i -> entrada en APERTURA de i+1
-#     - SL/TP intravela (high/low); si ambos tocan en la misma vela -> SL (peor caso)
-#     - Cruce contrario -> cierre en close + giro en la apertura siguiente
 import os
 import sys
 import time
@@ -43,7 +35,6 @@ TRADES_CSV = os.path.join(BASE_DIR, 'trades_mejor_set_stx.csv')
 
 HOST = 'https://my.okx.com'
 BASE_ASSET = 'STX'
-QUOTE_PROHIBIDO = 'USDT'
 
 TF_MS = {'1m': 60000, '3m': 180000, '5m': 300000, '15m': 900000,
          '30m': 1800000, '1H': 3600000, '2H': 7200000, '4H': 14400000,
@@ -61,78 +52,138 @@ exchange = ccxt.okx({
     'urls':      {'api': {'rest': HOST}},
 })
 
-# ==================== INSTRUMENTO (NUNCA USDT) ====================
-def _is_forbidden(symbol):
-    settle = str(exchange.market(symbol).get('settle') or '').upper()
-    return settle == QUOTE_PROHIBIDO
+# ==================== CAMPOS / VETO USDT (reforzado) ====================
+def _fields(m):
+    info = m.get('info') or {}
+    iid = str(info.get('instId') or m.get('id') or '').upper()
+    settle = str(info.get('settleCcy') or m.get('settle') or '').upper()
+    ctccy = str(info.get('ctValCcy') or '').upper()
+    quote = str(m.get('quote') or '').upper()
+    return iid, settle, ctccy, quote
 
-def pick_swap_usdc():
+def _is_forbidden(m):
+    iid, settle, ctccy, quote = _fields(m)
+    return 'USDT' in iid or 'USDT' in settle or 'USDT' in ctccy or 'USDT' in quote
+
+# ==================== CATALOGO (diagnostico SIEMPRE) ====================
+def dump_stx_catalog():
     exchange.load_markets()
-    fallback_usd = None
+    n = 0
+    log.info("---- CATALOGO STX en OKX (diagnostico rev.3) ----")
     for m in exchange.markets.values():
-        if m.get('base') != BASE_ASSET or not m.get('active'):
+        info = m.get('info') or {}
+        iid = str(info.get('instId') or m.get('id') or '').upper()
+        if not iid.startswith(BASE_ASSET + '-'):
             continue
-        if not (m.get('swap') or str((m.get('info') or {}).get('instType') or '').upper() == 'SWAP'):
+        log.info("  instId=%s | tipo=%s | estado=%s | settle=%s | ctVal=%s %s | "
+                 "ccxt=%s | quote=%s | activo=%s",
+                 iid, info.get('instType'), info.get('state'),
+                 info.get('settleCcy'), info.get('ctVal'), info.get('ctValCcy'),
+                 m.get('symbol'), m.get('quote'), m.get('active'))
+        n += 1
+    log.info("---- %d instrumentos STX listados ----", n)
+
+# ==================== SELECTORES (cadena de fallback) ====================
+def pick_swap_backtest():
+    """Cualquier SWAP STX no-USDT. Prioridad: settle USDC > USD > otro (coin-margined)."""
+    exchange.load_markets()
+    best = None                       # (rank, symbol)
+    rank_map = {'USDC': 0, 'USD': 1}
+    for m in exchange.markets.values():
+        if m.get('base') != BASE_ASSET:
             continue
-        if _is_forbidden(m['symbol']):
+        info = m.get('info') or {}
+        if str(info.get('instType') or '').upper() != 'SWAP':
             continue
-        settle = str(m.get('settle') or '').upper()
-        if settle == 'USDC':
-            return m['symbol']
-        if settle == 'USD' and fallback_usd is None:
-            fallback_usd = m['symbol']
-    return fallback_usd
+        if _is_forbidden(m):
+            continue
+        if not m.get('active', True):
+            continue
+        settle = str(info.get('settleCcy') or m.get('settle') or '').upper()
+        rank = rank_map.get(settle, 2)
+        if best is None or rank < best[0]:
+            best = (rank, m['symbol'])
+    return best[1] if best else None
 
 def pick_future():
     exchange.load_markets()
-    candidatos = []
+    best = None                       # (expTime, symbol)
     for m in exchange.markets.values():
-        if (m.get('base') == BASE_ASSET and m.get('future') and m.get('active')
-                and not _is_forbidden(m['symbol'])):
-            info = m.get('info') or {}
-            try:
-                exp = int(info.get('expTime') or 0)
-            except (TypeError, ValueError):
-                exp = 0
-            candidatos.append((exp, m['symbol']))
-    if not candidatos:
+        if m.get('base') != BASE_ASSET:
+            continue
+        info = m.get('info') or {}
+        if str(info.get('instType') or '').upper() != 'FUTURES':
+            continue
+        if _is_forbidden(m):
+            continue
+        if not m.get('active', True):
+            continue
+        try:
+            exp = int(info.get('expTime') or 0)
+        except (TypeError, ValueError):
+            exp = 0
+        if exp <= 0:
+            continue
+        if best is None or exp > best[0]:
+            best = (exp, m['symbol'])
+    return best[1] if best else None
+
+def pick_spot_fallback():
+    exchange.load_markets()
+    preferidos = []
+    for m in exchange.markets.values():
+        if m.get('base') != BASE_ASSET or not m.get('spot'):
+            continue
+        if _is_forbidden(m) or not m.get('active', True):
+            continue
+        quote = str(m.get('quote') or '').upper()
+        if quote == 'USDC':
+            preferidos.append((0, m['symbol']))
+        elif quote == 'USD':
+            preferidos.append((1, m['symbol']))
+    if not preferidos:
         return None
-    candidatos.sort(reverse=True)
-    return candidatos[0][1]
+    preferidos.sort()
+    return preferidos[0][1]
 
 # ==================== VALOR DE 1 CONTRATO ====================
 def contract_meta(symbol):
     market = exchange.market(symbol)
     info = market.get('info') or {}
-    ctval = _f(market.get('contractSize') or info.get('ctVal') or 1)
-    ccy = str(info.get('ctValCcy') or BASE_ASSET).upper()
-    settle = str(info.get('settleCcy') or market.get('settle') or '?').upper()
+    inst_type = str(info.get('instType') or ('SPOT' if market.get('spot') else '?')).upper()
+    if inst_type == 'SPOT':
+        ctval, ccy = 1.0, str(market.get('base') or BASE_ASSET).upper()
+    else:
+        ctval = _f(market.get('contractSize') or info.get('ctVal') or 1)
+        ccy = str(info.get('ctValCcy') or BASE_ASSET).upper()
+    settle = str(info.get('settleCcy') or market.get('settle') or '-').upper()
     min_sz = _f(info.get('minSz') or 1)
     lot_sz = _f(info.get('lotSz') or 1)
     tick = str(info.get('tickSz') or '?')
-    lev = str(info.get('maxLever') or '?')
+    lev = str(info.get('maxLever') or 'spot')
     exp = int(_f(info.get('expTime')))
     price = _f((exchange.fetch_ticker(symbol) or {}).get('last') or 0)
     usd_1ct = ctval if ccy in ('USD', 'USDC', 'USDT') else ctval * price
-    return {'symbol': symbol, 'ctval': ctval, 'ccy': ccy, 'settle': settle,
+    return {'symbol': symbol, 'inst_id': str(info.get('instId') or market.get('id') or ''),
+            'inst_type': inst_type, 'ctval': ctval, 'ccy': ccy, 'settle': settle,
             'min_sz': min_sz, 'lot_sz': lot_sz, 'tick': tick, 'lev': lev,
             'exp': exp, 'price': price, 'usd_1ct': usd_1ct}
 
 def print_contract_report(meta, etiqueta, max_notional):
     log.info("---- CONTRATO [%s] ----", etiqueta)
-    log.info("Simbolo: %s | settle=%s", meta['symbol'], meta['settle'])
+    log.info("instId=%s | ccxt=%s | tipo=%s | settle=%s",
+             meta['inst_id'], meta['symbol'], meta['inst_type'], meta['settle'])
     if meta['exp'] > 0:
         vto = datetime.fromtimestamp(meta['exp'] / 1000, tz=timezone.utc).strftime('%Y-%m-%d')
-        log.info("Vencimiento: %s (XPERP = vencimiento mas lejano)", vto)
+        log.info("Vencimiento: %s (XPERP mas lejano)", vto)
     log.info("1 contrato = %s %s | precio ~%s | nocional 1 ct ~$%.4f",
              meta['ctval'], meta['ccy'], meta['price'], meta['usd_1ct'])
-    log.info("Minimo por orden: %s contrato(s) ~$%.4f | lot %s | tick %s | lev max %sx",
+    log.info("Minimo por orden: %s contrato(s) ~$%.4f | lot %s | tick %s | lev max %s",
              meta['min_sz'], meta['min_sz'] * meta['usd_1ct'],
              meta['lot_sz'], meta['tick'], meta['lev'])
     if meta['usd_1ct'] > 0:
-        n_max = int(max_notional // meta['usd_1ct'])
         log.info("Con guardia $%.2f (misma que SUI): max %d contrato(s) por orden",
-                 max_notional, n_max)
+                 max_notional, int(max_notional // meta['usd_1ct']))
 
 # ==================== HISTORICO (velas cerradas SIEMPRE) ====================
 def _candles_raw(inst_id, bar, limit=300, after=None, history=False):
@@ -144,13 +195,12 @@ def _candles_raw(inst_id, bar, limit=300, after=None, history=False):
     return resp.get('data') or []
 
 def fetch_history(symbol, bar, start_date):
-    tf_ms = TF_MS[bar]
     start_ms = int(datetime.strptime(start_date, '%Y-%m-%d')
                    .replace(tzinfo=timezone.utc).timestamp() * 1000)
     inst_id = exchange.market(symbol)['id']
     rows = _candles_raw(inst_id, bar, 300)
     if not rows:
-        log.warning("Sin velas iniciales %s %s", symbol, bar)
+        log.warning("Sin velas iniciales %s %s", inst_id, bar)
         return pd.DataFrame()
     all_rows = list(rows)
     oldest = int(rows[-1][0])
@@ -186,6 +236,7 @@ def add_signals(df, fast, slow):
     up = (diff > 0) & (diff.shift(1) <= 0)
     dn = (diff < 0) & (diff.shift(1) >= 0)
     df['signal'] = np.select([up, dn], [1, -1], default=0)
+    df.loc[df.index[:slow], 'signal'] = 0         # warmup: EMAs aun no estables
     return df
 
 # ==================== MOTOR DE BACKTEST ====================
@@ -297,7 +348,7 @@ def grid_search(cfg, symbol):
         log.info("Descargando historico %s %s ...", symbol, bar)
         df = fetch_history(symbol, bar, bt['start_date'])
         if len(df) < 250:
-            log.warning("Historico insuficiente %s (%d velas) — se omite", bar, len(df))
+            log.warning("Historico insuficiente %s (%d velas cerradas) — se omite", bar, len(df))
             continue
         cache[bar] = df
         d0 = datetime.fromtimestamp(df['ts'].iloc[0] / 1000, tz=timezone.utc).strftime('%Y-%m-%d')
@@ -323,8 +374,9 @@ def report_top(res, cfg):
     top_n = int(_f(cfg.get('report', {}).get('top_n', 15)))
     res = res.sort_values('total_return', ascending=False).reset_index(drop=True)
     validos = res[res['valido']]
-    top = validos if len(validos) >= 5 else res
-    top = top.head(top_n)
+    if len(validos) == 0:
+        log.warning("Ningun set alcanzo min_trades — se muestra ranking sin filtro.")
+    top = (validos if len(validos) >= 5 else res).head(top_n)
     log.info("================ TOP %d (por retorno total) ================", len(top))
     for _, r in top.iterrows():
         log.info("TF %s | EMA %d/%d | SL %.1f%% TP %.1f%% | ret %+.2f%% | trades %d | "
@@ -337,7 +389,7 @@ def report_top(res, cfg):
 
 # ==================== MAIN ====================
 def main():
-    log.info("STX CATAMARAN — BACKTEST pre-activacion | host=%s | USDT prohibido", HOST)
+    log.info("STX CATAMARAN — BACKTEST rev.3 | host=%s | USDT prohibido", HOST)
     if not os.path.exists(CONFIG_PATH):
         log.error("Falta config.stx.yml junto al script.")
         sys.exit(1)
@@ -349,24 +401,34 @@ def main():
             log.error("Falta '%s' en config.stx.yml", k)
             sys.exit(1)
 
-    exchange.load_markets()
     max_notional = _f(cfg.get('report', {}).get('max_notional', 15.0)) or 15.0
 
-    # 1) instrumentos + valor de 1 contrato --------------------
+    # 0) catalogo real a la vista --------------------------------
+    dump_stx_catalog()
+
+    # 1) instrumento BACKTEST con cadena de fallback -------------
     bt_symbol = str(cfg.get('instrument', {}).get('backtest_symbol') or '').strip()
+    origen = 'config'
     if not bt_symbol:
-        bt_symbol = pick_swap_usdc()
+        bt_symbol = pick_swap_backtest()
+        origen = 'SWAP perpetuo USD/USDC (sin vencimiento)'
     if not bt_symbol:
-        log.error("No hay SWAP %s en USD/USDC activo. USDT prohibido. Abortando.", BASE_ASSET)
+        bt_symbol = pick_future()
+        origen = 'XPERP vencimiento mas lejano (historico desde su listado)'
+    if not bt_symbol:
+        bt_symbol = pick_spot_fallback()
+        origen = 'SPOT USD/USDC (proxy de precio — no hay derivados limpios)'
+    if not bt_symbol:
+        log.error("No hay STX en USD/USDC (swap/futuro/spot) activo. USDT prohibido. Abortando.")
         sys.exit(1)
-    log.info("Instrumento BACKTEST: %s", bt_symbol)
+    log.info("Instrumento BACKTEST: %s [%s]", bt_symbol, origen)
     print_contract_report(contract_meta(bt_symbol), 'BACKTEST', max_notional)
 
     live = pick_future()
     if live:
         print_contract_report(contract_meta(live), 'VIVO (vencimiento mas lejano)', max_notional)
     else:
-        log.warning("Sin futuro con vencimiento activo para %s (el swap cubre el rol).", BASE_ASSET)
+        log.warning("Sin futuro con vencimiento activo para %s.", BASE_ASSET)
 
     # 2) grid search -------------------------------------------
     res, cache = grid_search(cfg, bt_symbol)
