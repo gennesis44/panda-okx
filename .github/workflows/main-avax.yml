@@ -1,4 +1,3 @@
-# .github/workflows/main-avax.yml
 name: AVAX Bot OKX
 
 on:
@@ -28,4 +27,6 @@ jobs:
           OKX_SECRET_KEY: ${{ secrets.OKX_SECRET_KEY }}
           OKX_PASSWORD: ${{ secrets.OKX_PASSWORD }}
           SINGLE_CYCLE: '1'
+          # TEST_MODE: '1'   # ← descomenta esta línea para el run de humo
+                              # (simula la orden, no la envía)
         run: python main-avax.py
