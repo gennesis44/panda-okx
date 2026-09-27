@@ -1,22 +1,19 @@
-# main-doge.py — Ax2-DOGE · EL PERRO · ley v2 + CANDADO v2 FAIL-CLOSED
-#   LEY: cruce EMA3/21 en velas 2m CERRADAS (ventana -2/-3)
-#   LONG  (cruce alcista): SL 2.0% / TP 4.0%   (R:R 2.0 · breakeven ~33%)
-#   SHORT (cruce bajista): SL 3.0% / TP 4.0%   (R:R 1.33 · breakeven ~43%)
-#   🔒 CANDADO ANTI-RANGO v2 — FIX FORENSE 22-sep:
-#     BUG detectado en FET en vivo: rango_activo recibia indice NEGATIVO
-#     → e3[-2] lanza KeyError en pandas → el except devolvia
-#       (False, 0.0) = fail-OPEN → "VALIDO 0.000%" → cruce sin candado.
-#     FIX: (1) indices POSITIVOS via .iloc, (2) FAIL-CLOSED:
-#       si no se puede medir la separacion → VETO (no paso).
-#     Evidencia del bug: "VALIDO (separacion 0.000%)" con EMAs a 0.094%.
-#     EL PERRO TENIA EL MISMO BUG LATENTE — este archivo lo cura.
-#   Validacion (backtest 21-sep, geometria v1 — v2 pendiente de live):
-#     5 trades · WR 60% · expect +0.87%/trade NETO fees · PF 2.16
-#   PRIMERA CAZA LIVE (v1): SL −$0.1594 — mecha en dia +7.84%.
-#     Registro: perro neto +0.22 tras el TP v2 de +0.3809 (22-sep 04:03).
-# Ax3: HOST my.okx.com | clOrdId DOGE | cooldown fail-closed | no entrar si NO CABE | 51016
-# Ax3.1: unidades honestas (ctVal=10 DOGE confirmado por API run 12:17 UTC)
-# Ax3.2: guardia de nocional — unidad sorpresa = bot bloqueado
+# main-doge.py — Ax2-DOGE · EL PERRO · ley v3 (ratificada por backtest rev.1)
+#   ENMIENDA v3 (27-sep, validador 57.7 dias · 41.556 velas):
+#     TF: 2m -> 5m   (UNICO cambio; todo lo demas ratificado sin tocar)
+#     Evidencia 5m decreto+0.15: +47.71% · 31 trades · WR 61.3% · PF 2.23 · DD 6.1%
+#       avg +1.319%/trade (el doble que 2m) · longs WR71% +0.306 · shorts WR53% +0.103
+#     vs 2m: +18.21% · WR 51.9% · PF 1.50 · DD 10.9% · avg +0.678%
+#     shorts: en 2m pierden (-0.045 WR40%), en 5m GANAN (+0.103 WR53%)
+#       -> el perro no tenia problema de direccion, tenia problema de marco
+#     Ventana ampliada a -2/-3/-4: cubre 20 min (latencia GitHub Actions)
+#   LEY: cruce EMA3/21 en velas 5m CERRADAS + CANDADO anti-rango v2 fail-closed
+#   LONG  (cruce alcista): SL 2.0% / TP 4.0%   (R:R 2.0 · breakeven ~33% -> WR real 71%)
+#   SHORT (cruce bajista): SL 3.0% / TP 4.0%   (R:R 1.33 · breakeven ~43% -> WR real 53%)
+#   CANDADO 0.15% RATIFICADO: veta 98.6% de cruces-rango · PF 1.50->2.23 · DD 26->6
+#     (robusto al umbral: 0.10/0.15/0.25 ganan los tres en 5m)
+#   SIN FLIP (fiel al validador): posicion abierta espera SL/TP · cooldown 60m Ax3
+#   TAMANO: 10 ct = 100 DOGE (~$9.40) · guardia $15 · Ax3 completo intacto
 # INSTRUMENTO: XPERP DOGE/USD (vencimiento) — USDT PROHIBIDO (MiCA/EEE)
 import os
 import time
@@ -34,14 +31,14 @@ def _f(x):
     except (TypeError, ValueError):
         return 0.0
 
-# ==================== CONFIGURACIÓN (decreto Carbono) ====================
+# ==================== CONFIGURACIÓN (decreto Carbono v3) ====================
 BASE_ASSET = 'DOGE'
 AMOUNT = 10         # 10 ct = 100 DOGE (~$9.40) — collar de $9 ratificado
 SL_LONG = 0.020     # 2.0%
 TP_LONG = 0.040     # 4.0%
 SL_SHORT = 0.030    # 3.0%
 TP_SHORT = 0.040    # 4.0%
-TIMEFRAME = '2m'
+TIMEFRAME = '5m'    # v3: migrado desde 2m (backtest rev.1 ratifica)
 EMA_FAST = 3
 EMA_SLOW = 21
 TD_MODE = 'cross'
@@ -50,9 +47,9 @@ COOLDOWN_MIN = 60
 TEST_MODE = os.getenv('TEST_MODE') == '1'
 SINGLE_CYCLE = os.getenv('SINGLE_CYCLE') == '1'
 MAX_NOTIONAL_USD = _f(os.getenv('OKX_DOGE_MAX_NOTIONAL', '15.0')) or 15.0
-SIGNAL_WINDOW = (-2, -3)
-WARMUP_2M = 40
-# 🔒 CANDADO ANTI-RANGO v2 (fail-closed)
+SIGNAL_WINDOW = (-2, -3, -4)   # v3: 3 velas x 5m = 20 min de gracia
+WARMUP_5M = 40
+# 🔒 CANDADO ANTI-RANGO v2 (fail-closed) — RATIFICADO por backtest
 RANGO_UMBRAL_PCT = 0.15
 
 HOST = 'https://my.okx.com'
@@ -300,7 +297,8 @@ def rango_activo(efast, eslow, idx_pos):
     """True si las EMAs estan pegadas (< umbral %) en idx_pos (indice POSITIVO).
     v2 FIX: usa .iloc (no [] con negativos) y FAIL-CLOSED:
     si no se puede medir → devuelve bloqueado=True (VETO).
-    Un candado que no puede medir no deja pasar — es su trabajo."""
+    Un candado que no puede medir no deja pasar — es su trabajo.
+    RATIFICADO por backtest rev.1: veta 98.6% de cruces-rango."""
     try:
         ef = float(efast.iloc[idx_pos])
         es = float(eslow.iloc[idx_pos])
@@ -311,10 +309,10 @@ def rango_activo(efast, eslow, idx_pos):
     except Exception:
         return True, 0.0    # FAIL-CLOSED: no medible → VETO
 
-# ==================== SEÑAL: CRUCE EMA3/21 2m + CANDADO v2 ====================
+# ==================== SEÑAL: CRUCE EMA3/21 5m + CANDADO v2 ====================
 def evaluate_signal(symbol):
-    """[El Perro — ley v2 + candado v2 fail-closed]
-    SENAL UNICA: cruce EMA3/EMA21 en velas 2m CERRADAS.
+    """[El Perro — ley v3 + candado v2 fail-closed]
+    SENAL UNICA: cruce EMA3/EMA21 en velas 5m CERRADAS (ventana -2/-3/-4).
     LONG  (alcista): SL 2% / TP 4%
     SHORT (bajista): SL 3% / TP 4%
     🔒 CANDADO v2: en la vela de la senal, si |EMA3-EMA21| < 0.15%
@@ -322,29 +320,29 @@ def evaluate_signal(symbol):
     Medicion con .iloc e indice POSITIVO. Si la medicion falla → VETO."""
     try:
         df = fetch_data(symbol, TIMEFRAME, limit=100)
-        if len(df) < WARMUP_2M + 10:
-            log.error("2m insuficiente (" + str(len(df)) + " velas). Sin senal.")
+        if len(df) < WARMUP_5M + 10:
+            log.error("5m insuficiente (" + str(len(df)) + " velas). Sin senal.")
             return None, None, None
 
         now_ms = int(time.time() * 1000)
-        if int(df['timestamp'].iloc[-1]) + 120000 > now_ms:
+        if int(df['timestamp'].iloc[-1]) + 300000 > now_ms:
             df = df.iloc[:-1].reset_index(drop=True)
-            if len(df) < WARMUP_2M + 10:
-                log.error("2m insuficiente tras descartar vela en formacion.")
+            if len(df) < WARMUP_5M + 10:
+                log.error("5m insuficiente tras descartar vela en formacion.")
                 return None, None, None
 
         e3 = ema(df['close'], EMA_FAST)
         e21 = ema(df['close'], EMA_SLOW)
         price = exchange.fetch_ticker(symbol).get('last') or df['close'].iloc[-1]
 
-        log.info("Precio: " + str(price) + " | 2m EMA3/21: " +
+        log.info("Precio: " + str(price) + " | 5m EMA3/21: " +
                  format(e3.iloc[-2], '.5f') + "/" + format(e21.iloc[-2], '.5f') +
                  " | EMA3 " + (">" if e3.iloc[-2] > e21.iloc[-2] else "<") + " EMA21 (estado)")
 
         for i_curr in SIGNAL_WINDOW:
             i_prev = i_curr - 1
             idx = len(df) + i_curr          # indice POSITIVO real
-            if abs(i_prev) > len(df) - 1 or idx < WARMUP_2M:
+            if abs(i_prev) > len(df) - 1 or idx < WARMUP_5M:
                 continue
             candle_ts = int(df['timestamp'].iloc[i_curr])
 
@@ -442,7 +440,7 @@ def run_cycle():
     if candle_already_traded(symbol, candle_ts):
         return
 
-    log.info("Senal " + signal + " (cruce EMA3/21 2m VALIDADO v2). Abriendo " +
+    log.info("Senal " + signal + " (cruce EMA3/21 5m VALIDADO v3). Abriendo " +
              str(AMOUNT) + " contrato...")
     try:
         execute_order(signal, symbol, price, AMOUNT, candle_ts)
@@ -450,7 +448,7 @@ def run_cycle():
         log.error("Entrada rechazada: " + str(e))
 
 def run_once():
-    log.info("Modo ciclo unico | DOGE EMA3/21 2m v3 + CANDADO v2 FAIL-CLOSED (XPERP USD).")
+    log.info("Modo ciclo unico | DOGE EMA3/21 5m v3 + CANDADO v2 FAIL-CLOSED (XPERP USD).")
     verify_setup()
     if TEST_MODE:
         catalog_doge()
@@ -458,7 +456,7 @@ def run_once():
     run_cycle()
 
 def main_loop():
-    log.info("Bot " + BASE_ASSET + " | 2m EMA3/21 v3+lock-v2 | LONG SL2/TP4 · SHORT SL3/TP4 | " +
+    log.info("Bot " + BASE_ASSET + " | 5m EMA3/21 v3+lock-v2 | LONG SL2/TP4 · SHORT SL3/TP4 | " +
              str(AMOUNT) + " ct | lock " + format(RANGO_UMBRAL_PCT, '.2f') + "% fail-closed | " + HOST)
     verify_setup()
     while True:
@@ -470,7 +468,7 @@ def main_loop():
         except Exception as e:
             log.error("Error en el ciclo principal: " + str(e))
             time.sleep(60)
-        time.sleep(120)   # 2 min — cada vela nueva es un chequeo
+        time.sleep(300)   # 5 min — cada vela nueva es un chequeo
 
 if __name__ == "__main__":
     if SINGLE_CYCLE:
