@@ -1,12 +1,16 @@
-# bot_hbar.py — Ax2-HBAR · EL DESTRUCTOR v2 · chasis Catamaran (SUI)
-#   SENAL: stack EMA 3/4/10/21/27 en velas 30m CERRADAS (ventana -2/-3/-4)
-#     LONG  (stack se forma alcista): SL 3.0% / TP 2.0%
-#     SHORT (stack se rompe):         SL 3.0% / TP 2.0%
-#   v2 · Ax4: CIERRE POR SENAL CONTRARIA (flip) — fiel al backtest:
-#     largo + senal SHORT  -> cierra y abre corto
-#     corto + senal LONG   -> cierra y abre largo
-#   Backtest 30m XPERP: 154 trades · WR ~64-69% · SL3/TP2 ganador
-#   TAMANO: 1 contrato = 100 HBAR (~$9.34 nocional) · guardia $15
+# bot_hbar.py — Ax2-HBAR · EL DESTRUCTOR v3 · chasis Catamaran (SUI)
+#   ENMIENDA v3 ratificada por backtest rev.3 (comparador de stacks):
+#     Stack A [3/4/10/21/27] 30m RATIFICADO sin cambios (no cortar EMAs):
+#       73 trades · WR 32.9% · PF 1.22 · ret +14.80% · avg +0.228%/trade
+#       TP/SL/CRUCE 15/22/36 · payoff 2.75 · breakeven 26.7%
+#   SENAL (simetrica, fiel al backtest): FORMACION de stack COMPLETO
+#     en velas 30m CERRADAS (ventana -2/-3/-4), desde cualquier estado previo:
+#     LONG  = 3>4>10>21>27 recien formado
+#     SHORT = 3<4<10<21<27 recien formado   <-- v2 NO veia esta senal (el freno)
+#   SL/TP: 2.0% / 5.5% ambas direcciones (reemplaza SL3/TP2 de v2: payoff 0.67
+#     exigia WR 60% — insostenible con WR real 32.9%)
+#   Ax4: CIERRE POR SENAL CONTRARIA (flip) — igual que backtest rev.3
+#   TAMANO: 1 contrato = 100 HBAR (~$9.35 nocional) · guardia $15 -> max 1 ct
 #   HOST my.okx.com | clOrdId HBAR | cooldown fail-closed | USDT PROHIBIDO
 import os
 import time
@@ -18,7 +22,7 @@ import pandas as pd
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 log = logging.getLogger(__name__)
 
-VERSION = "2"
+VERSION = "3"
 
 def _f(x):
     try:
@@ -26,13 +30,13 @@ def _f(x):
     except (TypeError, ValueError):
         return 0.0
 
-# ==================== CONFIGURACIÓN ====================
+# ==================== CONFIGURACIÓN (enmienda v3) ====================
 BASE_ASSET = 'HBAR'
-AMOUNT = 1          # 1 contrato = 100 HBAR (~$9.34)
-SL_LONG = 0.030     # 3.0%
-TP_LONG = 0.020     # 2.0%
-SL_SHORT = 0.030    # 3.0%
-TP_SHORT = 0.020    # 2.0%
+AMOUNT = 1          # 1 contrato = 100 HBAR (~$9.35)
+SL_LONG = 0.020     # 2.0% (backtest rev.3)
+TP_LONG = 0.055     # 5.5% (backtest rev.3)
+SL_SHORT = 0.020    # 2.0%
+TP_SHORT = 0.055    # 5.5%
 TIMEFRAME = '30m'
 EMAS = [3, 4, 10, 21, 27]
 TD_MODE = 'cross'
@@ -259,7 +263,7 @@ def execute_order(side, symbol, ref_price, amount, candle_ts):
              str(d0.get('ordId')) + " | SL: " + str(sl) + " | TP: " + str(tp))
     return True
 
-# ==================== v2: CIERRE POR SENAL CONTRARIA ====================
+# ==================== v3: CIERRE POR SENAL CONTRARIA ====================
 def close_position(pos, symbol):
     """Cierra la posicion a mercado (reduceOnly). Fail-closed: lanza si OKX rechaza."""
     sz = exchange.amount_to_precision(symbol, abs(_f(pos.get('contracts'))))
@@ -274,7 +278,7 @@ def close_position(pos, symbol):
         'reduceOnly': 'true',
     }
     pos_side = str((pos.get('info') or {}).get('posSide') or 'net')
-    if pos_side in ('long', 'short'):          # modo hedge: etiqueta el lado
+    if pos_side in ('long', 'short'):
         req['posSide'] = pos_side
     resp = _post_trade_order(req)
     data = resp.get('data') or []
@@ -311,7 +315,7 @@ def cooldown_active(symbol):
         log.warning("No se pudo verificar cooldown (" + str(e) + "); BLOQUEO fail-closed.")
         return True
 
-# ==================== SEÑAL: STACK EMA 3/4/10/21/27 (30M CERRADA) ====================
+# ==================== SEÑAL v3: FORMACION DE STACK COMPLETO (30M CERRADA) ====================
 def evaluate_signal(symbol):
     try:
         df = fetch_data(symbol, TIMEFRAME, limit=200)
@@ -329,14 +333,23 @@ def evaluate_signal(symbol):
 
         emas = {p: ema(df['close'], p) for p in EMAS}
 
-        def stack(i):
+        def stack_up(i):
             vals = [emas[p].iloc[i] for p in EMAS]
             return all(vals[j] > vals[j + 1] for j in range(len(vals) - 1))
+
+        def stack_down(i):
+            vals = [emas[p].iloc[i] for p in EMAS]
+            return all(vals[j] < vals[j + 1] for j in range(len(vals) - 1))
 
         price = exchange.fetch_ticker(symbol).get('last') or df['close'].iloc[-1]
 
         vals = [format(emas[p].iloc[-2], '.5f') for p in EMAS]
-        estado = "ALCISTA" if stack(-2) else "mixto/bajista"
+        if stack_up(-2):
+            estado = "ALCISTA completo"
+        elif stack_down(-2):
+            estado = "BAJISTA completo"
+        else:
+            estado = "mixto"
         log.info("Precio: " + str(price) + " | 30m EMAs " + "/".join(vals) +
                  " | stack " + estado)
 
@@ -346,15 +359,17 @@ def evaluate_signal(symbol):
                 continue
             candle_ts = int(df['timestamp'].iloc[i_curr])
 
-            hoy, ayer = stack(i_curr), stack(i_prev)
-            if hoy and not ayer:
-                log.info("Stack ALCISTA formado (EMA3>4>10>21>27). Senal LONG.")
+            up_now, up_prev = stack_up(i_curr), stack_up(i_prev)
+            dn_now, dn_prev = stack_down(i_curr), stack_down(i_prev)
+
+            if up_now and not up_prev:
+                log.info("Stack ALCISTA COMPLETO formado (3>4>10>21>27). Senal LONG.")
                 return 'LONG', price, candle_ts
-            if (not hoy) and ayer:
-                log.info("Stack ALCISTA roto. Senal SHORT.")
+            if dn_now and not dn_prev:
+                log.info("Stack BAJISTA COMPLETO formado (3<4<10<21<27). Senal SHORT.")
                 return 'SHORT', price, candle_ts
 
-        log.info("Sin cambio de stack en la ventana. Vigilando.")
+        log.info("Sin formacion de stack completo en la ventana. Vigilando.")
     except Exception as e:
         log.error("Error en evaluacion: " + str(e))
     return None, None, None
@@ -390,7 +405,7 @@ def verify_setup():
     total = sum(_f(d.get('eqUsd')) for d in details)
     log.info("Autenticacion OK | host=" + HOST + " | Colateral real (USD): ~" + format(total, '.2f'))
 
-# ==================== CICLO (v2: evalua senal SIEMPRE, con o sin posicion) ====================
+# ==================== CICLO (evalua senal SIEMPRE, con o sin posicion) ====================
 def run_cycle():
     symbol = resolve_symbol()
 
@@ -416,7 +431,6 @@ def run_cycle():
         except Exception as e:
             log.error("Cierre por senal FALLO: " + str(e) + " — no abro nada encima. Fail-closed.")
             return
-        # verificacion post-cierre: si quedo residual, no operar este ciclo
         residual = get_open_position(symbol)
         if residual:
             log.warning("Cierre parcial/pendiente (quedan " +
@@ -438,7 +452,7 @@ def run_cycle():
     if candle_already_traded(symbol, candle_ts):
         return
 
-    log.info("Senal " + signal + " (stack EMA 30m). Abriendo " + str(AMOUNT) + " contrato...")
+    log.info("Senal " + signal + " (stack completo 30m). Abriendo " + str(AMOUNT) + " contrato...")
     try:
         execute_order(signal, symbol, price, AMOUNT, candle_ts)
     except Exception as e:
@@ -446,7 +460,8 @@ def run_cycle():
 
 def run_once():
     log.info(">>> DESTRUCTOR v" + str(VERSION) +
-             " | HBAR stack EMA 3/4/10/21/27 30m | SL3/TP2 | flip por senal | XPERP USD.")
+             " | HBAR stack 3/4/10/21/27 30m | senal: formacion COMPLETA (ambas direcciones) | "
+             "SL2/TP5.5 | flip por senal | XPERP USD.")
     verify_setup()
     if TEST_MODE:
         catalog_hbar()
@@ -455,8 +470,9 @@ def run_once():
 
 def main_loop():
     log.info("Bot " + BASE_ASSET + " DESTRUCTOR v" + str(VERSION) +
-             " | 30m stack EMA " + str(EMAS) + " | SL3/TP2 | flip senal contraria | " +
-             str(AMOUNT) + " ct | cooldown " + str(COOLDOWN_MIN) + "m | " + HOST)
+             " | 30m stack EMA " + str(EMAS) + " | senal formacion completa | SL2/TP5.5 | "
+             "flip senal contraria | " + str(AMOUNT) + " ct | cooldown " +
+             str(COOLDOWN_MIN) + "m | " + HOST)
     verify_setup()
     while True:
         try:
