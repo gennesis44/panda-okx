@@ -1,0 +1,36 @@
+# .github/workflows/doge-bot-okx.yml — DOGE Bot OKX · ley v3 (5m)
+#   Cron cada 5 min: alineado a la vela 5m · ventana -2/-3/-4 cubre 20 min
+name: DOGE Bot OKX
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '*/5 * * * *'
+  push:
+    paths:
+      - 'main-doge.py'
+      - '.github/workflows/doge-bot-okx.yml'
+
+jobs:
+  bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
+      OKX_SECRET_KEY: ${{ secrets.OKX_SECRET_KEY }}
+      OKX_PASSWORD: ${{ secrets.OKX_PASSWORD }}
+      SINGLE_CYCLE: '1'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instalar dependencias
+        run: pip install ccxt pandas
+
+      - name: Ejecutar ciclo DOGE v3
+        run: python main-doge.py
