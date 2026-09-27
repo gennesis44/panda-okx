@@ -1,427 +1,465 @@
-"""
-════════════════════════════════════════════════════════════════════
-  DECRETO DE DESPLIEGUE — BUQUE: AVAX, "El Octavo"   [v3 ley validada]
-════════════════════════════════════════════════════════════════════
-  Instrumento : XPERP AVAX/USD, futuro de vencimiento más lejano
-                (fallback SWAP AVAX-USD si no hay futuro disponible)
-  Host        : https://my.okx.com (MiCA/EEE — USDT PROHIBIDO)
-  LEY VALIDADA (backtest-avax.py, run 27-sep — única que pasa los 4
-  criterios de robustez de la rejilla completa):
-      Timeframe : 1H
-      EMA       : rápida 8 / lenta 34
-      SL / TP   : 4.0% / 5.5%
-      Backtest  : 27 trades · WR 37.0% (BE 27.3%) · PF 1.57 ·
-                  expectativa +0.476%/trade · maxDD -10.33% · +12.86%
-      Descartada la provisional 4H/8/21: WR 27.6%, PF 0.74, -15.3%
-      (todo el marco 4H resultó tóxico para AVAX en backtest)
-  Contrato    : ctVal = 10 AVAX (confirmado por API) · guardia $15
-  Axiomas de la flota:
-      - Solo velas CERRADAS (confirm==1)
-      - Señal por cruce EMA, ventana -2/-3/-4 (cubre cadencia del cron)
-      - Sin RSI. SIN candado anti-rango (extirpado por A/B en HBAR,
-        confirmado en XRP: el filtro expulsa ganadoras. El aire ES el edge)
-      - Posición abierta = no operar. SL/TP viven en el exchange
-      - Fail-closed: lectura crítica dudosa = BLOQUEO
-  v2/v3 FIXES (revisión Carbono-Silicio, previos al despliegue):
-      FIX-1: unidades honestas — nocional = ctVal x PRECIO (ctValCcy
-             es la moneda base, NO USD)
-      FIX-2: position_open via /account/positions?instId= (sin mapeo
-             ccxt) — elimina riesgo de re-entrada múltiple
-      FIX-3: SL/TP redondeados al tickSz real del contrato
-      FIX-4: idempotencia por vela restaurada (clOrdId=AVAX+candle_ts)
-      FIX-5: precio de entrada desde ticker (no close de vela vieja)
-════════════════════════════════════════════════════════════════════
-"""
-
+# main-avax.py — Ax2-AVAX · EL OCTAVO · chasis Catamaran SUI 1:1
+#   LEY VALIDADA (backtest-avax.py run 27-sep, unica que pasa los 4 criterios):
+#     cruce EMA8/34 en velas 1H CERRADAS (ventana -2/-3/-4)
+#     LONG y SHORT (bidireccional): SL 4.0% / TP 5.5%
+#     27 trades · WR 37.0% (BE 27.3%) · PF 1.57 · +0.476%/trade · DD -10.3% · +12.86%
+#     Descartada la provisional 4H/8/21 (WR 27.6% · PF 0.74 · -15.3%): el marco
+#     4H completo resulto toxico para AVAX en backtest.
+#   SIN RSI. SIN candado anti-rango (extirpado por A/B HBAR, confirmado XRP:
+#     el filtro expulsa ganadoras. El aire ES el edge).
+#   TALLADO: ctVal=10 AVAX (confirmado por API) → contratos calculados para
+#     collar ~$7.5 · guardia $15 (fail-closed: unidad sorpresa = bot bloqueado)
+#   Ax3: HOST my.okx.com | clOrdId AVAX | cooldown fail-closed | no entrar si NO CABE | 51016
+#   Ax3.1: unidades honestas (ctValCcy) | posicion primero | vela cerrada siempre
+#   Ax3.2: guardia de nocional — unidad sorpresa = bot bloqueado
+# INSTRUMENTO: XPERP AVAX/USD (vencimiento mas lejano) — USDT PROHIBIDO (MiCA/EEE)
 import os
-import sys
 import time
 import math
 import logging
-import ccxt
 
-# ══════════════════ LEY PARAMETRIZADA (VALIDADA) ══════════════════
-TIMEFRAME = "1H"
+import ccxt
+import pandas as pd
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+log = logging.getLogger(__name__)
+
+def _f(x):
+    try:
+        return float(x)
+    except (TypeError, ValueError):
+        return 0.0
+
+# ==================== CONFIGURACIÓN (decreto Carbono) ====================
+BASE_ASSET = 'AVAX'
+TARGET_NOTIONAL = 7.5     # collar ~6-9 USD por posicion
+SL_LONG = 0.040     # 4.0%
+TP_LONG = 0.055     # 5.5%
+SL_SHORT = 0.040    # 4.0%
+TP_SHORT = 0.055    # 5.5%
+TIMEFRAME = '1h'
 EMA_FAST = 8
 EMA_SLOW = 34
-SL_PCT = {"long": 0.040, "short": 0.040}
-TP_PCT = {"long": 0.055, "short": 0.055}
-COOLDOWN_MINUTES = 60
-TARGET_NOTIONAL_USD = 7.5     # collar ~6-9 USD
-MAX_NOTIONAL_USD = 15.0       # guardia dura -> abortar si se supera
-SIGNAL_LOOKBACK_OFFSETS = [2, 3, 4]  # ventana -2/-3/-4
-CANDLES_NEEDED = max(EMA_SLOW * 4, 80)
-CLORDID_PREFIX = "AVAX"
+TD_MODE = 'cross'
+LEVERAGE = 1
+COOLDOWN_MIN = 60
+TEST_MODE = os.getenv('TEST_MODE') == '1'
+SINGLE_CYCLE = os.getenv('SINGLE_CYCLE') == '1'
+MAX_NOTIONAL_USD = _f(os.getenv('OKX_AVAX_MAX_NOTIONAL', '15.0')) or 15.0
+SIGNAL_WINDOW = (-2, -3, -4)
+WARMUP_1H = 40
 
-UNDERLYING = "AVAX-USD"
-FALLBACK_SWAP_INSTID = "AVAX-USD-SWAP"
+HOST = 'https://my.okx.com'
 
-TEST_MODE = os.environ.get("TEST_MODE", "0") == "1"
-SINGLE_CYCLE = os.environ.get("SINGLE_CYCLE", "0") == "1"
+exchange = ccxt.okx({
+    'apiKey':    os.getenv('OKX_API_KEY', ''),
+    'secret':    os.getenv('OKX_SECRET_KEY', ''),
+    'password':  os.getenv('OKX_PASSWORD', ''),
+    'enableRateLimit': True,
+    'options':   {'defaultType': 'swap'},
+    'urls':      {'api': {'rest': HOST}},
+})
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    stream=sys.stdout,
-)
-log = logging.getLogger("avax-el-octavo")
+# ==================== INSTRUMENTO (XPERP USD — NUNCA USDT) ====================
+def catalog_avax():
+    exchange.load_markets()
+    print("[" + time.strftime('%H:%M:%S') + "] --- CATALOGO AVAX ---", flush=True)
+    for m in exchange.markets.values():
+        if m.get('base') != BASE_ASSET:
+            continue
+        info = m.get('info') or {}
+        estado = 'activo' if m.get('active') else 'INACTIVO'
+        print("  " + str(m['symbol']) + " | " + str(info.get('instType') or '?') +
+              " | " + estado + " | ctVal=" + str(info.get('ctVal')) +
+              " " + str(info.get('ctValCcy') or '?') +
+              " | settle=" + str(m.get('settle') or '?'), flush=True)
 
+def _inst_type(symbol):
+    try:
+        t = str((exchange.market(symbol).get('info') or {}).get('instType') or '').upper()
+        if t in ('SWAP', 'FUTURES'):
+            return t
+    except Exception:
+        pass
+    m = exchange.market(symbol)
+    return 'SWAP' if (m.get('swap') or m.get('type') == 'swap') else 'FUTURES'
 
-# ══════════════════ INFRAESTRUCTURA OKX EEA ══════════════════
-def _force_eea_host(obj):
-    """Reemplaza recursivamente www.okx.com -> my.okx.com en exchange.urls."""
-    if isinstance(obj, dict):
-        return {k: _force_eea_host(v) for k, v in obj.items()}
-    if isinstance(obj, list):
-        return [_force_eea_host(v) for v in obj]
-    if isinstance(obj, str):
-        return obj.replace("www.okx.com", "my.okx.com")
-    return obj
+def _contract_meta(symbol, price=None):
+    market = exchange.market(symbol)
+    info = market.get('info') or {}
+    ctval = float(market.get('contractSize') or info.get('ctVal') or 1)
+    ccy = str(info.get('ctValCcy') or BASE_ASSET).upper()
+    settle = str(info.get('settleCcy') or market.get('settle') or '?').upper()
+    if price is None:
+        price = exchange.fetch_ticker(symbol).get('last') or 0
+    price = _f(price)
+    usd = ctval if ccy in ('USD', 'USDT', 'USDC') else ctval * price
+    return ctval, ccy, settle, price, usd
 
+def _is_forbidden(symbol):
+    settle = str(exchange.market(symbol).get('settle') or '').upper()
+    return settle == 'USDT'
 
-def build_exchange():
-    exchange = ccxt.okx({
-        "apiKey": os.environ.get("OKX_API_KEY", ""),
-        "secret": os.environ.get("OKX_SECRET_KEY", ""),
-        "password": os.environ.get("OKX_PASSWORD", ""),
-        "enableRateLimit": True,
-    })
-    exchange.urls["api"] = _force_eea_host(exchange.urls["api"])
-    log.info("[HOST] API forzada a my.okx.com (MiCA/EEE, USDT prohibido)")
-    return exchange
+def pick_future():
+    exchange.load_markets()
+    candidatos = []
+    for m in exchange.markets.values():
+        if (m.get('base') == BASE_ASSET and m.get('future') and m.get('active')
+                and not _is_forbidden(m['symbol'])):
+            info = m.get('info') or {}
+            try:
+                exp = int(info.get('expTime') or 0)
+            except (TypeError, ValueError):
+                exp = 0
+            candidatos.append((exp, m['symbol']))
+    if not candidatos:
+        return None
+    candidatos.sort(reverse=True)
+    return candidatos[0][1]
 
+def pick_swap_usd():
+    exchange.load_markets()
+    for m in exchange.markets.values():
+        if (m.get('base') == BASE_ASSET and m.get('active')
+                and (m.get('swap') or (m.get('info') or {}).get('instType') == 'SWAP')
+                and not _is_forbidden(m['symbol'])):
+            return m['symbol']
+    return None
 
-# ══════════════════ RESOLUCIÓN DE INSTRUMENTO ══════════════════
-def resolve_symbol(exchange):
-    """1) posición abierta en AVAX -> 2) futuro USD más lejano -> 3) SWAP fallback.
-    Veta cualquier instrumento con settle=USDT."""
+def _log_contract_size(sym):
+    try:
+        ctval, ccy, settle, _p, usd = _contract_meta(sym)
+        log.info("Contrato: 1 = " + str(ctval) + " " + ccy + " | settle=" + settle +
+                 " | nocional ~$" + format(usd, '.2f') + " | " + sym +
+                 " | " + _inst_type(sym))
+    except Exception as e:
+        log.warning("No se pudo leer el tamano del contrato: " + str(e))
+
+def resolve_symbol():
+    exchange.load_markets()
     try:
         for p in exchange.fetch_positions():
-            info = p.get("info", {}) or {}
-            inst_id = info.get("instId", "")
-            if "AVAX" in inst_id and float(info.get("pos", 0) or 0) != 0:
-                if info.get("settleCcy", "").upper() == "USDT":
-                    raise RuntimeError(f"VETO: posición abierta en {inst_id} liquida en USDT")
-                log.info(f"[RESOLVE] Posición abierta detectada: {inst_id}")
-                return inst_id, info
+            if (p.get('contracts') or 0) > 0 and (p.get('symbol') or '').startswith(BASE_ASSET + '/'):
+                if _is_forbidden(p['symbol']):
+                    log.error("VETO: posicion abierta en USDT — prohibido.")
+                    raise RuntimeError("Posicion abierta en instrumento USDT prohibido.")
+                log.info("Instrumento (posicion abierta): " + str(p['symbol']))
+                _log_contract_size(p['symbol'])
+                return p['symbol']
     except RuntimeError:
         raise
     except Exception as e:
-        log.warning(f"[RESOLVE] No se pudo leer posiciones abiertas: {e}")
+        log.warning("Posiciones no leidas al resolver simbolo: " + str(e))
+    sym = pick_future()
+    if sym:
+        log.info("Instrumento: " + str(sym) + " (XPERP — vencimiento mas lejano)")
+        _log_contract_size(sym)
+        return sym
+    sym = pick_swap_usd()
+    if sym:
+        log.warning("Instrumento: " + str(sym) + " (fallback SWAP-USD)")
+        _log_contract_size(sym)
+        return sym
+    raise RuntimeError("No hay AVAX/USD (XPERP o SWAP-USD) activo. USDT prohibido.")
 
+# ==================== INDICADORES ====================
+def ema(s, length):
+    return s.ewm(span=length, adjust=False).mean()
+
+def fetch_data(symbol, timeframe, limit=200):
+    ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+    return pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+
+# ==================== POSICIÓN ====================
+def get_open_position(symbol):
     try:
-        resp = exchange.public_get_public_instruments({
-            "instType": "FUTURES", "uly": UNDERLYING
-        })
-        candidates = [
-            d for d in resp.get("data", [])
-            if d.get("settleCcy", "").upper() != "USDT" and d.get("expTime")
-        ]
-        if candidates:
-            candidates.sort(key=lambda d: int(d["expTime"]), reverse=True)
-            inst = candidates[0]
-            log.info(f"[RESOLVE] Futuro más lejano: {inst['instId']} exp={inst['expTime']}")
-            return inst["instId"], inst
+        for pos in exchange.fetch_positions([symbol]):
+            if pos.get('symbol') == symbol and float(pos.get('contracts') or 0) > 0:
+                return pos
     except Exception as e:
-        log.warning(f"[RESOLVE] Fallo consultando FUTURES: {e}")
+        log.error("Error consultando posiciones: " + str(e))
+    return None
 
-    try:
-        resp = exchange.public_get_public_instruments({
-            "instType": "SWAP", "instId": FALLBACK_SWAP_INSTID
-        })
-        data = resp.get("data", [])
-        if data and data[0].get("settleCcy", "").upper() != "USDT":
-            log.info(f"[RESOLVE] Fallback SWAP: {FALLBACK_SWAP_INSTID}")
-            return FALLBACK_SWAP_INSTID, data[0]
-    except Exception as e:
-        log.warning(f"[RESOLVE] Fallo consultando SWAP fallback: {e}")
-
-    raise RuntimeError("BLOQUEO: no se pudo resolver ningún instrumento AVAX válido (no-USDT)")
-
-
-# ══════════════════ VELAS CERRADAS ══════════════════
-def fetch_closed_candles(exchange, inst_id, bar, count):
-    resp = exchange.public_get_market_candles({
-        "instId": inst_id, "bar": bar, "limit": "100"
-    })
-    rows = resp.get("data", [])
-    if not rows:
-        raise RuntimeError(f"BLOQUEO: sin velas para {inst_id} {bar}")
-    rows = list(reversed(rows))  # API devuelve más nueva primero -> orden asc
-    closed = [r for r in rows if r[8] == "1"]  # confirm == '1'
-    if len(closed) < EMA_SLOW + 5:
-        raise RuntimeError("BLOQUEO: velas cerradas insuficientes para calcular EMAs")
-    return closed[-count:]
-
-
-def ema_series(closes, span):
-    k = 2 / (span + 1)
-    out = [closes[0]]
-    for c in closes[1:]:
-        out.append(c * k + out[-1] * (1 - k))
-    return out
-
-
-def detect_signal(closed_candles):
-    """Cruce EMA en ventana -2/-3/-4. Devuelve (direccion, ts_vela) o (None, None)."""
-    closes = [float(c[4]) for c in closed_candles]
-    ema_f = ema_series(closes, EMA_FAST)
-    ema_s = ema_series(closes, EMA_SLOW)
-    sign = [1 if f > s else (-1 if f < s else 0) for f, s in zip(ema_f, ema_s)]
-
-    n = len(sign)
-    for offset in SIGNAL_LOOKBACK_OFFSETS:
-        i = n - offset
-        if i - 1 < 0:
-            continue
-        if sign[i - 1] <= 0 and sign[i] > 0:
-            return "long", closed_candles[i][0]
-        if sign[i - 1] >= 0 and sign[i] < 0:
-            return "short", closed_candles[i][0]
-    return None, None
-
-
-# ══════════════════ UNIDADES HONESTAS (FIX-1) ══════════════════
-def contract_meta(inst_info):
-    """ctVal está en ctValCcy (moneda base en futures coin-margined), NO en USD."""
-    ct_val = float(inst_info.get("ctVal", 0) or 0)
-    ccy = str(inst_info.get("ctValCcy") or "AVAX").upper()
-    tick = float(inst_info.get("tickSz") or "0.001")
-    lot = float(inst_info.get("lotSz") or "1")
-    minsz = float(inst_info.get("minSz") or "1")
-    return ct_val, ccy, tick, lot, minsz
-
-
-def usd_per_contract(ct_val, ccy, price):
-    if ccy in ("USD", "USDT", "USDC"):
-        return ct_val
-    return ct_val * price
-
-
-def compute_amount(ct_val, ccy, lot, minsz, price):
-    """Contratos para nocional objetivo en USD REALES (FIX-1)."""
-    usd1 = usd_per_contract(ct_val, ccy, price)
-    if usd1 <= 0:
-        raise RuntimeError("BLOQUEO: valor de contrato no calculable")
-    log.info(f"[CONTRACT] 1 ct = {ct_val} {ccy} = ${usd1:.4f} USD (precio {price})")
+# ==================== TALLADO DEL COLLAR (unidades honestas) ====================
+def compute_amount(symbol):
+    """Contratos para collar ~TARGET_NOTIONAL USD REALES (ctVal x precio).
+    Guardia $15: fail-closed si ni el minimo cabe."""
+    ctval, ccy, _settle, price, usd1 = _contract_meta(symbol)
+    log.info("Contrato: 1 ct = " + str(ctval) + " " + ccy + " = ~$" +
+             format(usd1, '.4f') + " (precio " + str(price) + ")")
     if usd1 > MAX_NOTIONAL_USD:
-        raise RuntimeError(
-            f"BLOQUEO (unidad sorpresa): 1 contrato vale ${usd1:.2f} > "
-            f"MAX_NOTIONAL_USD=${MAX_NOTIONAL_USD:.2f}. Bot bloqueado."
-        )
-    raw = TARGET_NOTIONAL_USD / usd1
-    c = math.floor(raw / lot) * lot
+        raise RuntimeError("GUARDIA: 1 contrato vale $" + format(usd1, '.2f') +
+                           " > maximo $" + format(MAX_NOTIONAL_USD, '.2f') +
+                           " — unidad inesperada. NO SE OPERA.")
+    m = exchange.market(symbol)
+    info = m.get('info') or {}
+    lot = _f(info.get('lotSz')) or 0.1
+    minsz = _f(info.get('minSz')) or 0.1
+    c = math.floor((TARGET_NOTIONAL / usd1) / lot) * lot
     if c < minsz:
         c = minsz
-    notional = c * usd1
-    while notional > MAX_NOTIONAL_USD and (c - lot) >= minsz - 1e-12:
-        c = round(c - lot, 10)
-        notional = c * usd1
-    if notional > MAX_NOTIONAL_USD:
-        raise RuntimeError(
-            f"BLOQUEO: ni el mínimo ({c} ct = ${notional:.2f}) cabe bajo el guardia"
-        )
-    log.info(f"[AMOUNT] contracts={c} | nocional REAL=${notional:.2f} USD "
-             f"(objetivo ${TARGET_NOTIONAL_USD})")
-    return c, notional
+    nocional = c * usd1
+    if nocional > MAX_NOTIONAL_USD:
+        raise RuntimeError("GUARDIA: ni el minimo (" + str(c) + " ct = $" +
+                           format(nocional, '.2f') + ") cabe bajo $" +
+                           format(MAX_NOTIONAL_USD, '.2f') + ". NO SE OPERA.")
+    log.info("Tallado: " + str(c) + " ct | nocional REAL ~$" + format(nocional, '.2f') +
+             " (objetivo $" + format(TARGET_NOTIONAL, '.2f') + ")")
+    return c
 
+# ==================== ENTRADA CON SL/TP ADJUNTOS ====================
+def _post_trade_order(req):
+    method = getattr(exchange, 'privatePostTradeOrder', None) or exchange.private_post_trade_order
+    return method(req)
 
-# ══════════════════ GUARDAS ══════════════════
-def position_open(exchange, inst_id):
-    """FIX-2: consulta cruda por instId — sin mapeo de símbolos ccxt."""
+def _cl_order_id(candle_ts):
+    return "AVAX" + str(int(candle_ts))
+
+def candle_already_traded(symbol, candle_ts):
+    cl = _cl_order_id(candle_ts)
     try:
-        resp = exchange.private_get_account_positions({"instId": inst_id})
-        for p in resp.get("data", []):
-            if float(p.get("pos") or 0) != 0:
-                return True
-        return False
-    except Exception as e:
-        log.error(f"[GUARDA] No se pudo verificar posición -> fail-closed: {e}")
-        return True
-
-
-def cooldown_active(exchange, inst_id):
-    try:
-        fills = exchange.private_get_trade_fills({"instId": inst_id, "limit": "20"})
-        for r in (fills.get("data") or []):
-            pnl = r.get("fillPnl")
-            if pnl is None:
-                continue
-            pnl = float(pnl)
-            if pnl < 0:
-                minutes_ago = (time.time() * 1000 - int(r.get("ts", 0))) / 60000
-                if minutes_ago < COOLDOWN_MINUTES:
-                    log.info(f"[COOLDOWN] Activo: última pérdida hace {minutes_ago:.1f} min")
-                    return True
-                return False
-        return False
-    except Exception as e:
-        log.error(f"[COOLDOWN] No se pudo leer fills -> fail-closed (bloqueo): {e}")
-        return True
-
-
-def candle_already_traded(exchange, inst_id, candle_ts):
-    """FIX-4: idempotencia por vela del chasis de la flota (fail-closed)."""
-    cl = f"{CLORDID_PREFIX}{candle_ts}"[:32]
-    try:
-        resp = exchange.private_get_trade_order({"instId": inst_id, "clOrdId": cl})
-        data = resp.get("data") or []
-        if data and str(data[0].get("sCode", "0")) == "0":
-            log.info(f"[DEDUP] Vela ya operada (clOrdId {cl}). Duplicado bloqueado.")
+        inst = exchange.market(symbol)['id']
+        resp = exchange.private_get_trade_order({'instId': inst, 'clOrdId': cl})
+        data = resp.get('data') or []
+        if data and str(data[0].get('sCode', '0')) == '0':
+            log.info("Vela ya operada (clOrdId " + cl + "). Duplicado bloqueado.")
             return True
         return False
     except ccxt.ExchangeError as e:
         msg = str(e)
-        if "51603" in msg or "does not exist" in msg.lower():
+        if '51603' in msg or 'does not exist' in msg.lower():
             return False
-        log.warning(f"[DEDUP] No verificable ({msg}) -> BLOQUEO fail-closed.")
+        log.warning("No se pudo verificar duplicado (" + msg + "); BLOQUEO fail-closed.")
         return True
     except Exception as e:
-        log.warning(f"[DEDUP] No verificable ({e}) -> BLOQUEO fail-closed.")
+        log.warning("No se pudo verificar duplicado (" + str(e) + "); BLOQUEO fail-closed.")
         return True
 
+def execute_order(side, symbol, ref_price, amount, candle_ts):
+    ctval, ccy, _settle, _p, usd = _contract_meta(symbol, ref_price)
+    nocional = amount * usd
+    log.info("Nocional: " + str(amount) + " contrato x " + str(ctval) + " " + ccy +
+             " (~$" + format(nocional, '.2f') + ")")
 
-def capacity_ok(exchange, notional_usd):
-    try:
-        bal = exchange.private_get_account_balance()
-        details = bal.get("data", [{}])[0]
-        eq_usd = float(details.get("totalEq", 0) or 0)
-        fits = eq_usd >= notional_usd * 1.1
-        log.info(f"[CAPACITY] eqUsd={eq_usd:.2f} | nocional={notional_usd:.2f} -> "
-                 f"{'CABE' if fits else 'NO CABE'}")
-        return fits
-    except Exception as e:
-        log.error(f"[CAPACITY] No se pudo leer balance -> fail-closed (bloqueo): {e}")
-        return False
+    if nocional > MAX_NOTIONAL_USD:
+        raise RuntimeError("GUARDIA: nocional $" + format(nocional, '.2f') +
+                           " > maximo $" + format(MAX_NOTIONAL_USD, '.2f') +
+                           " — unidad inesperada. NO SE OPERA.")
 
-
-# ══════════════════ PRECIOS (FIX-3 y FIX-5) ══════════════════
-def _fmt_px(px, tick):
-    """Redondea al tick real del contrato (FIX-3)."""
-    ts = f"{tick:.10f}".rstrip("0")
-    dec = len(ts.split(".")[1]) if "." in ts else 0
-    steps = int(round(px / tick))
-    return f"{steps * tick:.{dec}f}"
-
-
-def last_price(exchange, inst_id, fallback):
-    """FIX-5: precio vivo desde ticker crudo (sin mapeo ccxt)."""
-    try:
-        resp = exchange.public_get_market_ticker({"instId": inst_id})
-        d = resp.get("data") or []
-        if d and d[0].get("last"):
-            return float(d[0]["last"])
-    except Exception as e:
-        log.warning(f"[PRICE] ticker no disponible ({e}); uso close de última vela cerrada")
-    return float(fallback)
-
-
-# ══════════════════ EJECUCIÓN ══════════════════
-def set_leverage(exchange, inst_id):
-    try:
-        exchange.private_post_account_set_leverage({
-            "instId": inst_id, "lever": "1", "mgnMode": "cross"
-        })
-    except Exception as e:
-        log.warning(f"[LEVERAGE] No se pudo fijar leverage=1 explícitamente: {e}")
-
-
-def place_order(exchange, inst_id, direction, contracts, entry_price, tick, candle_ts):
-    side = "buy" if direction == "long" else "sell"
-    if direction == "long":
-        tp_px = entry_price * (1 + TP_PCT["long"])
-        sl_px = entry_price * (1 - SL_PCT["long"])
+    if side == 'LONG':
+        oside = 'buy'
+        sl_raw = ref_price * (1 - SL_LONG)
+        tp_raw = ref_price * (1 + TP_LONG)
     else:
-        tp_px = entry_price * (1 - TP_PCT["short"])
-        sl_px = entry_price * (1 + SL_PCT["short"])
+        oside = 'sell'
+        sl_raw = ref_price * (1 + SL_SHORT)
+        tp_raw = ref_price * (1 - TP_SHORT)
 
-    cl_ord_id = f"{CLORDID_PREFIX}{candle_ts}"[:32]   # FIX-4: idempotencia por vela
-    tp_s = _fmt_px(tp_px, tick)                        # FIX-3: tick real
-    sl_s = _fmt_px(sl_px, tick)
+    sl = exchange.price_to_precision(symbol, sl_raw)
+    tp = exchange.price_to_precision(symbol, tp_raw)
+    sz = exchange.amount_to_precision(symbol, amount)
 
-    params = {
-        "instId": inst_id,
-        "tdMode": "cross",
-        "side": side,
-        "ordType": "optimal_limit_ioc",
-        "sz": str(contracts),
-        "clOrdId": cl_ord_id,
-        "attachAlgoOrds": [{
-            "tpTriggerPx": tp_s, "tpOrdPx": "-1",
-            "slTriggerPx": sl_s, "slOrdPx": "-1",
+    req = {
+        'instId': exchange.market(symbol)['id'],
+        'tdMode': TD_MODE,
+        'side': oside,
+        'ordType': 'optimal_limit_ioc',
+        'sz': sz,
+        'clOrdId': _cl_order_id(candle_ts),
+        'attachAlgoOrds': [{
+            'tpTriggerPx': tp, 'tpOrdPx': '-1',
+            'slTriggerPx': sl, 'slOrdPx': '-1',
         }],
     }
-
-    if TEST_MODE:
-        log.info(f"[TEST_MODE] Orden simulada, NO enviada: {params}")
-        return "test-mode-no-op"
-
     try:
-        resp = exchange.private_post_trade_order(params)
-        if resp.get("code") == "0":
-            log.info(f"[ORDER] Ejecutada OK clOrdId={cl_ord_id} | SL:{sl_s} TP:{tp_s} | {resp}")
-            return "traded"
-        raise ccxt.ExchangeError(str(resp))
+        resp = _post_trade_order(req)
+    except ccxt.ExchangeError as e:
+        if '51016' in str(e):
+            log.info("OKX: clOrdId duplicado (51016) — idempotencia OK.")
+            return True
+        raise
+
+    data = resp.get('data') or []
+    d0 = data[0] if isinstance(data, list) and data else {}
+    s_code = str(d0.get('sCode', resp.get('code', '1')))
+    if s_code == '51016':
+        log.info("OKX: clOrdId duplicado (51016) — idempotencia OK.")
+        return True
+    if s_code != '0':
+        raise ccxt.ExchangeError("OKX rechazo la entrada: " + str(d0.get('sMsg') or resp.get('msg')))
+    log.info("AVAX " + side + " ejecutada con SL/TP adjuntos. ordId: " +
+             str(d0.get('ordId')) + " | SL: " + str(sl) + " | TP: " + str(tp))
+    return True
+
+# ==================== COOLDOWN POST-PÉRDIDA ====================
+def cooldown_active(symbol):
+    try:
+        market_id = exchange.market(symbol)['id']
+        hist = exchange.privateGetTradeFillsHistory({
+            'instType': _inst_type(symbol),
+            'instId': market_id,
+            'limit': '5',
+        })
+        for fill in (hist.get('data') or []):
+            if str(fill.get('reduceOnly', '0')) == 'true' or fill.get('subType') in ('3', '4', '5', '6'):
+                ts_ms = int(fill.get('ts') or 0)
+                age_min = (time.time() * 1000 - ts_ms) / 60000.0
+                pnl = _f(fill.get('pnl'))
+                if pnl < 0 and age_min < COOLDOWN_MIN:
+                    log.info("COOLDOWN: ultima perdida hace " + format(age_min, '.0f') +
+                             " min (< " + str(COOLDOWN_MIN) + ").")
+                    return True
+                return False
+        return False
     except Exception as e:
-        msg = str(e)
-        if "51016" in msg:
-            log.info(f"[ORDER] 51016 (clOrdId duplicado) -> idempotencia OK: {msg}")
-            return "traded"
-        if "51603" in msg or "does not exist" in msg:
-            log.warning(f"[ORDER] 51603/no-existe -> no-traded: {msg}")
-            return "not-traded"
-        log.error(f"[ORDER] Error no reconocido -> BLOQUEO fail-closed: {msg}")
-        return "blocked"
+        log.warning("No se pudo verificar cooldown (" + str(e) + "); BLOQUEO fail-closed.")
+        return True
 
+# ==================== SEÑAL: CRUCE EMA8/34 1H CERRADA ====================
+def evaluate_signal(symbol):
+    try:
+        df = fetch_data(symbol, TIMEFRAME, limit=200)
+        if len(df) < WARMUP_1H + 10:
+            log.error("1H insuficiente (" + str(len(df)) + " velas). Sin senal.")
+            return None, None, None
 
-# ══════════════════ CICLO PRINCIPAL ══════════════════
+        now_ms = int(time.time() * 1000)
+        if int(df['timestamp'].iloc[-1]) + 3600 * 1000 > now_ms:
+            df = df.iloc[:-1].reset_index(drop=True)
+            if len(df) < WARMUP_1H + 10:
+                log.error("1H insuficiente tras descartar vela en formacion.")
+                return None, None, None
+
+        ef = ema(df['close'], EMA_FAST)
+        es = ema(df['close'], EMA_SLOW)
+        price = exchange.fetch_ticker(symbol).get('last') or df['close'].iloc[-1]
+
+        log.info("Precio: " + str(price) + " | 1H EMA8/34: " +
+                 format(ef.iloc[-2], '.5f') + "/" + format(es.iloc[-2], '.5f') +
+                 " | EMA8 " + (">" if ef.iloc[-2] > es.iloc[-2] else "<") + " EMA34 (estado)")
+
+        for i_curr in SIGNAL_WINDOW:
+            i_prev = i_curr - 1
+            idx = len(df) + i_curr
+            if abs(i_prev) > len(df) - 1 or idx < WARMUP_1H:
+                continue
+            candle_ts = int(df['timestamp'].iloc[i_curr])
+
+            up = (ef.iloc[i_prev] <= es.iloc[i_prev]
+                  and ef.iloc[i_curr] > es.iloc[i_curr])
+            down = (ef.iloc[i_prev] >= es.iloc[i_prev]
+                    and ef.iloc[i_curr] < es.iloc[i_curr])
+
+            if up:
+                log.info("Cruce ALCISTA EMA8/34 detectado. Senal LONG.")
+                return 'LONG', price, candle_ts
+            if down:
+                log.info("Cruce BAJISTA EMA8/34 detectado. Senal SHORT.")
+                return 'SHORT', price, candle_ts
+
+        log.info("Sin cruce EMA8/34 en la ventana. Vigilando.")
+    except Exception as e:
+        log.error("Error en evaluacion: " + str(e))
+    return None, None, None
+
+# ==================== CAPACIDAD ====================
+def capacity_ok(symbol, amount):
+    try:
+        _ctval, _ccy, _settle, _price, usd = _contract_meta(symbol)
+        nocional = usd * amount
+        if nocional > MAX_NOTIONAL_USD:
+            log.error("GUARDIA: nocional $" + format(nocional, '.2f') +
+                      " > maximo $" + format(MAX_NOTIONAL_USD, '.2f') + ". NO SE OPERA.")
+            return False
+        need = nocional / max(LEVERAGE, 1)
+    except Exception as e:
+        log.warning("Capacidad: nocional no calculable: " + str(e))
+        return False
+    try:
+        raw = exchange.privateGetAccountBalance()
+        details = ((raw or {}).get('data') or [{}])[0].get('details') or []
+        total = sum(_f(d.get('eqUsd')) for d in details)
+        log.info("Margen: ~$" + format(need, '.2f') + " | colateral: ~$" +
+                 format(total, '.2f') + " -> " + ('CABE' if total >= need else 'NO CABE'))
+        return total >= need
+    except Exception as e:
+        log.warning("Capacidad: colateral no calculable: " + str(e) + " — BLOQUEO.")
+        return False
+
+# ==================== ARRANQUE ====================
+def verify_setup():
+    raw = exchange.privateGetAccountBalance()
+    details = ((raw or {}).get('data') or [{}])[0].get('details') or []
+    total = sum(_f(d.get('eqUsd')) for d in details)
+    log.info("Autenticacion OK | host=" + HOST + " | Colateral real (USD): ~" + format(total, '.2f'))
+
+# ==================== CICLO ====================
 def run_cycle():
-    exchange = build_exchange()
-    inst_id, inst_info = resolve_symbol(exchange)
+    symbol = resolve_symbol()
 
-    ct_val, ccy, tick, lot, minsz = contract_meta(inst_info)
-    log.info(f"[INSTRUMENT] instId={inst_id} ctVal={ct_val} {ccy} "
-             f"tick={tick} lot={lot} minSz={minsz}")
-
-    if position_open(exchange, inst_id):
-        log.info("[SKIP] Posición abierta -> no operar (SL/TP vive en el exchange)")
-        return
-
-    if cooldown_active(exchange, inst_id):
-        log.info("[SKIP] Cooldown activo -> no entrar")
-        return
-
-    closed = fetch_closed_candles(exchange, inst_id, TIMEFRAME, CANDLES_NEEDED)
-    direction, candle_ts = detect_signal(closed)
-    if direction is None:
-        log.info("[SIGNAL] Sin cruce EMA en ventana -2/-3/-4 -> no operar")
-        return
-    log.info(f"[SIGNAL] {direction.upper()} en vela ts={candle_ts}")
-
-    if candle_already_traded(exchange, inst_id, candle_ts):
-        return
-
-    price = last_price(exchange, inst_id, closed[-1][4])
-    contracts, notional = compute_amount(ct_val, ccy, lot, minsz, price)
-
-    if not capacity_ok(exchange, notional):
-        log.info("[SKIP] No cabe según capacity_ok() -> no entrar")
-        return
-
-    set_leverage(exchange, inst_id)
-    result = place_order(exchange, inst_id, direction, contracts, price, tick, candle_ts)
-    log.info(f"[RESULT] Ciclo finalizado con estado: {result}")
-
-
-def main():
-    log.info(f"=== AVAX 'El Octavo' v3 (1H EMA8/34 SL4/TP5.5) — inicio "
-             f"(TEST_MODE={TEST_MODE}, SINGLE_CYCLE={SINGLE_CYCLE}) ===")
     try:
-        run_cycle()
+        exchange.set_leverage(LEVERAGE, symbol, params={'mgnMode': TD_MODE})
     except Exception as e:
-        log.error(f"[FATAL] Ciclo abortado (fail-closed): {e}")
-        sys.exit(1)
+        log.warning("No se pudo fijar apalancamiento (se usa el de OKX): " + str(e))
 
+    pos = get_open_position(symbol)
+    if pos:
+        log.info("Posicion abierta (" + str(pos['side']) + "). Esperando SL/TP.")
+        return
+
+    try:
+        amount = compute_amount(symbol)
+    except Exception as e:
+        log.error("Tallado/guardia: " + str(e))
+        return
+
+    if not capacity_ok(symbol, amount):
+        log.info("Sin capacidad. Vigilando.")
+        return
+
+    if cooldown_active(symbol):
+        log.info("Vigilando (cooldown activo).")
+        return
+
+    signal, price, candle_ts = evaluate_signal(symbol)
+    if not signal:
+        return
+
+    if candle_already_traded(symbol, candle_ts):
+        return
+
+    log.info("Senal " + signal + " (cruce EMA8/34 1H). Abriendo " + str(amount) + " contrato...")
+    try:
+        execute_order(signal, symbol, price, amount, candle_ts)
+    except Exception as e:
+        log.error("Entrada rechazada: " + str(e))
+
+def run_once():
+    log.info("Modo ciclo unico | AVAX OCTAVO EMA8/34 1H | SL4/TP5.5 (XPERP USD).")
+    verify_setup()
+    if TEST_MODE:
+        catalog_avax()
+        return
+    run_cycle()
+
+def main_loop():
+    log.info("Bot " + BASE_ASSET + " OCTAVO | 1H EMA8/34 | SL4/TP5.5 bidireccional | " +
+             "collar ~$" + format(TARGET_NOTIONAL, '.2f') + " | cooldown " +
+             str(COOLDOWN_MIN) + "m | " + HOST)
+    verify_setup()
+    while True:
+        try:
+            run_cycle()
+        except KeyboardInterrupt:
+            log.info("Detenido por el usuario.")
+            break
+        except Exception as e:
+            log.error("Error en el ciclo principal: " + str(e))
+            time.sleep(60)
+        time.sleep(1200)
 
 if __name__ == "__main__":
-    main()
+    if SINGLE_CYCLE:
+        run_once()
+    else:
+        main_loop()
