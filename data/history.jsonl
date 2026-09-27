@@ -46,3 +46,4 @@
 {"inst": "INJ-USD_UM_XPERP-310711", "base": "INJ", "dir": "short", "open": "8.169", "close": "7.531", "liq": 0.0, "pnl": 0.31626965, "uTime": "1790455207062", "posId": "3951341977344348161", "exit": "TP"}
 {"inst": "SUI-USD_UM_XPERP-310404", "base": "SUI", "dir": "long", "open": "1.1995", "close": "1.2646", "liq": 0.0, "pnl": 0.6386795, "uTime": "1790495242867", "posId": "3902226027655663617", "exit": "TP"}
 {"inst": "SUI-USD_UM_XPERP-310404", "base": "SUI", "dir": "short", "open": "1.15523", "close": "1.1908", "liq": 0.0, "pnl": -0.36626775, "uTime": "1790489760619", "posId": "3902226027655663617", "exit": "SL"}
+{"inst": "INJ-USD_UM_XPERP-310711", "base": "INJ", "dir": "long", "open": "7.8732", "close": "7.761", "liq": 0.0, "pnl": -0.05663138580929, "uTime": "1790522990551", "posId": "3951341977344348161", "exit": "LOSS"}
