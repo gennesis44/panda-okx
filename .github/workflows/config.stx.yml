@@ -1,0 +1,32 @@
+# =========================================================
+#  config.stx.yml — BACKTEST STX · OKX · host my.okx.com
+#  KEYS: NO van aqui. Igual que main-sui.py, por entorno:
+#    export OKX_API_KEY='...'
+#    export OKX_SECRET_KEY='...'
+#    export OKX_PASSWORD='...'
+#  (este backtest usa endpoints publicos: corre sin keys)
+# =========================================================
+instrument:
+  base: "STX"
+  backtest_symbol: ""        # vacio = auto (prefiere STX-USDC-SWAP; fallback STX-USD-SWAP). USDT prohibido.
+  quote_prohibido: "USDT"
+
+backtest:
+  start_date: "2023-01-01"   # se recorta solo al historico disponible
+  timeframes: ["1H", "4H", "1D"]
+  ema_fast: [3, 5, 8, 9, 12, 20]
+  ema_slow: [15, 21, 26, 34, 50, 100]
+  sl_pct:  [0.02, 0.03, 0.04, 0.05]      # incluye SL4 (decreto SUI)
+  tp_pct:  [0.03, 0.045, 0.055, 0.08]    # incluye TP4.5 y TP5.5 (decreto SUI)
+  mode: "long_short"         # "long_only" | "long_short"
+  position_pct: 1.0
+  min_trades: 10             # filtro anti-sobreajuste
+
+fees:
+  taker: 0.0005              # 0.05% por lado (optimal_limit_ioc)
+  maker: 0.0002
+
+report:
+  top_n: 15
+  max_notional: 15.0         # misma guardia que SUI ($15) -> sugiere AMOUNT maximo
+  save_csv: true
