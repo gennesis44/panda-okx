@@ -1,26 +1,42 @@
+# .github/workflows/hbar-backtest.yml — HBAR Backtest · comparador de stacks rev.2
+# Boton: Actions -> HBAR Backtest -> Run workflow
+# No gasta keys ni fondos: usa solo endpoints publicos de OKX
 name: HBAR Backtest
 
 on:
-  workflow_dispatch:     # botón manual "Run workflow"
+  workflow_dispatch:
+  push:
+    paths:
+      - 'backtest-hbar.py'
+      - '.github/workflows/hbar-backtest.yml'
 
 jobs:
   backtest:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
+      OKX_SECRET_KEY: ${{ secrets.OKX_SECRET_KEY }}
+      OKX_PASSWORD: ${{ secrets.OKX_PASSWORD }}
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - name: Python 3.11
+        uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: '3.11'
 
       - name: Instalar dependencias
-        run: pip install requests pandas pyyaml
+        run: pip install ccxt pandas numpy
 
-      - name: Ejecutar backtest
-        run: python backtest_futuros.py
+      - name: Ejecutar comparador de stacks HBAR
+        run: python backtest-hbar.py
 
-      - name: Guardar resultados CSV
+      - name: Subir resultados (CSV)
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: resultados-hbar
-          path: resultados/
+          name: hbar-backtest-resultados
+          path: backtest_results_hbar.csv
+          if-no-files-found: ignore
