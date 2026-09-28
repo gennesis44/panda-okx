@@ -1,9 +1,7 @@
-# backtest-gemini-v3.py — CICLO 3 · FILTRO DE SESION (C3 Gemini)
-#   C3-LN  : solo entradas 08:00-16:00 UTC (Londres-NY solapada)
-#   C3-L   : solo 07:00-16:00 UTC        C3-NY: solo 12:00-21:00 UTC
-#   C3-FUERA: solo FUERA de 08-16 (test de la premisa: debe ser MALO si
-#   Gemini acierta). Mapa horario del baseline incluido.
-#   Estandar: 3 ventanas deslizantes.
+# backtest-gemini-v4.py — CICLO 4 · C4 VOLUME SURGE (Gemini)
+#   C4-SURGE : solo entra si Vol_vela > 1.5 x SMA(Vol,20) previa
+#   C4-PLANO : inverso estricto (Vol_vela < 1.5 x SMA(Vol,20) previa)
+#   Estandar: 3 ventanas deslizantes. Baseline como referencia.
 import time
 import requests
 import pandas as pd
@@ -50,12 +48,12 @@ def fetch_candles(inst_id, bar, min_count):
     return df
 
 
-def run(df, horas=None):
-    """Entradas EMA8/34 SL4/TP5.5. horas=(h1,h2) UTC: solo entra si
-    h1 <= hora_vela < h2. horas=None: sin filtro."""
+def run(df, modo=None):
+    """modo: None (baseline) | 'surge' (vol>1.5*sma20 previa) | 'plano' (vol<1.5x)."""
     c, h, l = df["c"].values, df["h"].values, df["l"].values
+    vol = df["vol"].values
+    sma_vol = df["vol"].rolling(20).mean().shift(1).values  # previas, sin la propia vela
     sign = np.sign(df["ema_f"] - df["ema_s"]).values
-    hora = ((df["ts"] // 3_600_000) % 24).astype(int)
     n = len(df)
     trades, pos = [], None
     i = 200
@@ -65,8 +63,10 @@ def run(df, horas=None):
             dn = sign[i-1] >= 0 and sign[i] < 0
             if up or dn:
                 entra = True
-                if horas is not None:
-                    entra = horas[0] <= hora[i] < horas[1]
+                if modo == "surge":
+                    entra = not np.isnan(sma_vol[i]) and vol[i] > 1.5 * sma_vol[i]
+                elif modo == "plano":
+                    entra = not np.isnan(sma_vol[i]) and vol[i] < 1.5 * sma_vol[i]
                 if entra:
                     pos = ("long" if up else "short", c[i], i)
             i += 1
@@ -117,31 +117,17 @@ def main():
     bordes = np.linspace(200, n, N_VENTANAS + 1).astype(int)
 
     base = run(df)
-    hora = ((df["ts"] // 3_600_000) % 24).astype(int)
+    surge = run(df, "surge")
+    plano = run(df, "plano")
+    print(f"[REPARTO] baseline={len(base)} | surge={len(surge)} | "
+          f"plano={len(plano)} (surge+plano={len(surge)+len(plano)})")
 
-    print("\n=== MAPA HORARIO DEL BASELINE (hora UTC de la vela de senal) ===")
-    print(f"{'hora':<6}{'trades':<8}{'W':<4}{'L':<4}{'ret%':<9}")
-    for hh in range(24):
-        seg = [p for (i, p) in base if hora[i] == hh]
-        if seg:
-            a = np.array(seg)
-            print(f"{hh:<6}{len(a):<8}{int((a>0).sum()):<4}{int((a<=0).sum()):<4}"
-                  f"{a.sum()*100:+.2f}")
+    variantes = [("BASELINE (sin filtro)", base),
+                 ("C4-SURGE vol>1.5x", surge),
+                 ("C4-PLANO vol<1.5x (inverso)", plano)]
 
-    variantes = [
-        ("BASELINE (sin filtro)", None),
-        ("C3-LN  08-16 UTC", (8, 16)),
-        ("C3-L   07-16 UTC", (7, 16)),
-        ("C3-NY  12-21 UTC", (12, 21)),
-        ("C3-FUERA (premisa inversa)", None),
-    ]
-
-    print("\n=== CICLO 3: FILTRO DE SESION — 3 VENTANAS ===")
-    for nombre, horas in variantes:
-        if nombre.startswith("C3-FUERA"):
-            trades = [(i, p) for (i, p) in base if not (8 <= hora[i] < 16)]
-        else:
-            trades = run(df, horas)
+    print("\n=== CICLO 4: C4 VOLUME SURGE — 3 VENTANAS ===")
+    for nombre, trades in variantes:
         print(f"\n-- {nombre} --")
         total, ok_todas = [], True
         for k in range(N_VENTANAS):
