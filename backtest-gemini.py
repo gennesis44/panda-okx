@@ -1,11 +1,9 @@
 # backtest-gemini.py — VEREDICTO SOBRE EL MAPA GEMINI (inter-nodos)
-#   Baseline: AVAX 1H EMA8/34 SL4/TP5.5 (ganadora del 27-sep: +12.86%)
-#   Cada parametro de Gemini corre AISLADO contra el baseline:
-#     A1: veto EMA200 4H binario        A2: banda EMA200 +-0.4%
-#     C1: SL1.5/TP4.5 (1:3)             C2: SL2/TP3 (1:1.5)
-#     D1: veto VWAP diario (no cortos > +0.5%)
-#     D2: veto funding >0.04% (si la API publica lo da; si no: NO TESTEABLE)
-#   Criterios de robustez: >=15 trades · WR>BE · PF>1.5 · expect>0
+#   Baseline: AVAX 1H EMA8/34 SL4/TP5.5
+#   A1: veto EMA200 4H binario   A2: banda EMA200 +-0.4%
+#   C1: SL1.5/TP4.5 (1:3)        C2: SL2/TP3 (1:1.5)
+#   D1: veto VWAP diario (no cortos > +0.5%)
+#   D2: veto funding >0.04% (historial OKX disponible)
 import time
 import requests
 import pandas as pd
@@ -13,7 +11,7 @@ import numpy as np
 
 BASE_URL = "https://www.okx.com"
 UNDERLYING = "AVAX-USD"
-FEE_RT = 0.001  # 0.05% x 2 lados
+FEE_RT = 0.001
 
 
 def get_instrument():
@@ -52,7 +50,6 @@ def fetch_candles(inst_id, bar, min_count):
 
 
 def fetch_funding_history(inst_id):
-    """Intenta historial de funding (puede no existir para XPERP FUTURES)."""
     try:
         r = requests.get(f"{BASE_URL}/api/v5/public/funding-rate-history",
                          params={"instId": inst_id, "limit": "100"}, timeout=15)
@@ -74,7 +71,6 @@ def prepare(df1h, df4h):
     df["ema_s"] = ema(df["c"], 34)
     df["sign"] = np.sign(df["ema_f"] - df["ema_s"])
 
-    # EMA200 4H alineada: ultimo valor 4H CERRADO con ts <= ts de la vela 1H
     d4 = df4h.copy()
     d4["ema200"] = ema(d4["c"], 200)
     d4 = d4[d4["ema200"].notna()]
@@ -82,7 +78,6 @@ def prepare(df1h, df4h):
                            on="ts", direction="backward")
     df["ema200_4h"] = merged["ema200"].values
 
-    # VWAP diaria acumulada (1H): tp=(h+l+c)/3, reinicia cada dia UTC
     day = (df["ts"] // 86_400_000)
     tp = (df["h"] + df["l"] + df["c"]) / 3
     pv = tp * df["vol"]
@@ -92,7 +87,6 @@ def prepare(df1h, df4h):
 
 
 def run(df, sl_pct, tp_pct, veto=None):
-    """veto(i, dir) -> True si la entrada queda vetada."""
     c, h, l, sign = df["c"].values, df["h"].values, df["l"].values, df["sign"].values
     n = len(df)
     trades, pos = [], None
@@ -102,7 +96,7 @@ def run(df, sl_pct, tp_pct, veto=None):
             up = sign[i-1] <= 0 and sign[i] > 0
             dn = sign[i-1] >= 0 and sign[i] < 0
             if up and not (veto and veto(i, "long")):
-                pos = ("long", c[i]); 
+                pos = ("long", c[i])
             elif dn and not (veto and veto(i, "short")):
                 pos = ("short", c[i])
             i += 1
@@ -168,9 +162,12 @@ def main():
         ("D1 +veto VWAP cortos", 0.040, 0.055,
          lambda i, d: (d == "short" and vwap_prev[i] and close[i] > vwap_prev[i]*1.005)),
     ]
+
+    # ===== FIX: ordenar funding antes del merge (OKX lo da en orden inverso) =====
     if funding is not None and "fundingRate" in funding.columns:
         funding["ts"] = funding["fundingTime"].astype(np.int64)
         funding["fr"] = funding["fundingRate"].astype(float)
+        funding = funding.sort_values("ts").reset_index(drop=True)   # <-- LINEA CLAVE
         m = pd.merge_asof(df.sort_values("ts"), funding[["ts", "fr"]],
                           on="ts", direction="backward")
         fr = m["fr"].values
