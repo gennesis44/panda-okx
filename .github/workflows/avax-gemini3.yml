@@ -13,4 +13,4 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install requests pandas numpy
-      - run: python backtest-gemini.py
+      - run: python backtest-gemini-v3.py
