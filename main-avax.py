@@ -3,12 +3,10 @@
 #     cruce EMA8/34 en velas 1H CERRADAS (ventana -2/-3/-4)
 #     LONG y SHORT (bidireccional): SL 4.0% / TP 5.5%
 #     27 trades · WR 37.0% (BE 27.3%) · PF 1.57 · +0.476%/trade · DD -10.3% · +12.86%
-#     Descartada la provisional 4H/8/21 (WR 27.6% · PF 0.74 · -15.3%): el marco
-#     4H completo resulto toxico para AVAX en backtest.
-#   SIN RSI. SIN candado anti-rango (extirpado por A/B HBAR, confirmado XRP:
-#     el filtro expulsa ganadoras. El aire ES el edge).
-#   TALLADO: ctVal=10 AVAX (confirmado por API) → contratos calculados para
-#     collar ~$7.5 · guardia $15 (fail-closed: unidad sorpresa = bot bloqueado)
+#   SIN RSI. SIN candado anti-rango (extirpado por A/B HBAR, confirmado XRP).
+#   TALLADO v2 (27-sep): 1 ct = 10 AVAX (~$109) > collar $7.5 → el tallado
+#     usa el MINIMO TRADABLE (0.1 ct ~ $10.9) si cabe bajo el guardia $15.
+#     Fail-closed si ni el minimo cabe. Unidad honesta: medir y decidir.
 #   Ax3: HOST my.okx.com | clOrdId AVAX | cooldown fail-closed | no entrar si NO CABE | 51016
 #   Ax3.1: unidades honestas (ctValCcy) | posicion primero | vela cerrada siempre
 #   Ax3.2: guardia de nocional — unidad sorpresa = bot bloqueado
@@ -32,7 +30,7 @@ def _f(x):
 
 # ==================== CONFIGURACIÓN (decreto Carbono) ====================
 BASE_ASSET = 'AVAX'
-TARGET_NOTIONAL = 7.5     # collar ~6-9 USD por posicion
+TARGET_NOTIONAL = 7.5     # collar ideal ~6-9 USD (si el minimo lo permite)
 SL_LONG = 0.040     # 4.0%
 TP_LONG = 0.055     # 5.5%
 SL_SHORT = 0.040    # 4.0%
@@ -180,31 +178,38 @@ def get_open_position(symbol):
         log.error("Error consultando posiciones: " + str(e))
     return None
 
-# ==================== TALLADO DEL COLLAR (unidades honestas) ====================
+# ==================== TALLADO v2 (minimo fraccional si cabe) ====================
 def compute_amount(symbol):
-    """Contratos para collar ~TARGET_NOTIONAL USD REALES (ctVal x precio).
-    Guardia $15: fail-closed si ni el minimo cabe."""
+    """Tallado del collar en USD REALES (ctVal x precio).
+    v2: si 1 ct entero supera el collar pero el MINIMO tradable
+    (minSz, multiplo de lotSz) cabe bajo el guardia $15 -> se usa el
+    minimo con aviso. Fail-closed si ni el minimo cabe."""
     ctval, ccy, _settle, price, usd1 = _contract_meta(symbol)
     log.info("Contrato: 1 ct = " + str(ctval) + " " + ccy + " = ~$" +
              format(usd1, '.4f') + " (precio " + str(price) + ")")
-    if usd1 > MAX_NOTIONAL_USD:
-        raise RuntimeError("GUARDIA: 1 contrato vale $" + format(usd1, '.2f') +
-                           " > maximo $" + format(MAX_NOTIONAL_USD, '.2f') +
-                           " — unidad inesperada. NO SE OPERA.")
+
     m = exchange.market(symbol)
     info = m.get('info') or {}
     lot = _f(info.get('lotSz')) or 0.1
     minsz = _f(info.get('minSz')) or 0.1
+
     c = math.floor((TARGET_NOTIONAL / usd1) / lot) * lot
     if c < minsz:
         c = minsz
     nocional = c * usd1
+
+    if nocional > TARGET_NOTIONAL and nocional <= MAX_NOTIONAL_USD:
+        log.warning("Collar ~$" + format(TARGET_NOTIONAL, '.2f') +
+                    " no alcanzable: 1 ct entero = $" + format(usd1, '.2f') +
+                    ". Se usa el MINIMO tradable: " + str(c) + " ct (~$" +
+                    format(nocional, '.2f') + ", bajo guardia $" +
+                    format(MAX_NOTIONAL_USD, '.2f') + ").")
     if nocional > MAX_NOTIONAL_USD:
-        raise RuntimeError("GUARDIA: ni el minimo (" + str(c) + " ct = $" +
-                           format(nocional, '.2f') + ") cabe bajo $" +
-                           format(MAX_NOTIONAL_USD, '.2f') + ". NO SE OPERA.")
-    log.info("Tallado: " + str(c) + " ct | nocional REAL ~$" + format(nocional, '.2f') +
-             " (objetivo $" + format(TARGET_NOTIONAL, '.2f') + ")")
+        raise RuntimeError("GUARDIA: minimo tradable (" + str(c) + " ct = $" +
+                           format(nocional, '.2f') + ") > maximo $" +
+                           format(MAX_NOTIONAL_USD, '.2f') +
+                           " — unidad inesperada. NO SE OPERA.")
+    log.info("Tallado: " + str(c) + " ct | nocional REAL ~$" + format(nocional, '.2f') + " USD")
     return c
 
 # ==================== ENTRADA CON SL/TP ADJUNTOS ====================
@@ -444,8 +449,8 @@ def run_once():
 
 def main_loop():
     log.info("Bot " + BASE_ASSET + " OCTAVO | 1H EMA8/34 | SL4/TP5.5 bidireccional | " +
-             "collar ~$" + format(TARGET_NOTIONAL, '.2f') + " | cooldown " +
-             str(COOLDOWN_MIN) + "m | " + HOST)
+             "minimo tradable bajo guardia $" + format(MAX_NOTIONAL_USD, '.2f') +
+             " | cooldown " + str(COOLDOWN_MIN) + "m | " + HOST)
     verify_setup()
     while True:
         try:
