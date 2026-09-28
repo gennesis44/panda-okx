@@ -1,9 +1,6 @@
-# backtest-gemini-v2.py — CICLO 2 INTER-NODOS · 3 VENTANAS DESLIZANTES
-#   Propuestas de GEMINI post-veredicto:
-#     C2-AFINADA : SL1.8/TP2.7 (refinamiento de la superviviente)
-#     ATR        : SL/TP dinamicos por ATR(14) — 1.5xATR / 2.25xATR
-#   Estandar nuevo: cada variante se mide en 3 ventanas consecutivas.
-#     Solo sobrevive lo que da expectativa positiva EN LAS 3.
+# backtest-gemini-v2.py — CICLO 2 · 3 VENTANAS DESLIZANTES
+#   C2-AFINADA SL1.8/TP2.7 · ATR14 SL1.5x/TP2.25x vs BASELINE y C2
+#   Solo sobrevive lo positivo en las 3 ventanas.
 import time
 import requests
 import pandas as pd
@@ -51,11 +48,10 @@ def fetch_candles(inst_id, bar, min_count):
 
 
 def run(df, sl_spec, tp_spec):
-    """sl_spec/tp_spec: float fijo (fraccion) o ('atr', mult).
-    Devuelve lista de (idx_entrada, pnl_neto)."""
     c, h, l = df["c"].values, df["h"].values, df["l"].values
     sign = np.sign(df["ema_f"] - df["ema_s"]).values
-    if isinstance(sl_spec, tuple) and sl_spec[0] == "atr":
+    atr = None
+    if isinstance(sl_spec, tuple):
         tr = np.maximum(h - l, np.maximum(abs(h - np.roll(c, 1)), abs(l - np.roll(c, 1))))
         tr[0] = h[0] - l[0]
         atr = pd.Series(tr).ewm(span=14, adjust=False).mean().values
@@ -66,18 +62,13 @@ def run(df, sl_spec, tp_spec):
         if pos is None:
             up = sign[i-1] <= 0 and sign[i] > 0
             dn = sign[i-1] >= 0 and sign[i] < 0
-            if up:
-                if isinstance(sl_spec, tuple):
-                    pos = ("long", c[i], sl_spec[1] * atr[i] / c[i],
+            if up or dn:
+                side = "long" if up else "short"
+                if atr is not None:
+                    pos = (side, c[i], sl_spec[1] * atr[i] / c[i],
                            tp_spec[1] * atr[i] / c[i], i)
                 else:
-                    pos = ("long", c[i], sl_spec, tp_spec, i)
-            elif dn:
-                if isinstance(sl_spec, tuple):
-                    pos = ("short", c[i], sl_spec[1] * atr[i] / c[i],
-                           tp_spec[1] * atr[i] / c[i], i)
-                else:
-                    pos = ("short", c[i], sl_spec, tp_spec, i)
+                    pos = (side, c[i], sl_spec, tp_spec, i)
             i += 1
             continue
         side, entry, slp_f, tpp_f, i0 = pos
@@ -124,8 +115,7 @@ def main():
     df["ema_s"] = df["c"].ewm(span=34, adjust=False).mean()
     n = len(df)
     bordes = np.linspace(200, n, N_VENTANAS + 1).astype(int)
-    print(f"[VENTANAS] {N_VENTANAS} zonas: {[(int(bordes[k]), int(bordes[k+1]))
-          for k in range(N_VENTANAS)]}")
+    print(f"[VENTANAS] {[(int(bordes[k]), int(bordes[k+1])) for k in range(N_VENTANAS)]}")
 
     variantes = [
         ("BASELINE  SL4.0/TP5.5", 0.040, 0.055),
@@ -154,14 +144,10 @@ def main():
                   f"  {'+' if ok else '-'}")
             total.extend(seg)
         st = stats(total)
-        robust = ok_todas and st and st["trades"] >= 15 and st["pf"] > 1.5
-        resumen = f"tr={st['trades']} wr={st['wr']*100:.1f}% pf={st['pf']:.2f} ret={st['ret']*100:+.2f}%"
-        print(f"   TOTAL: {resumen}")
-        print(f"   >>> {'SOBREVIVE (positivo en las 3 ventanas)' if ok_todas else 'CAE (falla alguna ventana)'}"
-              f"{' · ROBUSTA' if robust else ''}")
-
-    print("\nProtocolo: resultado devuelto a GEMINI. Solo se implanta lo que")
-    print("sobreviva en las 3 ventanas Y supere al baseline en retorno total.")
+        if st:
+            print(f"   TOTAL: tr={st['trades']} wr={st['wr']*100:.1f}% "
+                  f"pf={st['pf']:.2f} ret={st['ret']*100:+.2f}%")
+            print(f"   >>> {'SOBREVIVE (3/3 ventanas)' if ok_todas else 'CAE (falla alguna ventana)'}")
 
 
 if __name__ == "__main__":
