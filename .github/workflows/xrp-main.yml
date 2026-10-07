@@ -1,0 +1,34 @@
+name: XRP Bot OKX
+
+on:
+  schedule:
+    - cron: '13,43 * * * *'   # cada 30 min — sobra para velas 4H, offsets no chocan
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: xrp-bot
+  cancel-in-progress: false
+
+jobs:
+  run-xrp:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: pip install ccxt pandas
+      - name: Run XRP Bot
+        run: python main-xrp.py
+        env:
+          SINGLE_CYCLE: '1'
+          PYTHONUNBUFFERED: '1'
+          OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
+          OKX_SECRET_KEY: ${{ secrets.OKX_SECRET_KEY }}
+          OKX_PASSWORD: ${{ secrets.OKX_PASSWORD }}
