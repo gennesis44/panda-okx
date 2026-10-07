@@ -1,0 +1,45 @@
+# .github/workflows/stx-backtest.yml — STX Backtest (CATAMARAN pre-activacion)
+# Boton: Actions -> STX Backtest -> Run workflow
+# No gasta keys ni fondos: usa solo endpoints publicos de OKX
+name: STX Backtest
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'backtest-stx.py'
+      - 'config.stx.yml'
+      - '.github/workflows/stx-backtest.yml'
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
+      OKX_SECRET_KEY: ${{ secrets.OKX_SECRET_KEY }}
+      OKX_PASSWORD: ${{ secrets.OKX_PASSWORD }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instalar dependencias
+        run: pip install ccxt pandas numpy pyyaml
+
+      - name: Ejecutar backtest STX
+        run: python backtest-stx.py
+
+      - name: Subir resultados (CSV)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stx-backtest-resultados
+          path: |
+            backtest_results_stx.csv
+            trades_mejor_set_stx.csv
+          if-no-files-found: ignore
