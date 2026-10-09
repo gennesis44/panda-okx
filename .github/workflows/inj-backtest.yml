@@ -1,0 +1,27 @@
+name: INJ Backtest
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'backtest-inj.py'
+      - '.github/workflows/inj-backtest.yml'
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instalar dependencias
+        run: pip install ccxt pandas numpy
+
+      - name: Ejecutar validador INJ
+        run: python backtest-inj.py
