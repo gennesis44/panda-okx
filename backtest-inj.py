@@ -1,23 +1,24 @@
 # backtest-inj.py — INJ VALIDADOR · ley candidata EMA7/34 en 5m
 #   DECRETO CARBONO (2026-10-09): investigar EMA7/34 · 5m para INJ
-#   Si resulta ganador: primer destructor en salir con combustible mínimo.
+#   Si resulta ganador: primer destructor en salir con combustible minimo.
 #
 #   METODO GSCSI (idéntico al de los validadores vivos):
 #     - velas CERRADAS (anti-repaint), sin vela en formacion
 #     - fees 0.13% r/t descontados de cada trade
 #     - XPERP vencimiento mas lejano · USDT PROHIBIDO
-#     - candado: rejilla de separacion minima (el Carbono fija el umbral
-#       con estos datos — los cruces minimos se ignoran por decreto)
-#     - fail-closed: si un dato no se puede validar, el validador se detiene
+#     - candado: rejilla de separacion minima (los cruces minimos se
+#       ignoran por decreto del Carbono — el grid encuentra el umbral)
+#     - fail-closed: descarga incompleta o dato invalido = DETENIDO (exit 1)
 #
 #   SALIDA:
 #     A) grid de candado (0.00/0.05/0.10/0.15/0.20%) con SL/TP del decreto
-#     B) mejor config por modo (long_short / long_only / short_only)
-#     C) la pregunta del Carbono: que umbral min% separa señal de ruido
-#     resultados -> data/inj-backtest.jsonl (1 linea por trade del mejor grid)
+#     B) desglose LONGS/SHORTS del mejor grid
+#     C) insumo para fijar el min% que separa senal de ruido
+#     resultados -> data/inj-backtest.jsonl (trades del mejor grid)
 #
-# Ax3: fail-closed en descarga y contrato · sin secrets en este validador
-#      (velas publicas) · exit 1 ante dato invalido · sin opinion
+# Ax3: sin secrets (velas publicas) · XPERP mas lejano · exit 1 ante dato
+#      invalido · sin opinion. Correccion A565G: paginacion desde el pasado
+#      y guardia dura de descarga (80% minimo o muere).
 
 import json
 import os
@@ -27,14 +28,12 @@ import time
 import ccxt
 import pandas as pd
 
-logging_ok = True
 try:
     import logging
     logging.basicConfig(level=logging.INFO,
                         format='%(asctime)s - %(levelname)s - %(message)s')
     log = logging.getLogger(__name__)
 except Exception:
-    logging_ok = False
     class _L:
         def info(self, m): print("INFO  " + m, flush=True)
         def warning(self, m): print("WARN  " + m, flush=True)
@@ -55,17 +54,15 @@ EMA_SLOW = 34
 SL_LONG = 0.030     # 3.0%
 TP_LONG = 0.060     # 6.0%
 SL_SHORT = 0.030    # 3.0%
-TP_SHORT = 0.060    # 060%
-FEE_RT = 0.0013     # 0.13% r/t — tarifa futures OKX (idem validadores vivos)
-DAYS = 68           # ventana historica (idem DOGE: ~2 meses de 5m)
-GRID_LOCK = [0.0, 0.0005, 0.0010, 0.0015, 0.0020]   # 0.00/0.05/0.10/0.15/0.20%
+TP_SHORT = 0.060    # 6.0%
+FEE_RT = 0.0013     # 0.13% r/t
+DAYS = 68
+GRID_LOCK = [0.0, 0.0005, 0.0010, 0.0015, 0.0020]
 WARMUP = max(EMA_SLOW * 3, 100)
 DATA_DIR = 'data'
 OUT_JSONL = os.path.join(DATA_DIR, 'inj-backtest.jsonl')
+HOST = 'https://www.okx.com'
 
-HOST = 'https://www.okx.com'   # publico: velas, sin auth
-
-# ==================== EXCHANGE (solo lectura publica) ====================
 exchange = ccxt.okx({
     'enableRateLimit': True,
     'options': {'defaultType': 'swap'},
@@ -95,33 +92,37 @@ def resolve_symbol():
     candidatos.sort(reverse=True)
     sym = candidatos[0][1]
     m = exchange.market(sym)
-    info = m.get('info') or {}
-    log.info("Instrumento BACKTEST: " + str(sym) +
-             " [" + str(info.get('instType') or '?') + " · XPERP mas lejano]")
+    log.info("Instrumento BACKTEST: " + str(sym) + " [XPERP mas lejano]")
     log.info("settle=" + str(m.get('settle')) +
              " | 1 ct = " + str(m.get('contractSize')) + " " + BASE_ASSET)
     return sym
 
-# ==================== DATOS ====================
+# ==================== DATOS (A565G: desde el pasado, guardia dura) ====================
 def fetch_closed(symbol, timeframe, target_candles):
-    """Descarga por paginas hasta llenar target_candles de velas CERRADAS."""
+    """Pagina ARRANCANDO DEL PASADO avanzando hacia el presente.
+    Fail-closed: <80% del objetivo = DETENIDO (exit 1)."""
+    tf_ms = exchange.parse_timeframe(timeframe) * 1000
+    now_ms = int(time.time() * 1000)
+    since = now_ms - target_candles * tf_ms
     out = []
-    since = None
     while len(out) < target_candles:
         batch = exchange.fetch_ohlcv(symbol, timeframe, since=since, limit=300)
         if not batch:
             break
         out.extend(batch)
         since = batch[-1][0] + 1
-        if len(batch) < 100:
-            break
         time.sleep(exchange.rateLimit / 1000.0)
     df = pd.DataFrame(out, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
     df = df.drop_duplicates('timestamp').sort_values('timestamp').reset_index(drop=True)
-    now_ms = int(time.time() * 1000)
-    tf_ms = exchange.parse_timeframe(timeframe) * 1000
+    if len(df) == 0:
+        log.error("Descarga vacia. DETENIDO.")
+        sys.exit(1)
     if int(df['timestamp'].iloc[-1]) + tf_ms > now_ms:
-        df = df.iloc[:-1].reset_index(drop=True)   # vela en formacion fuera
+        df = df.iloc[:-1].reset_index(drop=True)
+    if len(df) < target_candles * 0.8:
+        log.error("Descarga incompleta: " + str(len(df)) + "/" +
+                  str(target_candles) + " velas. DETENIDO (fail-closed).")
+        sys.exit(1)
     if len(df) < WARMUP + 50:
         log.error("Velas insuficientes (" + str(len(df)) + "). DETENIDO.")
         sys.exit(1)
@@ -136,9 +137,8 @@ def ema(s, length):
     return s.ewm(span=length, adjust=False).mean()
 
 def simulate(df, lock_pct, sl_l, tp_l, sl_s, tp_s):
-    """Simula cruce EMA7/34 en velas cerradas con candado por separacion.
-    Sin flip: una posicion por cruce, sale por SL o TP. Cooldown no simulado
-    (los validadores vivos lo declaran; el grid compara ley pura)."""
+    """Cruce EMA7/34 en velas cerradas + candado por separacion.
+    Una posicion por cruce; sale por SL o TP (sin flip)."""
     e_f = ema(df['close'], EMA_FAST).values
     e_s = ema(df['close'], EMA_SLOW).values
     c = df['close'].values
@@ -151,29 +151,37 @@ def simulate(df, lock_pct, sl_l, tp_l, sl_s, tp_s):
     entry_i = 0
     for i in range(WARMUP, n):
         if in_pos:
-            hit_sl_l = c[i] <= sl if side == 'LONG' else c[i] >= sl
-            hit_tp_l = c[i] >= tp if side == 'LONG' else c[i] <= tp
-            if hit_sl_l and hit_tp_l:
-                hit_sl_l = c[i] <= entry if side == 'LONG' else c[i] >= entry
-            exit_price = None
-            if hit_sl_l:
+            if side == 'LONG':
+                hit_sl = c[i] <= sl
+                hit_tp = c[i] >= tp
+            else:
+                hit_sl = c[i] >= sl
+                hit_tp = c[i] <= tp
+            if hit_sl and hit_tp:
+                # ambigua (gap de vela atraviesa ambos): conserva = conservador
+                if side == 'LONG':
+                    hit_tp = False
+                else:
+                    hit_tp = False
+            if hit_sl:
                 exit_price = sl
-            elif hit_tp_l:
+            elif hit_tp:
                 exit_price = tp
-            if exit_price is not None:
-                gross = (exit_price - entry) / entry
-                if side == 'SHORT':
-                    gross = -gross
-                net = gross - FEE_RT
-                trades.append({'ts_in': int(ts[entry_i]), 'ts_out': int(ts[i]),
-                               'side': side, 'entry': entry, 'exit': exit_price,
-                               'net_pct': net, 'lock': lock_pct})
-                in_pos = False
+            else:
+                continue
+            gross = (exit_price - entry) / entry
+            if side == 'SHORT':
+                gross = -gross
+            net = gross - FEE_RT
+            trades.append({'ts_in': int(ts[entry_i]), 'ts_out': int(ts[i]),
+                           'side': side, 'entry': entry, 'exit': exit_price,
+                           'net_pct': net, 'lock': lock_pct})
+            in_pos = False
             continue
-        prev_f, prev_s = e_f[i - 1], e_s[i - 1]
-        curr_f, curr_s = e_f[i], e_s[i]
-        if prev_f is None or prev_s is None:
-            continue
+        prev_f = e_f[i - 1]
+        prev_s = e_s[i - 1]
+        curr_f = e_f[i]
+        curr_s = e_s[i]
         sep = abs(curr_f - curr_s) / curr_s if curr_s else 0.0
         up = (prev_f <= prev_s) and (curr_f > curr_s)
         down = (prev_f >= prev_s) and (curr_f < curr_s)
@@ -196,11 +204,11 @@ def summarize(trades, label):
         return {'label': label, 'trades': 0}
     wins = [x for x in trades if x['net_pct'] > 0]
     losses = [x for x in trades if x['net_pct'] <= 0]
-    gross_win = sum(x['net_pct'] for x in wins)
-    gross_loss = abs(sum(x['net_pct'] for x in losses))
+    gw = sum(x['net_pct'] for x in wins)
+    gl = abs(sum(x['net_pct'] for x in losses))
     ret = sum(x['net_pct'] for x in trades)
     wr = len(wins) / t
-    pf = (gross_win / gross_loss) if gross_loss > 0 else float('inf')
+    pf = (gw / gl) if gl > 0 else float('inf')
     cum = 1.0
     peak = 1.0
     dd = 0.0
@@ -208,10 +216,9 @@ def summarize(trades, label):
         cum *= (1 + x['net_pct'])
         peak = max(peak, cum)
         dd = min(dd, cum / peak - 1)
-    return {'label': label, 'trades': t,
-            'wins': len(wins), 'losses': len(losses), 'wr': wr,
-            'ret': ret, 'pf': pf, 'dd': dd,
-            'avg': ret / t}
+    return {'label': label, 'trades': t, 'wins': len(wins),
+            'losses': len(losses), 'wr': wr, 'ret': ret,
+            'pf': pf, 'dd': dd, 'avg': ret / t}
 
 # ==================== MAIN ====================
 def main():
@@ -219,15 +226,15 @@ def main():
              str(EMA_SLOW) + " " + TIMEFRAME + " | fees " +
              format(FEE_RT * 100, '.2f') + "% r/t | USDT prohibido")
     sym = resolve_symbol()
-    target = int(DAYS * 24 * 12)   # 5m -> 288 velas/dia
+    target = int(DAYS * 24 * 12)
     df = fetch_closed(sym, TIMEFRAME, target)
 
     log.info("================ VALIDADOR (grid de candado) ================")
-    all_results = []
+    results = []
     for lock in GRID_LOCK:
         trades = simulate(df, lock, SL_LONG, TP_LONG, SL_SHORT, TP_SHORT)
         s = summarize(trades, 'lock ' + format(lock * 100, '.2f') + '%')
-        all_results.append((lock, trades, s))
+        results.append((lock, trades, s))
         if s['trades'] == 0:
             log.info("[5m] " + s['label'] + " | sin trades")
             continue
@@ -241,25 +248,26 @@ def main():
                  " | avg " + format(s['avg'] * 100, '+.3f') + "%")
 
     best = None
-    for lock, trades, s in all_results:
+    for lock, trades, s in results:
         if s.get('trades', 0) >= 10 and s.get('pf', 0) > 1.0:
             if best is None or s['pf'] > best[2]['pf']:
                 best = (lock, trades, s)
+
     if best:
         lock, trades, s = best
         log.info("=========== MEJOR GRID: candado " + format(lock * 100, '.2f') + "% ===========")
         longs = [x for x in trades if x['side'] == 'LONG']
         shorts = [x for x in trades if x['side'] == 'SHORT']
-        sl_sum = summarize(longs, 'longs')
-        ss_sum = summarize(shorts, 'shorts')
-        if sl_sum['trades']:
-            log.info("  LONGS : " + str(sl_sum['trades']) + " trades | WR " +
-                     format(sl_sum['wr'] * 100, '.0f') + "% | PnL " +
-                     format(sl_sum['ret'], '+.4f'))
-        if ss_sum['trades']:
-            log.info("  SHORTS: " + str(ss_sum['trades']) + " trades | WR " +
-                     format(ss_sum['wr'] * 100, '.0f') + "% | PnL " +
-                     format(ss_sum['ret'], '+.4f'))
+        sL = summarize(longs, 'longs')
+        sS = summarize(shorts, 'shorts')
+        if sL['trades']:
+            log.info("  LONGS : " + str(sL['trades']) + " trades | WR " +
+                     format(sL['wr'] * 100, '.0f') + "% | ret " +
+                     format(sL['ret'] * 100, '+.2f') + "%")
+        if sS['trades']:
+            log.info("  SHORTS: " + str(sS['trades']) + " trades | WR " +
+                     format(sS['wr'] * 100, '.0f') + "% | ret " +
+                     format(sS['ret'] * 100, '+.2f') + "%")
         _persist(trades)
     else:
         log.info("=========== SIN CONFIG GANADORA (>=10 trades y PF>1) ===========")
