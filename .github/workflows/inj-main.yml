@@ -28,6 +28,7 @@ jobs:
         run: python main-inj.py
         env:
           SINGLE_CYCLE: '1'
+          TEST_MODE: '1'
           PYTHONUNBUFFERED: '1'
           OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
           OKX_SECRET_KEY: ${{ secrets.OKX_SECRET_KEY }}
