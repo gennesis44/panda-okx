@@ -2,18 +2,18 @@ name: XRP Bot OKX
 
 on:
   schedule:
-    - cron: '13,43 * * * *'   # cada 30 min — sobra para velas 4H, offsets no chocan
+    - cron: '20 * * * *'   # cada hora — caza cierres de vela 4H
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
-  group: xrp-bot
+  group: xrp-shadow
   cancel-in-progress: false
 
 jobs:
-  run-xrp:
+  shadow:
     runs-on: ubuntu-latest
     timeout-minutes: 8
     steps:
@@ -23,12 +23,12 @@ jobs:
         with:
           python-version: '3.11'
       - name: Install dependencies
-        run: pip install ccxt pandas
-      - name: Run XRP Bot
+        run: pip install requests pandas numpy
+      - name: Shadow surf
         run: python main-xrp.py
-        env:
-          SINGLE_CYCLE: '1'
-          PYTHONUNBUFFERED: '1'
-          OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
-          OKX_SECRET_KEY: ${{ secrets.OKX_SECRET_KEY }}
-          OKX_PASSWORD: ${{ secrets.OKX_PASSWORD }}
+      - name: Commit ledger
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A data/
+          git diff --cached --quiet || (git commit -m "XRP shadow: ledger update" && git push)
