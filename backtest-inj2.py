@@ -8,6 +8,7 @@
 #     - velas 1H CERRADAS · entrada a cierre de vela de cruce
 #   Ax3: IS/OOS 70/30 anti-mineria · fees 0.13% r/t · XPERP vencimiento mas
 #        lejano · USDT PROHIBIDO · fail-closed en descarga · sin secrets
+#   FIX rev.2 (A565G): SPLIT_IS declarado — faltaba la constante (acta #9)
 #
 #   SALIDA: tabla IS/OOS + veredicto (>=15 trades, WR>BE, PF>1.5, exp>0
 #           en IS · >=5 trades, PF>1.0, exp>0 en OOS)
@@ -26,6 +27,8 @@ BAR = "1H"
 BAR_MS = 3600000
 MIN_CANDLES = 1500
 EMA_FAST, EMA_SLOW = 3, 21
+SPLIT_IS = 0.70
+WARM_PAD = 30
 
 
 def get_instrument():
@@ -95,9 +98,8 @@ def fetch_candles(inst_id, min_count):
 
 
 def simulate(df):
-    """Cruce EMA3/21 1H sin candado — fiel al bot. Sale por SL/TP fijos
-    derivados de la geometria del bot (5 ct, sin SL/TP atomicos observados
-    en logs: usa rebasado del cruce contrario como salida)."""
+    """Cruce EMA3/21 1H sin candado — fiel al bot. Salida por cruce
+    contrario (sin SL/TP atomicos observados en logs del bot)."""
     close = df["c"].values
     ts = df["ts"].values
     e_f = df["c"].ewm(span=EMA_FAST, adjust=False).mean().values
@@ -162,7 +164,7 @@ def main():
     df = fetch_candles(inst["instId"], MIN_CANDLES)
     b = int(len(df) * SPLIT_IS)
     is_df = df.iloc[:b].reset_index(drop=True)
-    oos_df = df.iloc[max(0, b - 30):].reset_index(drop=True)
+    oos_df = df.iloc[max(0, b - WARM_PAD):].reset_index(drop=True)
     b_ts = int(df["ts"].iloc[b])
 
     t_is = [t["net"] for t in simulate(is_df)]
