@@ -1,0 +1,27 @@
+name: XRP Backtest v2
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'backtest-xrp2.py'
+      - '.github/workflows/xrp-backtest2.yml'
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instalar dependencias
+        run: pip install requests pandas numpy
+
+      - name: Ejecutar validador XRP v2
+        run: python backtest-xrp2.py
