@@ -1,15 +1,13 @@
-# btc-radar.py — RADAR DEL PORTAAVIONES · BTC cartografía de posición y régimen
-#   DECRETO CARBONO (2026-10-12): "saber por donde anda ese portaaviones"
-#   El mástil BTC decide la estela de toda la flota — esto lo mapea.
+# btc-radar.py v2 — RADAR DEL PORTAAVIONES · BTC-USD-SWAP (perpetuo, historia profunda)
+#   CAMBIO v2 (decreto Carbono): el XPERP largo solo tiene ~2 meses de velas —
+#   el radar se apunta al PERPETUO BTC-USD-SWAP de OKX (settle USD, anos de
+#   historia) para cartografiar mástiles y regímenes reales de meses.
+#   Solo lectura · sin secrets · sin órdenes · el veto USDT es para OPERAR.
 #
-#   QUÉ ENTREGA (solo lectura, sin secrets, sin ordenes):
-#     - posición: precio actual vs mástiles de referencia (80k/84k EUR-equivalente
-#       en USD, mínimos/máximos de la semana)
-#     - régimen por marco: 1H y 4H — tendencia, EMAs 3/21, separación, rango
-#     - el estado del rango 80k-84k: dentro/roto arriba/roto abajo
-#   Ax3: velas CERRADAS · fail-closed en descarga · sin opinion
-#
-#   USO: workflow_dispatch + push · run manual cuando el Carbono quiera mapa
+#   QUÉ ENTREGA:
+#     - régimen 1H y 4H: EMAs 3/21, tendencia, separación, pendiente 24v
+#     - mástiles: máximos/mínimos de 7d, 30d y 90d + posición del precio
+#     - síntesis naval para la flota
 
 import sys
 import time
@@ -19,33 +17,9 @@ import pandas as pd
 import requests
 
 BASE_URL = "https://www.okx.com"
-UNDERLYING = "BTC-USD"
+INST_ID = "BTC-USD-SWAP"          # perpetuo · settle USD · historia profunda
 BAR_MS = {"1H": 3600000, "4H": 14400000}
-MIN_CANDLES = {"1H": 500, "4H": 300}
-# Mástiles de referencia del Carbono (EUR aprox sobre feed BTCUSD — orientativo)
-# El radar reporta USD reales; la lectura EUR la hace el Carbono con su feed.
-RANGE_NOTE = "Rango decreta el Carbono: mástil 84k→80k EUR observado en feed EUR"
-
-
-def get_instrument():
-    r = requests.get(
-        f"{BASE_URL}/api/v5/public/instruments",
-        params={"instType": "FUTURES", "uly": UNDERLYING},
-        timeout=15,
-    )
-    r.raise_for_status()
-    data = r.json()["data"]
-    cands = [d for d in data
-             if d.get("settleCcy", "").upper() != "USDT" and d.get("expTime")]
-    if not cands:
-        print("[ERROR] Sin FUTURES no-USDT para BTC. DETENIDO.")
-        sys.exit(1)
-    cands.sort(key=lambda d: int(d["expTime"]), reverse=True)
-    inst = cands[0]
-    print("[INSTRUMENT] " + inst["instId"] +
-          " | ctVal=" + str(inst.get("ctVal")) + " " + str(inst.get("ctValCcy")) +
-          " | XPERP mas lejano")
-    return inst
+MIN_CANDLES = {"1H": 720, "4H": 540}   # 30d en 1H · 90d en 4H
 
 
 def fetch_candles(inst_id, bar, min_count):
@@ -84,7 +58,8 @@ def fetch_candles(inst_id, bar, min_count):
         print("[ERROR] Descarga incompleta " + bar + ": " + str(len(df)) +
               "/" + str(min_count) + ". DETENIDO (fail-closed).")
         sys.exit(1)
-    print("[CANDLES] " + bar + ": " + str(len(df)) + " velas cerradas")
+    print("[CANDLES] " + bar + ": " + str(len(df)) + " velas cerradas (~" +
+          format(len(df) * BAR_MS[bar] / 86400000.0, '.0f') + " dias)")
     return df
 
 
@@ -95,12 +70,8 @@ def regime_block(df, label):
     e3 = c.ewm(span=3, adjust=False).mean()
     e21 = c.ewm(span=21, adjust=False).mean()
     px = c.iloc[-1]
-    hi = h.max()
-    lo = l.min()
-    pos_in_range = (px - lo) / (hi - lo) * 100 if hi > lo else 50.0
     trend = "ALCISTA" if e3.iloc[-1] > e21.iloc[-1] else "BAJISTA"
     sep = abs(e3.iloc[-1] - e21.iloc[-1]) / e21.iloc[-1] * 100
-    # pendiente del régimen: precio ahora vs hace 24 velas
     back = min(24, len(c) - 1)
     slope = (px - c.iloc[-1 - back]) / c.iloc[-1 - back] * 100
     print("")
@@ -109,52 +80,66 @@ def regime_block(df, label):
     print("  EMA3/21:       " + format(e3.iloc[-1], '.1f') + " / " +
           format(e21.iloc[-1], '.1f') + " | " + trend +
           " | sep " + format(sep, '.2f') + "%")
-    print("  Rango ventana: " + format(lo, '.1f') + " — " + format(hi, '.1f') +
-          " | posicion " + format(pos_in_range, '.0f') + "% del rango")
     print("  Pendiente 24v: " + format(slope, '+.2f') + "%")
-    return px, hi, lo
+    return px
+
+
+def mast_block(df, label, days):
+    h = df["h"]
+    l = df["l"]
+    c = df["c"]
+    win = df.iloc[-min(len(df), days * (24 if label == "1H" else 6)):]
+    hi = win["h"].max()
+    lo = win["l"].min()
+    px = c.iloc[-1]
+    print("  Mastil " + str(days) + "d: max " + format(hi, '.1f') +
+          " | min " + format(lo, '.1f') + " | precio " +
+          format(px, '.1f') + " (" +
+          format((px - lo) / (hi - lo) * 100, '.0f') + "% del rango)")
+    return hi, lo
 
 
 def main():
-    print("RADAR DEL PORTAAVIONES — BTC (XPERP OKX, USD) · solo lectura")
-    inst = get_instrument()
+    print("RADAR DEL PORTAAVIONES v2 — " + INST_ID + " (perpetuo USD) · solo lectura")
     data = {}
     for bar in ["1H", "4H"]:
-        data[bar] = fetch_candles(inst["instId"], bar, MIN_CANDLES[bar])
+        data[bar] = fetch_candles(INST_ID, bar, MIN_CANDLES[bar])
 
-    px_1h, hi_1h, lo_1h = regime_block(data["1H"], "1H")
-    px_4h, hi_4h, lo_4h = regime_block(data["4H"], "4H")
-
-    # Mástiles de 7 días (aprox) en 4H
-    week = data["4H"].iloc[-42:]   # 42 x 4H = 7 dias
-    w_hi = week["h"].max()
-    w_lo = week["l"].min()
+    px_1h = regime_block(data["1H"], "1H")
+    px_4h = regime_block(data["4H"], "4H")
 
     print("")
-    print("=== POSICION vs MASTILES DE LA SEMANA (USD) ===")
-    print("  Maximo 7d: " + format(w_hi, '.1f') + " | Minimo 7d: " + format(w_lo, '.1f'))
-    mid = (w_hi + w_lo) / 2
-    if px_4h > w_hi * 0.995:
-        pos = "ROTO ARRIBA del maximo 7d"
-    elif px_4h < w_lo * 1.005:
-        pos = "ROTO ABAJO del minimo 7d"
-    else:
-        pos = "DENTRO del rango 7d (" + ("mitad superior" if px_4h > mid else "mitad inferior") + ")"
-    print("  Estado: " + pos)
-    print("  " + RANGE_NOTE)
+    print("=== MASTILES (USD) ===")
+    hi7, lo7 = mast_block(data["1H"], "1H", 7)
+    hi30, lo30 = mast_block(data["1H"], "1H", 30)
+    hi90, lo90 = mast_block(data["4H"], "4H", 90)
 
     print("")
-    print("=== SINTESIS PARA LA FLOTA ===")
-    if pos.startswith("ROTO ARRIBA"):
-        print("  Portaaviones rompe al alza: estela alcista para altcoins.")
-        print("  Leyes largas favorablemente situadas; candados abriran de golpe.")
-    elif pos.startswith("ROTO ABAJO"):
-        print("  Portaaviones rompe a la baja: estela bajista — LA MAS PELIGROSA.")
-        print("  SLs atomicos en guardia; esperables cierres y cruces bajistas.")
+    print("=== POSICION vs MASTILES ===")
+    for name, hi, lo in [("7d", hi7, lo7), ("30d", hi30, lo30), ("90d", hi90, lo90)]:
+        mid = (hi + lo) / 2
+        if px_4h > hi * 0.995:
+            st = "ROTO ARRIBA"
+        elif px_4h < lo * 1.005:
+            st = "ROTO ABAJO"
+        else:
+            st = "DENTRO (" + ("mitad sup" if px_4h > mid else "mitad inf") + ")"
+        print("  " + name + ": " + st + " | max " + format(hi, '.0f') +
+              " / min " + format(lo, '.0f'))
+
+    print("")
+    print("=== SINTESIS NAVAL ===")
+    broke_up = px_4h > hi7 * 0.995
+    broke_dn = px_4h < lo7 * 1.005
+    if broke_up:
+        print("  Portaaviones ROMPE ARRIBA del maximo 7d: estela alcista para la flota.")
+    elif broke_dn:
+        print("  Portaaviones ROMPE ABAJO del minimo 7d: estela bajista — LA MAS PELIGROSA.")
+        print("  SLs atomicos en guardia; cierres y cruces bajistas esperables.")
     else:
-        print("  Portaaviones EN RANGO: altcoins sin estela — sierras y trenzadas.")
+        print("  Portaaviones EN RANGO 7d: sin estela clara — sierras/trenzadas en altcoins.")
         print("  Candados cerrados probablemente correctos; paciencia.")
-
+    print("  Contexto 30d/90d arriba: el rango semanal dentro de la estructura mayor.")
     print("")
     print("ADVERTENCIA: mapa de posicion, no prediccion. El Carbono decide.")
 
