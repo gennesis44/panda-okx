@@ -1,7 +1,8 @@
-# grid-shadow.py rev.2 — LABORATORIO DE MALLAS · 5 configs en paralelo · sombra
-#   FIX rev.2 (acta #14): descarga arrancando con 'since' explícito —
-#   el endpoint history-candles ignoraba la primera llamada sin after/since.
-#   Fall-closed de descarga mantenido. Resto intacto.
+# grid-shadow.py rev.3 — LABORATORIO DE MALLAS · 5 configs paralelas · sombra
+#   FIX rev.3 (acta #15): instrumento resuelto vía endpoint /instruments
+#   (patrón probado de la casa) en vez de ID inventado. Diagnóstico de
+#   respuesta cuando data viene vacía. Descarga: 300 velas recientes
+#   (25h de 5m — sobra para cron horario). Fail-closed mantenido.
 
 import json
 import os
@@ -13,12 +14,10 @@ import pandas as pd
 import requests
 
 BASE_URL = "https://www.okx.com"
-INST_ID = "INJ-USD-SWAP"          # perpetuo · historia profunda
+UNDERLYING = "INJ"
 BAR = "5m"
 BAR_MS = 300000
-HOURS_BACK = 36                    # ~36h de sierra reciente por ciclo
 FEE_RT = 0.0013
-CAP_PER_LEVEL = 100.0
 CONFIGS = [
     {"id": "A", "n_levels": 20, "step_pct": 0.005},
     {"id": "B", "n_levels": 20, "step_pct": 0.007},
@@ -30,42 +29,59 @@ DATA_DIR = "data"
 STATE_FILE = os.path.join(DATA_DIR, "grid-shadow.json")
 
 
-def fetch_candles(inst_id, bar, hours_back):
-    """Descarga velas del bloque reciente: since = ahora - hours_back.
-    Pagina hacia adelante con after. Fail-closed."""
-    all_rows = []
-    since = int(time.time() * 1000) - hours_back * 3600000
-    while True:
-        params = {"instId": inst_id, "bar": bar, "limit": "300", "since": since}
-        r = requests.get(
-            f"{BASE_URL}/api/v5/market/candles",      # candles (recientes) en vez de history
-            params=params, timeout=15,
-        )
-        r.raise_for_status()
-        rows = r.json().get("data", [])
-        if not rows:
-            break
-        all_rows.extend(rows)
-        new_since = rows[-1][0]
-        if new_since <= since:
-            break
-        since = new_since
-        time.sleep(0.15)
-    if not all_rows:
-        print("[ERROR] Sin velas. DETENIDO.")
+def resolve_instrument():
+    """Patrón de la casa: instruments → FUTURES no-USDT vencimiento lejano."""
+    r = requests.get(
+        f"{BASE_URL}/api/v5/public/instruments",
+        params={"instType": "FUTURES", "uly": UNDERLYING + "-USD"},
+        timeout=15,
+    )
+    r.raise_for_status()
+    body = r.json()
+    data = body.get("data") or []
+    if not data:
+        print("[ERROR] instruments respondió: code=" + str(body.get("code")) +
+              " msg=" + str(body.get("msg")) + " — DETENIDO.")
+        sys.exit(1)
+    cands = [d for d in data
+             if d.get("settleCcy", "").upper() != "USDT" and d.get("expTime")]
+    if not cands:
+        print("[ERROR] Sin FUTURES no-USDT para " + UNDERLYING + ". DETENIDO.")
+        sys.exit(1)
+    cands.sort(key=lambda d: int(d["expTime"]), reverse=True)
+    inst = cands[0]
+    print("[INSTRUMENT] " + inst["instId"] +
+          " | ctVal=" + str(inst.get("ctVal")) + " " + str(inst.get("ctValCcy")) +
+          " | minSz=" + str(inst.get("minSz")))
+    return inst["instId"]
+
+
+def fetch_candles(inst_id):
+    """300 velas 5m más recientes (25h) — una llamada, sin paginación."""
+    r = requests.get(
+        f"{BASE_URL}/api/v5/market/history-candles",
+        params={"instId": inst_id, "bar": BAR, "limit": "300"},
+        timeout=15,
+    )
+    r.raise_for_status()
+    body = r.json()
+    rows = body.get("data") or []
+    if not rows:
+        print("[ERROR] API respondió vacía: code=" + str(body.get("code")) +
+              " msg=" + str(body.get("msg")) + " — DETENIDO.")
         sys.exit(1)
     cols = ["ts", "o", "h", "l", "c", "vol", "vc", "vcq", "confirm"]
-    df = pd.DataFrame(all_rows, columns=cols)
+    df = pd.DataFrame(rows, columns=cols)
     for col in ["o", "h", "l", "c"]:
         df[col] = df[col].astype(float)
     df["ts"] = df["ts"].astype(np.int64)
     df = df.sort_values("ts").drop_duplicates("ts").reset_index(drop=True)
     now_ms = int(time.time() * 1000)
-    df = df[df["ts"] + BAR_MS <= now_ms].reset_index(drop=True)
+    df = df[df["ts"] + BAR_MS <= now_ms].reset_index(drop=True)  # solo cerradas
     if len(df) < 20:
         print("[ERROR] Velas insuficientes (" + str(len(df)) + "). DETENIDO.")
         sys.exit(1)
-    print("[CANDLES] " + bar + ": " + str(len(df)) + " velas cerradas (~" +
+    print("[CANDLES] " + BAR + ": " + str(len(df)) + " velas cerradas (~" +
           format(len(df) * BAR_MS / 3600000.0, '.1f') + " horas)")
     return df
 
@@ -95,15 +111,14 @@ def load_ledger(cid):
 
 def save_ledger(cid, ledger):
     os.makedirs(DATA_DIR, exist_ok=True)
-    path = os.path.join(DATA_DIR, "grid-" + cid + ".jsonl")
-    with open(path, "w") as fh:
+    with open(os.path.join(DATA_DIR, "grid-" + cid + ".jsonl"), "w") as fh:
         for t in ledger:
             fh.write(json.dumps(t) + "\n")
 
 
-def new_malla(cfg, anchor_price):
-    step_abs = anchor_price * cfg["step_pct"]
-    lines = {i: anchor_price + (cfg["n_levels"] - i) * step_abs
+def new_malla(cfg, anchor):
+    step_abs = anchor * cfg["step_pct"]
+    lines = {i: anchor + (cfg["n_levels"] - i) * step_abs
              for i in range(1, cfg["n_levels"] + 1)}
     return {"n": cfg["n_levels"], "step_abs": step_abs, "lines": lines,
             "positions": [], "closed_total": 0, "net_pct_sum": 0.0,
@@ -122,23 +137,20 @@ def process_malla(cid, cfg, malla, candles, ledger):
             loss = 0.0
             for lv in malla["positions"]:
                 entry = malla["lines"][lv]
-                g = (sl_line - entry) / entry
-                loss += g - FEE_RT
+                loss += (sl_line - entry) / entry - FEE_RT
             ledger.append({"ts_out": int(row["ts"]), "event": "SL_RED",
                            "positions": len(malla["positions"]), "net_pct": loss})
-            events.append("[SL RED] malla " + cid + " cerrada · pos " +
+            events.append("[SL RED] " + cid + " cerrada · pos " +
                           str(len(malla["positions"])) + " · net " +
                           format(loss * 100, '+.2f') + "%")
             malla["dead"] = True
             break
-
         for i in range(1, n + 1):
             lp = malla["lines"][i]
             if l <= lp and i not in malla["positions"] and c < lp:
                 malla["positions"].append(i)
                 events.append("[COMPRA] " + cid + " nivel " + str(i) +
                               " @ " + format(lp, '.5f'))
-
         sold = []
         for lv in malla["positions"]:
             if lv - 1 >= 1 and c >= malla["lines"][lv - 1]:
@@ -151,7 +163,6 @@ def process_malla(cid, cfg, malla, candles, ledger):
                 malla["closed_total"] += 1
         for lv in sold:
             malla["positions"].remove(lv)
-
         if c < malla["lines"][1]:
             shift = malla["step_abs"]
             malla["lines"] = {i: lp + shift for i, lp in malla["lines"].items()}
@@ -179,9 +190,10 @@ def report(state):
 
 
 def main():
-    print("=== GRID SHADOW LAB rev.2 · 5 mallas paralelas · sombra · fees " +
+    print("=== GRID SHADOW LAB rev.3 · 5 mallas paralelas · sombra · fees " +
           format(FEE_RT * 100, '.2f') + "% r/t ===")
-    df = fetch_candles(INST_ID, BAR, HOURS_BACK)
+    inst_id = resolve_instrument()
+    df = fetch_candles(inst_id)
 
     state = load_state()
     if state is None:
