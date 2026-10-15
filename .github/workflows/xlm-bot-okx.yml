@@ -27,6 +27,7 @@ jobs:
       - name: Run XLM Bot
         run: python main-xlm.py
         env:
+          TEST_MODE: '1'
           SINGLE_CYCLE: '1'
           PYTHONUNBUFFERED: '1'
           OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
