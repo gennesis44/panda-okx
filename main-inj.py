@@ -7,24 +7,24 @@ Estrategia:
     - Death Cross EMA(7) bajo EMA(21) → señal short (modo observación por defecto)
 
 Parámetros operativos:
-    - Símbolo:        INJ/USD:INJ   (swap coin-margined, perp)
-    - Timeframe:      15m
-    - SL:             -1.0% respecto a la entrada
-    - TP:             +1.5% respecto a la entrada
-    - Leverage:       5x, margen aislado (isolated)
-    - Notional:       50 USD objetivo
-    - Bucle:          cada 15 min (sleep 900 s)
-    - Modo dry-run:   activable con DRY_RUN=1 (no envía órdenes reales)
+    - Símbolo: INJ/USD:INJ (swap coin-margined, perp)
+    - Timeframe: 15m
+    - SL: -1.0% respecto a la entrada
+    - TP: +1.5% respecto a la entrada
+    - Leverage: 5x, margen aislado (isolated)
+    - Notional: 50 USD objetivo
+    - Bucle: cada 15 min (sleep 900 s)
+    - Modo dry-run: activable con DRY_RUN=1 (no envía órdenes reales)
 
 Bugs corregidos respecto al original:
-    BUG-01  order['average'] puede ser None en OKX → fallback robusto
-    BUG-02  OKX no acepta type=conditional con triggerPrice/stopLoss/takeProfit
+    BUG-01 order['average'] puede ser None en OKX → fallback robusto
+    BUG-02 OKX no acepta type=conditional con triggerPrice/stopLoss/takeProfit
             → se usa attachAlgoOrds con triggerPx/orderPx/ordType=conditional
-    BUG-03  amount en contratos, no en unidades → cálculo con ctVal del instrument
-    BUG-04  Falta set_leverage → se fija antes de cada entrada
-    BUG-05  Posición en modo hedge → se fuerza one-way mode
-    BUG-06  SL/TP sin redondear a tickSize → se carga tickSize y se redondea
-    BUG-07  raise e mata el bot → se loggea y se reintenta en el siguiente ciclo
+    BUG-03 amount en contratos, no en unidades → cálculo con ctVal del instrument
+    BUG-04 Falta set_leverage → se fija antes de cada entrada
+    BUG-05 Posición en modo hedge → se fuerza one-way mode
+    BUG-06 SL/TP sin redondear a tickSize → se carga tickSize y se redondea
+    BUG-07 raise e mata el bot → se loggea y se reintenta en el siguiente ciclo
 
 Autor: panda-trading-desk 🐼
 Licencia: MIT
@@ -49,14 +49,18 @@ from ccxt import ExchangeError, NetworkError
 # Configuración (todo vía variables de entorno con defaults sensatos)
 # ─────────────────────────────────────────────────────────────────────────────
 
-SYMBOL        = os.getenv("BOT_SYMBOL",        "INJ/USD:INJ")
-TIMEFRAME     = os.getenv("BOT_TIMEFRAME",     "15m")
-LEVERAGE      = int(os.getenv("BOT_LEVERAGE",   "5"))
-NOTIONAL_USD  = float(os.getenv("BOT_NOTIONAL", "50"))
-SL_PCT        = float(os.getenv("BOT_SL_PCT",   "1.0"))   # 1% de pérdida
-TP_PCT        = float(os.getenv("BOT_TP_PCT",   "1.5"))   # 1.5% de ganancia
-LOOP_SECONDS  = int(os.getenv("BOT_LOOP_SEC",   "900"))   # 15 min
-DRY_RUN       = os.getenv("DRY_RUN", "0") == "1"
+SYMBOL = os.getenv("BOT_SYMBOL", "INJ/USD:INJ")
+TIMEFRAME = os.getenv("BOT_TIMEFRAME", "15m")
+LEVERAGE = int(os.getenv("BOT_LEVERAGE", "5"))
+NOTIONAL_USD = float(os.getenv("BOT_NOTIONAL", "50"))
+SL_PCT = float(os.getenv("BOT_SL_PCT", "1.0")) # 1% de pérdida
+TP_PCT = float(os.getenv("BOT_TP_PCT", "1.5")) # 1.5% de ganancia
+LOOP_SECONDS = int(os.getenv("BOT_LOOP_SEC", "900")) # 15 min
+DRY_RUN = os.getenv("DRY_RUN", "0") == "1"
+
+# Modos de ejecución rápida (para pruebas)
+SINGLE_RUN = os.getenv("SINGLE_RUN", "0") == "1" # 1 = corre 1 ciclo y sale
+TEST_ONLY = os.getenv("TEST_ONLY", "0") == "1" # 1 = solo lee velas, no opera
 
 EMA_FAST = 7
 EMA_SLOW = 21
@@ -83,8 +87,8 @@ log = logging.getLogger("inj_bot")
 @dataclass
 class InstrumentSpec:
     """Metadatos del contrato necesarios para dimensionar y redondear órdenes."""
-    ct_val: float        # tamaño de 1 contrato en moneda base
-    tick_size: float     # paso mínimo de precio
+    ct_val: float # tamaño de 1 contrato en moneda base
+    tick_size: float # paso mínimo de precio
     price_precision: int # decimales de precio
 
 
@@ -170,8 +174,6 @@ def extract_entry_price(order: Dict[str, Any], fallback: float) -> float:
             except (TypeError, ValueError):
                 continue
     return fallback
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Bot principal
 # ─────────────────────────────────────────────────────────────────────────────
@@ -185,6 +187,8 @@ class InjBot:
         self.sl_pct = SL_PCT / 100.0
         self.tp_pct = TP_PCT / 100.0
         self.dry_run = DRY_RUN
+        self.single_run = SINGLE_RUN
+        self.test_only = TEST_ONLY
 
         # Exchange público (sin credenciales) para leer velas
         self.ex_pub = ccxt.okx({
@@ -201,7 +205,7 @@ class InjBot:
         if self.ex_priv is not None:
             return self.ex_priv
 
-        api_key    = os.getenv("OKX_API_KEY")
+        api_key = os.getenv("OKX_API_KEY")
         secret_key = os.getenv("OKX_SECRET_KEY")
         passphrase = os.getenv("OKX_PASSWORD")
 
@@ -234,12 +238,12 @@ class InjBot:
         ohlcv = self.ex_pub.fetch_ohlcv(self.symbol, self.timeframe, limit=CANDLE_LIMIT)
         df = pd.DataFrame(ohlcv, columns=["ts", "open", "high", "low", "close", "vol"])
 
-        df["ema7"]  = df["close"].ewm(span=EMA_FAST, adjust=False).mean()
+        df["ema7"] = df["close"].ewm(span=EMA_FAST, adjust=False).mean()
         df["ema21"] = df["close"].ewm(span=EMA_SLOW, adjust=False).mean()
 
-        prev_ema7  = df["ema7"].iloc[-2]
+        prev_ema7 = df["ema7"].iloc[-2]
         prev_ema21 = df["ema21"].iloc[-2]
-        curr_ema7  = df["ema7"].iloc[-1]
+        curr_ema7 = df["ema7"].iloc[-1]
         curr_ema21 = df["ema21"].iloc[-1]
         current_price = float(df["close"].iloc[-1])
 
@@ -248,8 +252,8 @@ class InjBot:
     # ── Configuración del exchange antes de operar ───────────────────────
     def _configure_account_for_trading(self, ex: ccxt.okx) -> None:
         """
-        BUG-04 fix:   set_leverage debe llamarse antes de create_order en swaps.
-        BUG-05 fix:   forzar one-way mode (no hedge) para que attachAlgoOrds
+        BUG-04 fix: set_leverage debe llamarse antes de create_order en swaps.
+        BUG-05 fix: forzar one-way mode (no hedge) para que attachAlgoOrds
                       sepa a qué lado adherirse.
         """
         # One-way mode (long/short en la misma posición, no dual)
@@ -279,10 +283,10 @@ class InjBot:
         Estructura OKX nativa:
             attachAlgoOrds: [
               {
-                slTriggerPx: "...",   // precio que dispara el SL
-                slOrdPx:     "...",   // precio límite del SL (market => "")
-                tpTriggerPx: "...",   // precio que dispara el TP
-                tpOrdPx:     "",       // market => ""
+                slTriggerPx: "...", // precio que dispara el SL
+                slOrdPx: "...", // precio límite del SL (market => "")
+                tpTriggerPx: "...", // precio que dispara el TP
+                tpOrdPx: "", // market => ""
               }
             ]
         """
@@ -296,7 +300,7 @@ class InjBot:
         attach_algo = [{
             # SL leg
             "slTriggerPx": sl_str,
-            "slOrdPx": "",            # market-style exit
+            "slOrdPx": "", # market-style exit
             # TP leg
             "tpTriggerPx": tp_str,
             "tpOrdPx": "",
@@ -311,8 +315,8 @@ class InjBot:
 
         if self.dry_run:
             log.warning("[DRY-RUN] No se envía orden real. Configuración que se enviaría:")
-            log.warning("  symbol=%s  type=market  side=buy  amount=%d", self.symbol, contracts)
-            log.warning("  attachAlgoOrds=%s", attach_algo)
+            log.warning(" symbol=%s type=market side=buy amount=%d", self.symbol, contracts)
+            log.warning(" attachAlgoOrds=%s", attach_algo)
             return "DRY_RUN_SKIPPED"
 
         order = ex.create_order(
@@ -331,7 +335,6 @@ class InjBot:
             order.get("id"), entry_price, sl_str, tp_str,
         )
         return str(order.get("id"))
-
     # ── Ciclo principal ──────────────────────────────────────────────────
     def cycle(self) -> None:
         """
@@ -359,6 +362,11 @@ class InjBot:
             # ── Golden Cross ─────────────────────────────────────────────
             if prev_ema7 <= prev_ema21 and curr_ema7 > curr_ema21:
                 log.info("★ Golden Cross (7/21) detectado → entrada LONG")
+
+                # Modo TEST_ONLY: NO operar, solo reportar
+                if self.test_only:
+                    log.info("[TEST_ONLY] Señal detectada pero NO se opera. Saliría LONG aquí.")
+                    return
 
                 ex = self._private_exchange()
                 if self.instrument is None:
@@ -396,13 +404,20 @@ class InjBot:
     def run_forever(self) -> None:
         log.info(
             "╔══════════════════════════════════════════════════════════╗"
-            "\n║ inj_bot arrancando                                       "
-            "\n║ symbol=%s  tf=%s  lev=%dx  notional=%.2f USD  "
-            "\n║ SL=-%.2f%%  TP=+%.2f%%  loop=%ds  dry_run=%s",
+            "\n║ inj_bot arrancando "
+            "\n║ symbol=%s tf=%s lev=%dx notional=%.2f USD "
+            "\n║ SL=-%.2f%% TP=+%.2f%% loop=%ds dry_run=%s",
             self.symbol, self.timeframe, self.leverage, self.notional,
             self.sl_pct * 100, self.tp_pct * 100, LOOP_SECONDS, self.dry_run,
         )
         log.info("╚══════════════════════════════════════════════════════════╝")
+
+        # Modo SINGLE_RUN: una sola pasada y salir (para tests)
+        if self.single_run:
+            log.info("SINGLE_RUN=1 → ejecutando 1 ciclo y saliendo.")
+            self.cycle()
+            log.info("Ciclo único completado. Saliendo.")
+            return
 
         while True:
             self.cycle()
@@ -424,4 +439,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    main() 
