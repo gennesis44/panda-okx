@@ -198,9 +198,11 @@ def execute_order(side, symbol, ref_price, amount, candle_ts):
 # === COOLDOWN ===
 def cooldown_active(symbol):
     try:
-        market_id = exchange.market(symbol)['id']
+        market = exchange.market(symbol)
+        inst_type = str((market.get('info') or {}).get('instType') or 'FUTURES').upper()
         hist = exchange.private_get_trade_fills_history({
-            'instId': market_id,
+            'instType': inst_type,
+            'instId': market['id'],
             'limit': '5',
         })
         for fill in (hist.get('data') or []):
