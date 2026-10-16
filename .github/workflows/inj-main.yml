@@ -42,7 +42,7 @@ jobs:
           BOT_TICK_SIZE:      '0.001'
           
           # === Modos ===
-          DRY_RUN:            '1'
+          DRY_RUN:            '0'
           SINGLE_RUN:         '1'
           TEST_ONLY:          '0'
           
