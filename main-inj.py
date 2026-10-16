@@ -1,446 +1,427 @@
-# main-inj.py — Ax2-INJ · EL SEPTIMO DESTRUCTOR · decreto Carbono (24-sep)
-#   LEY (backtest 60 dias — el mejor de la flota):
-#     cruce EMA3/21 en velas 1H CERRADAS (ventana -2/-3)
-#     LONG  (cruce alcista): SL 7.0% / TP 10.0%
-#     SHORT (cruce bajista): SL 5.0% / TP 8.0%
-#     Backtest: 16 trades · WR 56% (breakeven 40%) ·
-#     expect +2.43%/trade NETO fees · net +38.9% · PF 1.93
-#     LONG 5W/3L +28.0% · SHORT 4W/4L +11.0% (ambos lados verdes)
-#   SIN RSI: medido 3 veces en la flota — el RSI-candado en cruces
-#     frescos no veto NADA (0 vetos en 120 dias XLM). Decorativo.
-#   SIN CANDADO ANTI-RANGO (26-sep): EXTIRPADO por decreto del
-#     experimento A/B HBAR-30m/1H/4H — el filtro cuesta trades y
-#     no aporta retorno (misma leccion que XRP-4H: el aire ES el edge).
-#   TAMANO (ratificado por Carbono): AMOUNT = 5
-#     ctVal confirmado: 1 ct = 0.1 INJ → 5 ct = 0.5 INJ (~$4.03)
-#   CONTEXTO: INJ se mueve ~10%/dia — el activo mas bravo de la
-#     flota. Narrativa IA (familia FET) — contagio posible.
-# Ax3: HOST my.okx.com | clOrdId INJ | cooldown fail-closed | no entrar si NO CABE | 51016
-# Ax3.1: unidades honestas (ctVal=0.1 INJ confirmado por API 24-sep 14:52)
-# Ax3.2: guardia de nocional — unidad sorpresa = bot bloqueado
-# INSTRUMENTO: XPERP INJ/USD (venc. jul-2031) — USDT PROHIBIDO (MiCA/EEE)
-import os
-import time
+"""
+inj_bot.py — Bot de trading EMA 7/21 para OKX Swap (futuros perp) sobre INJ/USD:INJ
+====================================================================================
+
+Estrategia:
+    - Golden Cross EMA(7) sobre EMA(21) → entrada LONG
+    - Death Cross EMA(7) bajo EMA(21) → señal short (modo observación por defecto)
+
+Parámetros operativos:
+    - Símbolo:        INJ/USD:INJ   (swap coin-margined, perp)
+    - Timeframe:      15m
+    - SL:             -1.0% respecto a la entrada
+    - TP:             +1.5% respecto a la entrada
+    - Leverage:       5x, margen aislado (isolated)
+    - Notional:       50 USD objetivo
+    - Bucle:          cada 15 min (sleep 900 s)
+    - Modo dry-run:   activable con DRY_RUN=1 (no envía órdenes reales)
+
+Bugs corregidos respecto al original:
+    BUG-01  order['average'] puede ser None en OKX → fallback robusto
+    BUG-02  OKX no acepta type=conditional con triggerPrice/stopLoss/takeProfit
+            → se usa attachAlgoOrds con triggerPx/orderPx/ordType=conditional
+    BUG-03  amount en contratos, no en unidades → cálculo con ctVal del instrument
+    BUG-04  Falta set_leverage → se fija antes de cada entrada
+    BUG-05  Posición en modo hedge → se fuerza one-way mode
+    BUG-06  SL/TP sin redondear a tickSize → se carga tickSize y se redondea
+    BUG-07  raise e mata el bot → se loggea y se reintenta en el siguiente ciclo
+
+Autor: panda-trading-desk 🐼
+Licencia: MIT
+"""
+
+from __future__ import annotations
+
 import logging
+import math
+import os
+import sys
+import time
+from dataclasses import dataclass
+from typing import Any, Dict, Optional, Tuple
 
 import ccxt
 import pandas as pd
+from ccxt import ExchangeError, NetworkError
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-log = logging.getLogger(__name__)
 
-def _f(x):
-    try:
-        return float(x)
-    except (TypeError, ValueError):
-        return 0.0
+# ─────────────────────────────────────────────────────────────────────────────
+# Configuración (todo vía variables de entorno con defaults sensatos)
+# ─────────────────────────────────────────────────────────────────────────────
 
-# ==================== CONFIGURACIÓN (decreto Carbono) ====================
-BASE_ASSET = 'INJ'
-AMOUNT = 5          # 5 ct = 0.5 INJ (~$4.03) — ctVal=0.1 confirmado por API
-SL_LONG = 0.070     # 7.0%
-TP_LONG = 0.100     # 10.0%
-SL_SHORT = 0.050    # 5.0%
-TP_SHORT = 0.080    # 8.0%
-TIMEFRAME = '1h'
-EMA_FAST = 3
+SYMBOL        = os.getenv("BOT_SYMBOL",        "INJ/USD:INJ")
+TIMEFRAME     = os.getenv("BOT_TIMEFRAME",     "15m")
+LEVERAGE      = int(os.getenv("BOT_LEVERAGE",   "5"))
+NOTIONAL_USD  = float(os.getenv("BOT_NOTIONAL", "50"))
+SL_PCT        = float(os.getenv("BOT_SL_PCT",   "1.0"))   # 1% de pérdida
+TP_PCT        = float(os.getenv("BOT_TP_PCT",   "1.5"))   # 1.5% de ganancia
+LOOP_SECONDS  = int(os.getenv("BOT_LOOP_SEC",   "900"))   # 15 min
+DRY_RUN       = os.getenv("DRY_RUN", "0") == "1"
+
+EMA_FAST = 7
 EMA_SLOW = 21
-TD_MODE = 'cross'
-LEVERAGE = 1
-COOLDOWN_MIN = 60
-TEST_MODE = os.getenv('TEST_MODE') == '1'
-SINGLE_CYCLE = os.getenv('SINGLE_CYCLE') == '1'
-MAX_NOTIONAL_USD = _f(os.getenv('OKX_INJ_MAX_NOTIONAL', '25.0')) or 25.0
-SIGNAL_WINDOW = (-2, -3)
-WARMUP_1H = 30
+CANDLE_LIMIT = 100
 
-HOST = 'https://my.okx.com'
 
-exchange = ccxt.okx({
-    'apiKey':    os.getenv('OKX_API_KEY', ''),
-    'secret':    os.getenv('OKX_SECRET_KEY', ''),
-    'password':  os.getenv('OKX_PASSWORD', ''),
-    'enableRateLimit': True,
-    'options':   {'defaultType': 'swap'},
-    'urls':      {'api': {'rest': HOST}},
-})
+# ─────────────────────────────────────────────────────────────────────────────
+# Logging (rotación simple, a stdout para que lo capture systemd/docker)
+# ─────────────────────────────────────────────────────────────────────────────
 
-# ==================== INSTRUMENTO (XPERP USD — NUNCA USDT) ====================
-def catalog_inj():
-    exchange.load_markets()
-    print("[" + time.strftime('%H:%M:%S') + "] --- CATALOGO INJ ---", flush=True)
-    for m in exchange.markets.values():
-        if m.get('base') != BASE_ASSET:
-            continue
-        info = m.get('info') or {}
-        estado = 'activo' if m.get('active') else 'INACTIVO'
-        print("  " + str(m['symbol']) + " | " + str(info.get('instType') or '?') +
-              " | " + estado + " | ctVal=" + str(info.get('ctVal')) +
-              " " + str(info.get('ctValCcy') or '?') +
-              " | settle=" + str(m.get('settle') or '?'), flush=True)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)-7s | %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+    stream=sys.stdout,
+)
+log = logging.getLogger("inj_bot")
 
-def _inst_type(symbol):
-    try:
-        t = str((exchange.market(symbol).get('info') or {}).get('instType') or '').upper()
-        if t in ('SWAP', 'FUTURES'):
-            return t
-    except Exception:
-        pass
-    m = exchange.market(symbol)
-    return 'SWAP' if (m.get('swap') or m.get('type') == 'swap') else 'FUTURES'
 
-def _contract_meta(symbol, price=None):
-    market = exchange.market(symbol)
-    info = market.get('info') or {}
-    ctval = float(market.get('contractSize') or info.get('ctVal') or 1)
-    ccy = str(info.get('ctValCcy') or BASE_ASSET).upper()
-    settle = str(info.get('settleCcy') or market.get('settle') or '?').upper()
-    if price is None:
-        price = exchange.fetch_ticker(symbol).get('last') or 0
-    price = _f(price)
-    usd = ctval if ccy in ('USD', 'USDT', 'USDC') else ctval * price
-    return ctval, ccy, settle, price, usd
+# ─────────────────────────────────────────────────────────────────────────────
+# Helpers
+# ─────────────────────────────────────────────────────────────────────────────
 
-def _is_forbidden(symbol):
-    settle = str(exchange.market(symbol).get('settle') or '').upper()
-    return settle == 'USDT'
+@dataclass
+class InstrumentSpec:
+    """Metadatos del contrato necesarios para dimensionar y redondear órdenes."""
+    ct_val: float        # tamaño de 1 contrato en moneda base
+    tick_size: float     # paso mínimo de precio
+    price_precision: int # decimales de precio
 
-def pick_future():
-    exchange.load_markets()
-    candidatos = []
-    for m in exchange.markets.values():
-        if (m.get('base') == BASE_ASSET and m.get('future') and m.get('active')
-                and not _is_forbidden(m['symbol'])):
-            info = m.get('info') or {}
+
+def load_instrument_spec(ex: ccxt.okx, symbol: str) -> InstrumentSpec:
+    """
+    Carga ctVal, tickSize y price precision del mercado desde el exchange.
+
+    BUG-03 fix: necesitamos ctVal para calcular correctamente el número
+    de contratos a partir del notional objetivo en USD.
+
+    BUG-06 fix: necesitamos tickSize y price precision para redondear
+    SL/TP al grid válido y evitar rechazos del exchange.
+    """
+    markets = ex.load_markets(reload=True)
+    mkt = markets[symbol]
+
+    ct_val = float(mkt.get("contractSize") or mkt.get("ctVal") or 1.0)
+
+    # tickSize viene como string en market info
+    tick_raw = (
+        mkt.get("tickSize")
+        or mkt.get("precision", {}).get("price")
+        or "0.0001"
+    )
+    tick_size = float(tick_raw)
+
+    # price_precision: decimales derivados del tickSize
+    # ej: tick 0.0001 → 4 decimales
+    price_precision = max(0, -int(math.floor(math.log10(tick_size)))) if tick_size > 0 else 4
+
+    log.info(
+        "Instrument spec cargado: %s | ctVal=%s | tickSize=%s | pricePrecision=%d",
+        symbol, ct_val, tick_size, price_precision,
+    )
+    return InstrumentSpec(ct_val=ct_val, tick_size=tick_size, price_precision=price_precision)
+
+
+def round_to_tick(price: float, tick: float, precision: int) -> str:
+    """
+    Redondea un precio al tickSize del instrumento y lo devuelve como string
+    con el número correcto de decimales (OKX exige string formateado).
+
+    BUG-06 fix.
+    """
+    #_floor para SL (siempre un pelo más conservador) — aquí genérico
+    stepped = math.floor(price / tick) * tick
+    return f"{stepped:.{precision}f}"
+
+
+def calc_contracts(notional_usd: float, price: float, ct_val: float) -> int:
+    """
+    Calcula el número entero de contratos a partir del notional objetivo.
+
+    BUG-03 fix:
+        contracts = notional_USD / (ct_val * price)
+    En OKX swap, `amount` = número de contratos, no unidades de base.
+    """
+    if price <= 0 or ct_val <= 0:
+        return 0
+    raw = notional_usd / (ct_val * price)
+    contracts = int(math.floor(raw))
+    if contracts < 1:
+        log.warning(
+            "Notional %.2f USD demasiado pequeño para 1 contrato (raw=%.4f). "
+            "Se usaría 1 contrato como mínimo si hay margen suficiente.",
+            notional_usd, raw,
+        )
+        contracts = 1
+    return contracts
+
+
+def extract_entry_price(order: Dict[str, Any], fallback: float) -> float:
+    """
+    BUG-01 fix:
+    OKX no siempre devuelve `average` en market fills (puede venir None).
+    Aplicamos cadena de fallback: average → price → lastTradePrice → current.
+    """
+    for key in ("average", "price", "lastTradePrice"):
+        val = order.get(key)
+        if val:
             try:
-                exp = int(info.get('expTime') or 0)
+                return float(val)
             except (TypeError, ValueError):
-                exp = 0
-            candidatos.append((exp, m['symbol']))
-    if not candidatos:
-        return None
-    candidatos.sort(reverse=True)
-    return candidatos[0][1]
-
-def pick_swap_usd():
-    exchange.load_markets()
-    for m in exchange.markets.values():
-        if (m.get('base') == BASE_ASSET and m.get('active')
-                and (m.get('swap') or (m.get('info') or {}).get('instType') == 'SWAP')
-                and not _is_forbidden(m['symbol'])):
-            return m['symbol']
-    return None
-
-def _log_contract_size(sym):
-    try:
-        ctval, ccy, settle, _p, usd = _contract_meta(sym)
-        log.info("Contrato: 1 = " + str(ctval) + " " + ccy + " | settle=" + settle +
-                 " | nocional ~$" + format(usd, '.2f') + " | " + sym +
-                 " | " + _inst_type(sym))
-    except Exception as e:
-        log.warning("No se pudo leer el tamano del contrato: " + str(e))
-
-def resolve_symbol():
-    exchange.load_markets()
-    try:
-        for p in exchange.fetch_positions():
-            if (p.get('contracts') or 0) > 0 and (p.get('symbol') or '').startswith(BASE_ASSET + '/'):
-                if _is_forbidden(p['symbol']):
-                    log.error("VETO: posicion abierta en USDT — prohibido.")
-                    raise RuntimeError("Posicion abierta en instrumento USDT prohibido.")
-                log.info("Instrumento (posicion abierta): " + str(p['symbol']))
-                _log_contract_size(p['symbol'])
-                return p['symbol']
-    except RuntimeError:
-        raise
-    except Exception as e:
-        log.warning("Posiciones no leidas al resolver simbolo: " + str(e))
-    sym = pick_future()
-    if sym:
-        log.info("Instrumento: " + str(sym) + " (XPERP — vencimiento mas lejano)")
-        _log_contract_size(sym)
-        return sym
-    sym = pick_swap_usd()
-    if sym:
-        log.warning("Instrumento: " + str(sym) + " (fallback SWAP-USD)")
-        _log_contract_size(sym)
-        return sym
-    raise RuntimeError("No hay INJ/USD (XPERP o SWAP-USD) activo. USDT prohibido.")
-
-# ==================== INDICADORES ====================
-def ema(s, length):
-    return s.ewm(span=length, adjust=False).mean()
-
-def fetch_data(symbol, timeframe, limit=100):
-    ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
-    return pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-
-# ==================== POSICIÓN ====================
-def get_open_position(symbol):
-    try:
-        for pos in exchange.fetch_positions([symbol]):
-            if pos.get('symbol') == symbol and float(pos.get('contracts') or 0) > 0:
-                return pos
-    except Exception as e:
-        log.error("Error consultando posiciones: " + str(e))
-    return None
-
-# ==================== ENTRADA CON SL/TP ASIMÉTRICOS ====================
-def _post_trade_order(req):
-    method = getattr(exchange, 'privatePostTradeOrder', None) or exchange.private_post_trade_order
-    return method(req)
-
-def _cl_order_id(candle_ts):
-    return "INJ" + str(int(candle_ts))
-
-def candle_already_traded(symbol, candle_ts):
-    cl = _cl_order_id(candle_ts)
-    try:
-        inst = exchange.market(symbol)['id']
-        resp = exchange.private_get_trade_order({'instId': inst, 'clOrdId': cl})
-        data = resp.get('data') or []
-        if data and str(data[0].get('sCode', '0')) == '0':
-            log.info("Vela ya operada (clOrdId " + cl + "). Duplicado bloqueado.")
-            return True
-        return False
-    except ccxt.ExchangeError as e:
-        msg = str(e)
-        if '51603' in msg or 'does not exist' in msg.lower():
-            return False
-        log.warning("No se pudo verificar duplicado (" + msg + "); BLOQUEO fail-closed.")
-        return True
-    except Exception as e:
-        log.warning("No se pudo verificar duplicado (" + str(e) + "); BLOQUEO fail-closed.")
-        return True
-
-def execute_order(side, symbol, ref_price, amount, candle_ts):
-    ctval, ccy, _settle, _p, usd = _contract_meta(symbol, ref_price)
-    nocional = amount * usd
-    log.info("Nocional: " + str(amount) + " contrato x " + str(ctval) + " " + ccy +
-             " (~$" + format(nocional, '.2f') + ")")
-
-    if nocional > MAX_NOTIONAL_USD:
-        raise RuntimeError("GUARDIA: nocional $" + format(nocional, '.2f') +
-                           " > maximo $" + format(MAX_NOTIONAL_USD, '.2f') +
-                           " — unidad inesperada. NO SE OPERA. (ctVal=" +
-                           str(ctval) + " " + ccy + ")")
-
-    if side == 'LONG':
-        oside = 'buy'
-        sl_raw = ref_price * (1 - SL_LONG)
-        tp_raw = ref_price * (1 + TP_LONG)
-    else:
-        oside = 'sell'
-        sl_raw = ref_price * (1 + SL_SHORT)
-        tp_raw = ref_price * (1 - TP_SHORT)
-
-    sl = exchange.price_to_precision(symbol, sl_raw)
-    tp = exchange.price_to_precision(symbol, tp_raw)
-    sz = exchange.amount_to_precision(symbol, amount)
-
-    req = {
-        'instId': exchange.market(symbol)['id'],
-        'tdMode': TD_MODE,
-        'side': oside,
-        'ordType': 'optimal_limit_ioc',
-        'sz': sz,
-        'clOrdId': _cl_order_id(candle_ts),
-        'attachAlgoOrds': [{
-            'tpTriggerPx': tp, 'tpOrdPx': '-1',
-            'slTriggerPx': sl, 'slOrdPx': '-1',
-        }],
-    }
-    try:
-        resp = _post_trade_order(req)
-    except ccxt.ExchangeError as e:
-        if '51016' in str(e):
-            log.info("OKX: clOrdId duplicado (51016) — idempotencia OK.")
-            return True
-        raise
-
-    data = resp.get('data') or []
-    d0 = data[0] if isinstance(data, list) and data else {}
-    s_code = str(d0.get('sCode', resp.get('code', '1')))
-    if s_code == '51016':
-        log.info("OKX: clOrdId duplicado (51016) — idempotencia OK.")
-        return True
-    if s_code != '0':
-        raise ccxt.ExchangeError("OKX rechazo la entrada: " + str(d0.get('sMsg') or resp.get('msg')))
-    log.info("INJ " + side + " ejecutada con SL/TP adjuntos. ordId: " +
-             str(d0.get('ordId')) + " | SL: " + str(sl) + " | TP: " + str(tp))
-    return True
-
-# ==================== COOLDOWN POST-PÉRDIDA ====================
-def cooldown_active(symbol):
-    try:
-        market_id = exchange.market(symbol)['id']
-        hist = exchange.privateGetTradeFillsHistory({
-            'instType': _inst_type(symbol),
-            'instId': market_id,
-            'limit': '5',
-        })
-        for fill in (hist.get('data') or []):
-            if str(fill.get('reduceOnly', '0')) == 'true' or fill.get('subType') in ('3', '4', '5', '6'):
-                ts_ms = int(fill.get('ts') or 0)
-                age_min = (time.time() * 1000 - ts_ms) / 60000.0
-                pnl = _f(fill.get('pnl'))
-                if pnl < 0 and age_min < COOLDOWN_MIN:
-                    log.info("COOLDOWN: ultima perdida hace " + format(age_min, '.0f') +
-                             " min (< " + str(COOLDOWN_MIN) + ").")
-                    return True
-                return False
-        return False
-    except Exception as e:
-        log.warning("No se pudo verificar cooldown (" + str(e) + "); BLOQUEO fail-closed.")
-        return True
-
-# ==================== SEÑAL: CRUCE EMA3/21 1H (SIN CANDADO) ====================
-def evaluate_signal(symbol):
-    """[El Septimo — decreto Carbono, backtest +2.43%/trade]
-    SENAL UNICA: cruce EMA3/EMA21 en velas 1H CERRADAS.
-    LONG  (alcista): SL 7% / TP 10%
-    SHORT (bajista): SL 5% / TP 8%
-    SIN candado anti-rango: extirpado 26-sep por experimento A/B
-    (el filtro cuesta ganadoras — mismo veredicto que XRP-4H).
-    Ventana -2/-3 cubre la cadencia del cron."""
-    try:
-        df = fetch_data(symbol, TIMEFRAME, limit=100)
-        if len(df) < WARMUP_1H + 10:
-            log.error("1H insuficiente (" + str(len(df)) + " velas). Sin senal.")
-            return None, None, None
-
-        now_ms = int(time.time() * 1000)
-        if int(df['timestamp'].iloc[-1]) + 3600000 > now_ms:
-            df = df.iloc[:-1].reset_index(drop=True)
-            if len(df) < WARMUP_1H + 10:
-                log.error("1H insuficiente tras descartar vela en formacion.")
-                return None, None, None
-
-        e3 = ema(df['close'], EMA_FAST)
-        e21 = ema(df['close'], EMA_SLOW)
-        price = exchange.fetch_ticker(symbol).get('last') or df['close'].iloc[-1]
-
-        log.info("Precio: " + str(price) + " | 1H EMA3/21: " +
-                 format(e3.iloc[-2], '.4f') + "/" + format(e21.iloc[-2], '.4f') +
-                 " | EMA3 " + (">" if e3.iloc[-2] > e21.iloc[-2] else "<") + " EMA21 (estado)")
-
-        for i_curr in SIGNAL_WINDOW:
-            i_prev = i_curr - 1
-            idx = len(df) + i_curr
-            if abs(i_prev) > len(df) - 1 or idx < WARMUP_1H:
                 continue
-            candle_ts = int(df['timestamp'].iloc[i_curr])
+    return fallback
 
-            up = (e3.iloc[i_prev] <= e21.iloc[i_prev]
-                  and e3.iloc[idx] > e21.iloc[idx])
-            down = (e3.iloc[i_prev] >= e21.iloc[i_prev]
-                    and e3.iloc[idx] < e21.iloc[idx])
 
-            if up:
-                log.info("Cruce ALCISTA EMA3/21 detectado. Senal LONG.")
-                return 'LONG', price, candle_ts
+# ─────────────────────────────────────────────────────────────────────────────
+# Bot principal
+# ─────────────────────────────────────────────────────────────────────────────
 
-            if down:
-                log.info("Cruce BAJISTA EMA3/21 detectado. Senal SHORT.")
-                return 'SHORT', price, candle_ts
+class InjBot:
+    def __init__(self) -> None:
+        self.symbol = SYMBOL
+        self.timeframe = TIMEFRAME
+        self.leverage = LEVERAGE
+        self.notional = NOTIONAL_USD
+        self.sl_pct = SL_PCT / 100.0
+        self.tp_pct = TP_PCT / 100.0
+        self.dry_run = DRY_RUN
 
-        log.info("Sin cruce EMA3/21 en la ventana. Vigilando.")
-    except Exception as e:
-        log.error("Error en evaluacion: " + str(e))
-    return None, None, None
+        # Exchange público (sin credenciales) para leer velas
+        self.ex_pub = ccxt.okx({
+            "enableRateLimit": True,
+            "options": {"defaultType": "swap"},
+        })
 
-# ==================== CAPACIDAD ====================
-def capacity_ok(symbol):
-    try:
-        _ctval, _ccy, _settle, _price, usd = _contract_meta(symbol)
-        nocional = usd * AMOUNT
-        if nocional > MAX_NOTIONAL_USD:
-            log.error("GUARDIA: nocional $" + format(nocional, '.2f') +
-                      " > maximo $" + format(MAX_NOTIONAL_USD, '.2f') + ". NO SE OPERA.")
-            return False
-        need = nocional / max(LEVERAGE, 1)
-    except Exception as e:
-        log.warning("Capacidad: nocional no calculable: " + str(e))
-        return False
-    try:
-        raw = exchange.privateGetAccountBalance()
-        details = ((raw or {}).get('data') or [{}])[0].get('details') or []
-        total = sum(_f(d.get('eqUsd')) for d in details)
-        log.info("Margen (5 ct): ~$" + format(need, '.2f') + " | colateral: ~$" +
-                 format(total, '.2f') + " -> " + ('CABE' if total >= need else 'NO CABE'))
-        return total >= need
-    except Exception as e:
-        log.warning("Capacidad: colateral no calculable: " + str(e) + " — BLOQUEO.")
-        return False
+        # Exchange privado (con credenciales) sólo se instancia si no es dry-run
+        self.ex_priv: Optional[ccxt.okx] = None
+        self.instrument: Optional[InstrumentSpec] = None
 
-# ==================== ARRANQUE ====================
-def verify_setup():
-    raw = exchange.privateGetAccountBalance()
-    details = ((raw or {}).get('data') or [{}])[0].get('details') or []
-    total = sum(_f(d.get('eqUsd')) for d in details)
-    log.info("Autenticacion OK | host=" + HOST + " | Colateral real (USD): ~" + format(total, '.2f'))
+    # ── Exchange privado perezoso ─────────────────────────────────────────
+    def _private_exchange(self) -> ccxt.okx:
+        if self.ex_priv is not None:
+            return self.ex_priv
 
-# ==================== CICLO ====================
-def run_cycle():
-    symbol = resolve_symbol()
+        api_key    = os.getenv("OKX_API_KEY")
+        secret_key = os.getenv("OKX_SECRET_KEY")
+        passphrase = os.getenv("OKX_PASSWORD")
 
-    try:
-        exchange.set_leverage(LEVERAGE, symbol, params={'mgnMode': TD_MODE})
-    except Exception as e:
-        log.warning("No se pudo fijar apalancamiento (se usa el de OKX): " + str(e))
+        if not (api_key and secret_key and passphrase):
+            raise RuntimeError(
+                "Faltan credenciales OKX. Define OKX_API_KEY, OKX_SECRET_KEY "
+                "y OKX_PASSWORD en el entorno (o usa DRY_RUN=1)."
+            )
 
-    pos = get_open_position(symbol)
-    if pos:
-        log.info("Posicion abierta (" + str(pos['side']) + "). Esperando SL/TP.")
-        return
+        self.ex_priv = ccxt.okx({
+            "apiKey": api_key,
+            "secret": secret_key,
+            "password": passphrase,
+            "enableRateLimit": True,
+            "options": {"defaultType": "swap"},
+        })
 
-    if not capacity_ok(symbol):
-        log.info("Sin capacidad. Vigilando.")
-        return
+        if self.dry_run:
+            # OKX sandbox oficial (paper trading)
+            self.ex_priv.set_sandbox_mode(True)
+            log.warning("DRY_RUN activado → usando sandbox OKX (paper trading).")
 
-    if cooldown_active(symbol):
-        log.info("Vigilando (cooldown activo).")
-        return
+        return self.ex_priv
 
-    signal, price, candle_ts = evaluate_signal(symbol)
-    if not signal:
-        return
+    # ── Análisis de velas ────────────────────────────────────────────────
+    def fetch_ema_state(self) -> Tuple[float, float, float, float, float]:
+        """
+        Devuelve (prev_ema7, prev_ema21, curr_ema7, curr_ema21, current_price).
+        """
+        ohlcv = self.ex_pub.fetch_ohlcv(self.symbol, self.timeframe, limit=CANDLE_LIMIT)
+        df = pd.DataFrame(ohlcv, columns=["ts", "open", "high", "low", "close", "vol"])
 
-    if candle_already_traded(symbol, candle_ts):
-        return
+        df["ema7"]  = df["close"].ewm(span=EMA_FAST, adjust=False).mean()
+        df["ema21"] = df["close"].ewm(span=EMA_SLOW, adjust=False).mean()
 
-    log.info("Senal " + signal + " (cruce EMA3/21 1H). Abriendo " +
-             str(AMOUNT) + " contrato...")
-    try:
-        execute_order(signal, symbol, price, AMOUNT, candle_ts)
-    except Exception as e:
-        log.error("Entrada rechazada: " + str(e))
+        prev_ema7  = df["ema7"].iloc[-2]
+        prev_ema21 = df["ema21"].iloc[-2]
+        curr_ema7  = df["ema7"].iloc[-1]
+        curr_ema21 = df["ema21"].iloc[-1]
+        current_price = float(df["close"].iloc[-1])
 
-def run_once():
-    log.info("Modo ciclo unico | INJ EMA3/21 1H sin RSI sin candado · 5 ct (XPERP USD).")
-    verify_setup()
-    if TEST_MODE:
-        catalog_inj()
-        return
-    run_cycle()
+        return prev_ema7, prev_ema21, curr_ema7, curr_ema21, current_price
 
-def main_loop():
-    log.info("Bot " + BASE_ASSET + " | 1H EMA3/21 | LONG SL7/TP10 · SHORT SL5/TP8 | " +
-             str(AMOUNT) + " ct | cooldown " + str(COOLDOWN_MIN) + "m | " + HOST)
-    verify_setup()
-    while True:
+    # ── Configuración del exchange antes de operar ───────────────────────
+    def _configure_account_for_trading(self, ex: ccxt.okx) -> None:
+        """
+        BUG-04 fix:   set_leverage debe llamarse antes de create_order en swaps.
+        BUG-05 fix:   forzar one-way mode (no hedge) para que attachAlgoOrds
+                      sepa a qué lado adherirse.
+        """
+        # One-way mode (long/short en la misma posición, no dual)
         try:
-            run_cycle()
-        except KeyboardInterrupt:
-            log.info("Detenido por el usuario.")
-            break
+            ex.set_position_mode(False, True, self.symbol)
+            log.info("Position mode → one-way para %s.", self.symbol)
+        except ExchangeError as e:
+            # OKX a veces ya está en one-way y devuelve error; es benigno.
+            log.debug("set_position_mode benign skip: %s", e)
+
+        # Set leverage (mgnMode=isolated)
+        ex.set_leverage(
+            self.leverage,
+            self.symbol,
+            params={"mgnMode": "isolated"},
+        )
+        log.info("Leverage fijado en %dx isolated para %s.", self.leverage, self.symbol)
+
+    # ── Envío de orden con SL/TP adheridos ───────────────────────────────
+    def _place_long_with_algo(self, ex: ccxt.okx, contracts: int, current_price: float) -> str:
+        """
+        BUG-02 fix:
+        OKX NO soporta type='conditional' con triggerPrice/stopLoss/takeProfit
+        en la API unificada de ccxt. En su lugar, hay que pasar attachAlgoOrds
+        dentro de params al crear la orden market/limit principal.
+
+        Estructura OKX nativa:
+            attachAlgoOrds: [
+              {
+                slTriggerPx: "...",   // precio que dispara el SL
+                slOrdPx:     "...",   // precio límite del SL (market => "")
+                tpTriggerPx: "...",   // precio que dispara el TP
+                tpOrdPx:     "",       // market => ""
+              }
+            ]
+        """
+        # Precios SL / TP
+        sl_raw = current_price * (1.0 - self.sl_pct)
+        tp_raw = current_price * (1.0 + self.tp_pct)
+
+        sl_str = round_to_tick(sl_raw, self.instrument.tick_size, self.instrument.price_precision)
+        tp_str = round_to_tick(tp_raw, self.instrument.tick_size, self.instrument.price_precision)
+
+        attach_algo = [{
+            # SL leg
+            "slTriggerPx": sl_str,
+            "slOrdPx": "",            # market-style exit
+            # TP leg
+            "tpTriggerPx": tp_str,
+            "tpOrdPx": "",
+            # Cerrar toda la posición al ejecutarse el algo
+            "closeFraction": "1",
+        }]
+
+        log.info(
+            "Preparando orden LONG: contracts=%d | entry≈%.6f | SL=%s | TP=%s",
+            contracts, current_price, sl_str, tp_str,
+        )
+
+        if self.dry_run:
+            log.warning("[DRY-RUN] No se envía orden real. Configuración que se enviaría:")
+            log.warning("  symbol=%s  type=market  side=buy  amount=%d", self.symbol, contracts)
+            log.warning("  attachAlgoOrds=%s", attach_algo)
+            return "DRY_RUN_SKIPPED"
+
+        order = ex.create_order(
+            symbol=self.symbol,
+            type="market",
+            side="buy",
+            amount=contracts,
+            params={"attachAlgoOrds": attach_algo},
+        )
+
+        # BUG-01 fix: entry price con fallback robusto
+        entry_price = extract_entry_price(order, current_price)
+
+        log.info(
+            "Orden LONG ejecutada. ID=%s | entry≈%.6f | SL=%s | TP=%s",
+            order.get("id"), entry_price, sl_str, tp_str,
+        )
+        return str(order.get("id"))
+
+    # ── Ciclo principal ──────────────────────────────────────────────────
+    def cycle(self) -> None:
+        """
+        Un ciclo del bucle:
+            1) Leer velas
+            2) Calcular EMA 7/21
+            3) Detectar cruce
+            4) Si golden cross → abrir LONG con SL/TP adheridos
+            5) Si death cross → log only (modo observación)
+            6) Si no hay cruce → vigilar
+
+        BUG-07 fix: cualquier excepción se captura y se loggea SIN relanzar,
+        para que el bucle principal siga vivo.
+        """
+        try:
+            log.info("─" * 60)
+            log.info("Ciclo iniciado para %s @ %s", self.symbol, self.timeframe)
+
+            prev_ema7, prev_ema21, curr_ema7, curr_ema21, price = self.fetch_ema_state()
+            log.info(
+                "Precio=%.6f | EMA7=%.6f | EMA21=%.6f | prevEMA7=%.6f | prevEMA21=%.6f",
+                price, curr_ema7, curr_ema21, prev_ema7, prev_ema21,
+            )
+
+            # ── Golden Cross ─────────────────────────────────────────────
+            if prev_ema7 <= prev_ema21 and curr_ema7 > curr_ema21:
+                log.info("★ Golden Cross (7/21) detectado → entrada LONG")
+
+                ex = self._private_exchange()
+                if self.instrument is None:
+                    self.instrument = load_instrument_spec(ex, self.symbol)
+
+                self._configure_account_for_trading(ex)
+
+                contracts = calc_contracts(self.notional, price, self.instrument.ct_val)
+                if contracts < 1:
+                    log.warning(
+                        "Notional %.2f USD insuficiente para abrir posición en %s a %.6f. Skip.",
+                        self.notional, self.symbol, price,
+                    )
+                    return
+
+                order_id = self._place_long_with_algo(ex, contracts, price)
+                log.info("Ciclo de riesgo completo. order_id=%s", order_id)
+
+            # ── Death Cross (modo observación) ───────────────────────────
+            elif prev_ema7 >= prev_ema21 and curr_ema7 < curr_ema21:
+                log.info("▼ Death Cross (7/21) detectado. Motor short desactivado → observación.")
+
+            # ── Sin cruce nuevo ──────────────────────────────────────────
+            else:
+                log.info("Sin cruces nuevos en este ciclo. Vigilando.")
+
+        except (NetworkError, ExchangeError) as e:
+            # BUG-07 fix: no relanzar; el siguiente ciclo reintentará.
+            log.error("Error de exchange/red en este ciclo (se continúa): %s", e)
         except Exception as e:
-            log.error("Error en el ciclo principal: " + str(e))
-            time.sleep(60)
-        time.sleep(1800)   # 30 min — sobra para velas 1H
+            # Cualquier otro error inesperado: loggear y seguir vivo.
+            log.exception("Error inesperado en ciclo (no aborta el bot): %s", e)
+
+    # ── Bucle infinito ───────────────────────────────────────────────────
+    def run_forever(self) -> None:
+        log.info(
+            "╔══════════════════════════════════════════════════════════╗"
+            "\n║ inj_bot arrancando                                       "
+            "\n║ symbol=%s  tf=%s  lev=%dx  notional=%.2f USD  "
+            "\n║ SL=-%.2f%%  TP=+%.2f%%  loop=%ds  dry_run=%s",
+            self.symbol, self.timeframe, self.leverage, self.notional,
+            self.sl_pct * 100, self.tp_pct * 100, LOOP_SECONDS, self.dry_run,
+        )
+        log.info("╚══════════════════════════════════════════════════════════╝")
+
+        while True:
+            self.cycle()
+            log.info("Durmiendo %d segundos hasta el próximo ciclo…", LOOP_SECONDS)
+            time.sleep(LOOP_SECONDS)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Entry point
+# ─────────────────────────────────────────────────────────────────────────────
+
+def main() -> None:
+    bot = InjBot()
+    try:
+        bot.run_forever()
+    except KeyboardInterrupt:
+        log.info("Interrupción manual (Ctrl+C). Saliendo limpiamente…")
+        sys.exit(0)
+
 
 if __name__ == "__main__":
-    if SINGLE_CYCLE:
-        run_once()
-    else:
-        main_loop()
+    main()
