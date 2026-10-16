@@ -2,33 +2,69 @@ name: XLM Bot OKX
 
 on:
   schedule:
-    - cron: '52,22 * * * *'   # cada 30 min — offsets no usados por la flota
+    - cron: '*/15 * * * *'   # cada 15 min automático
   workflow_dispatch:
 
-permissions:
-  contents: read
-
 concurrency:
-  group: xlm-bot
-  cancel-in-progress: false
+  group: xlm-bot-run
+  cancel-in-progress: true
 
 jobs:
   run-xlm:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 5
+    
     steps:
-      - uses: actions/checkout@v4
-      - name: Set up Python
+      - name: Checkout código
+        uses: actions/checkout@v4
+      
+      - name: Setup Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Install dependencies
-        run: pip install ccxt pandas
-      - name: Run XLM Bot
-        run: python main-xlm.py
+          cache: 'pip'
+      
+      - name: Instalar dependencias
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      
+      - name: Ejecutar bot XLM (1 ciclo)
         env:
-          SINGLE_CYCLE: '1'
-          PYTHONUNBUFFERED: '1'
-          OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
-          OKX_SECRET_KEY: ${{ secrets.OKX_SECRET_KEY }}
-          OKX_PASSWORD: ${{ secrets.OKX_PASSWORD }}
+          # === Credenciales ===
+          OKX_API_KEY:       ${{ secrets.OKX_API_KEY }}
+          OKX_SECRET_KEY:    ${{ secrets.OKX_SECRET_KEY }}
+          OKX_PASSWORD:      ${{ secrets.OKX_PASSWORD }}
+          
+          # === Setup EEE + XLM ===
+          OKX_HOST:          'https://my.okx.com'
+          BASE_ASSET:        'XLM'
+          AMOUNT:            '1'
+          
+          # === Modos ===
+          TEST_MODE:         '0'
+          DRY_RUN:           '0'        # 1=sandbox, 0=real
+          SINGLE_CYCLE:      '1'
+          
+          # === Parámetros operativos ===
+          BOT_LEVERAGE:      '2'        # ⬅️ subido de 1 a 2
+          MAX_NOTIONAL_USD:  '20'       # ⬅️ subido de 15 a 20
+          TD_MODE:           'cross'
+          BOT_TIMEFRAME:     '1h'
+          EMA_FAST:          '3'
+          EMA_SLOW:          '21'
+          
+          # === SL/TP asimétricos ===
+          SL_LONG:           '0.035'
+          TP_LONG:           '0.050'
+          SL_SHORT:          '0.025'
+          TP_SHORT:          '0.040'
+          
+          # === Cooldown y warmup ===
+          COOLDOWN_MIN:      '60'
+          WARMUP:            '65'
+          SIGNAL_WINDOW:     '-2,-3,-4'
+          
+          # === Tick size override (XLM) ===
+          BOT_TICK_SIZE:     '0.0001'
+        run: python main-xlm.py
