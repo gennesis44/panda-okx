@@ -9,7 +9,7 @@ HOST = 'https://my.okx.com'
 
 # ==================== VALORES (decreto Carbono) ====================
 BASE_ASSET = 'XLM'
-AMOUNT = 5          # ct — decidido por Carbono
+AMOUNT = 1          # ct — decidido por Carbono
 SL_LONG = 0.035     # 3.5%
 TP_LONG = 0.050     # 5.0%
 SL_SHORT = 0.025    # 2.5%
