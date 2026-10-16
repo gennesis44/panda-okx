@@ -32,12 +32,8 @@ jobs:
           b = importlib.util.module_from_spec(s)
           s.loader.exec_module(b)
           sym = b.resolve_symbol()
-          print('symbol', sym)
-          print('meta (ctval, ccy, settle, price, usd_por_contrato)', b._contract_meta(sym))
-          print('capacity_ok', b.capacity_ok(sym, b.AMOUNT))
-          print('posicion abierta', bool(b.get_open_position(sym)))
-          print('cooldown', b.cooldown_active(sym))
-          print('senal', b.evaluate_signal(sym))
+          r = b.exchange.private_get_trade_fills_history({'instId': b.exchange.market(sym)['id'], 'limit': '5'})
+          print(r)
           EOF
         env:
           SINGLE_CYCLE: '1'
