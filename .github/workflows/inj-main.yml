@@ -2,34 +2,46 @@ name: INJ Bot OKX
 
 on:
   schedule:
-    - cron: '11,41 * * * *'   # cada 30 min — offsets no usados por la flota
+    - cron: '*/15 * * * *'
   workflow_dispatch:
 
-permissions:
-  contents: read
-
 concurrency:
-  group: inj-bot
-  cancel-in-progress: false
+  group: inj-bot-run
+  cancel-in-progress: true
 
 jobs:
   run-inj:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 5
+    
     steps:
-      - uses: actions/checkout@v4
-      - name: Set up Python
+      - name: Checkout código
+        uses: actions/checkout@v4
+      
+      - name: Setup Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Install dependencies
-        run: pip install ccxt pandas
-      - name: Run INJ Bot
-        run: python main-inj.py
+          cache: 'pip'
+      
+      - name: Instalar dependencias
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      
+      - name: Ejecutar bot (1 ciclo)
         env:
-          SINGLE_CYCLE: '1'
-          TEST_MODE: '1'
-          PYTHONUNBUFFERED: '1'
-          OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
-          OKX_SECRET_KEY: ${{ secrets.OKX_SECRET_KEY }}
-          OKX_PASSWORD: ${{ secrets.OKX_PASSWORD }}
+          OKX_API_KEY:     ${{ secrets.OKX_API_KEY }}
+          OKX_SECRET_KEY:  ${{ secrets.OKX_SECRET_KEY }}
+          OKX_PASSWORD:    ${{ secrets.OKX_PASSWORD }}
+          DRY_RUN:         '1'
+          SINGLE_RUN:      '1'
+          TEST_ONLY:       '0'
+          BOT_SYMBOL:      'INJ/USD:INJ'
+          BOT_TIMEFRAME:   '15m'
+          BOT_LEVERAGE:    '5'
+          BOT_NOTIONAL:    '50'
+          BOT_SL_PCT:      '1.0'
+          BOT_TP_PCT:      '1.5'
+          BOT_LOOP_SEC:    '900'
+        run: python main-inj.py
