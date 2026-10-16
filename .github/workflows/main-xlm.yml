@@ -2,7 +2,7 @@ name: XLM Bot OKX
 
 on:
   schedule:
-    - cron: '52,22 * * * *'
+    - cron: '52,22 * * * *'   # cada 30 min — offsets no usados por la flota
   workflow_dispatch:
 
 permissions:
@@ -25,16 +25,7 @@ jobs:
       - name: Install dependencies
         run: pip install ccxt pandas
       - name: Run XLM Bot
-        run: |
-          python - <<'EOF'
-          import importlib.util
-          s = importlib.util.spec_from_file_location('b', 'main-xlm.py')
-          b = importlib.util.module_from_spec(s)
-          s.loader.exec_module(b)
-          sym = b.resolve_symbol()
-          r = b.exchange.private_get_trade_fills_history({'instId': b.exchange.market(sym)['id'], 'limit': '5'})
-          print(r)
-          EOF
+        run: python main-xlm.py
         env:
           SINGLE_CYCLE: '1'
           PYTHONUNBUFFERED: '1'
