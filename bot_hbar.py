@@ -10,6 +10,10 @@
 #   SL/TP: 2.0% / 5.5% ambas direcciones (reemplaza SL3/TP2 de v2: payoff 0.67
 #     exigia WR 60% — insostenible con WR real 32.9%)
 #   Ax4: CIERRE POR SENAL CONTRARIA (flip) — igual que backtest rev.3
+#   Ax5 (panda 🐼): set_position_mode(False, symbol) añadido para blindaje
+#      defensivo anti-hedge. CRÍTICO en HBAR porque tiene flip (LONG→SHORT).
+#      En hedge mode OKX no sabría a qué lado cerrar. Forzando one-way,
+#      el flip funciona limpio.
 #   TAMANO: 1 contrato = 100 HBAR (~$9.35 nocional) · guardia $15 -> max 1 ct
 #   HOST my.okx.com | clOrdId HBAR | cooldown fail-closed | USDT PROHIBIDO
 import os
@@ -408,6 +412,18 @@ def verify_setup():
 # ==================== CICLO (evalua senal SIEMPRE, con o sin posicion) ====================
 def run_cycle():
     symbol = resolve_symbol()
+
+    # Ax5 (panda 🐼): forzar one-way mode — CRÍTICO en HBAR por el flip.
+    # El flip cierra LONG y abre SHORT (o viceversa). En hedge mode OKX no sabría
+    # a qué lado cerrar. Forzando one-way, el flip funciona limpio.
+    # Si la cuenta ya está en one-way (normal EEE), es no-op benigna.
+    try:
+        exchange.set_position_mode(False, symbol)
+        log.info("Position mode → one-way para " + str(symbol) + ".")
+    except ccxt.ExchangeError as e:
+        log.debug("set_position_mode skip (probablemente ya one-way): " + str(e))
+    except Exception as e:
+        log.debug("set_position_mode skip: " + str(e))
 
     try:
         exchange.set_leverage(LEVERAGE, symbol, params={'mgnMode': TD_MODE})
