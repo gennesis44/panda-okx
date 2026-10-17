@@ -16,6 +16,10 @@
 # Ax3: HOST my.okx.com | clOrdId DOGE | cooldown fail-closed | no entrar si
 #      NO CABE | 51016 idempotencia | guardia de nocional — unidad sorpresa
 #      = bot bloqueado | USDT PROHIBIDO (MiCA/EEE)
+# Ax4 (panda 🐼): set_position_mode(False, symbol) añadido para blindaje
+#      defensivo anti-hedge. Si la cuenta está en one-way (normal EEE),
+#      es no-op benigna. Si algún día OKX pasa a hedge, previene SL/TP
+#      adheridos al lado equivocado.
 import os
 import time
 import logging
@@ -385,6 +389,17 @@ def verify_setup():
 # ==================== CICLO ====================
 def run_cycle():
     symbol = resolve_symbol()
+
+    # Ax4 (panda 🐼): forzar one-way mode — blindaje defensivo anti-hedge.
+    # Si la cuenta ya está en one-way (normal en EEE retail), es no-op benigna.
+    # Si algún día OKX migra a hedge, previene SL/TP adheridos al lado equivocado.
+    try:
+        exchange.set_position_mode(False, symbol)
+        log.info("Position mode → one-way para " + str(symbol) + ".")
+    except ccxt.ExchangeError as e:
+        log.debug("set_position_mode skip (probablemente ya one-way): " + str(e))
+    except Exception as e:
+        log.debug("set_position_mode skip: " + str(e))
 
     try:
         exchange.set_leverage(LEVERAGE, symbol, params={'mgnMode': TD_MODE})
