@@ -12,7 +12,7 @@ Parámetros operativos (override vía env vars):
     - Timeframe:      15m
     - SL:             -1.0% respecto a la entrada
     - TP:             +1.5% respecto a la entrada
-    - Leverage:       2x (max EEE retail), margen aislado
+    - Leverage:       1x (max EEE retail), margen aislado
     - Notional:       12 USD objetivo
     - Bucle:          cada 15 min (cron GitHub Actions)
     - Modo dry-run:   DRY_RUN=1 (sandbox OKX)
