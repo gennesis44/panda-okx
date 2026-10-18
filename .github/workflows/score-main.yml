@@ -1,26 +1,46 @@
-name: score-main
-
-on:
-  schedule:
-    - cron: '17 * * * *'
-  workflow_dispatch: {}
-
-permissions:
-  contents: read
-
-jobs:
-  score:
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - run: pip install ccxt
-      - name: WIN/FAILED flota
-        env:
-          OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
-          OKX_SECRET_KEY: ${{ secrets.OKX_SECRET_KEY }}
-          OKX_PASSWORD: ${{ secrets.OKX_PASSWORD }}
-        run: python main-score.py 3
+import os, sys, time, ccxt
+def f(x):
+    try:
+        return float(x)
+    except Exception:
+        return 0.0
+D = int(sys.argv[1]) if len(sys.argv) > 1 else 3
+k = os.getenv('OKX_API_KEY', '')
+s = os.getenv('OKX_SECRET_KEY', '')
+p = os.getenv('OKX_PASSWORD', '')
+if not (k and s and p):
+    raise SystemExit('[FALLO-CERRADO] keys')
+ex = ccxt.okx({
+    'apiKey': k, 'secret': s,
+    'password': p, 'enableRateLimit': True,
+    'options': {'defaultType': 'swap'},
+    'urls': {'api': {'rest':
+        'https://my.okx.com'}},
+})
+t0 = int(time.time()*1000)
+t0 = int(time.time()*1000) - D*86400000
+fl = ex.fetch_my_trades(None, since=t0,
+                        limit=100,
+                        params={'instType': 'SWAP'})
+op = {}
+for t in fl:
+    v = f(t['info'].get('fillPnl'))
+    if v == 0.0:
+        continue
+    n = t['symbol'].split('/')[0]
+    j = t['info'].get('ordId')
+    op[(n, j)] = op.get((n, j), 0.0) + v
+sc = {}
+for (n, _), v in op.items():
+    m = sc.setdefault(n, [0, 0, 0.0])
+    if v > 0: m[0] += 1
+    else: m[1] += 1
+    m[2] += v
+for n in sorted(sc):
+    m = sc[n]
+    print(n, 'WIN', m[0], 'FAILED', m[1],
+          str(round(m[2], 2)) + '$')
+print('TOTAL',
+      sum(m[0] for m in sc.values()),
+      sum(m[1] for m in sc.values()),
+      round(sum(m[2] for m in sc.values()), 2))
