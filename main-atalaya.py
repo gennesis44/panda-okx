@@ -44,7 +44,8 @@ for name, (tf, nf, ns) in SHIPS.items():
         o = ex.fetch_ohlcv(sym, tf, limit=100)
         df = pd.DataFrame(
             o, columns=['t', 'o', 'h', 'l', 'c', 'v'])
-              ms = f(tf[:-1])
+                  - name: Chequeo de sintaxis
+      run: python -m py_compile main-atalaya.py
         if tf.endswith('m'):
             ms *= 60000
         else:
