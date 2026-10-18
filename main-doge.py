@@ -20,6 +20,9 @@
 #      defensivo anti-hedge. Si la cuenta está en one-way (normal EEE),
 #      es no-op benigna. Si algún día OKX pasa a hedge, previene SL/TP
 #      adheridos al lado equivocado.
+# Ax5 (18-oct): FIX COOLDOWN — fill.get('pnl') no existe en OKX
+#      fills-history; el campo real es fillPnl. Sin el fix, pnl siempre
+#      era 0.0 y el cooldown post-pérdida NUNCA disparaba. Restaurado.
 import os
 import time
 import logging
@@ -284,7 +287,7 @@ def cooldown_active(symbol):
             if str(fill.get('reduceOnly', '0')) == 'true' or fill.get('subType') in ('3', '4', '5', '6'):
                 ts_ms = int(fill.get('ts') or 0)
                 age_min = (time.time() * 1000 - ts_ms) / 60000.0
-                pnl = _f(fill.get('pnl'))
+                pnl = _f(fill.get('fillPnl'))   # Ax5: era fill.get('pnl') — nunca existia
                 if pnl < 0 and age_min < COOLDOWN_MIN:
                     log.info("COOLDOWN: ultima perdida hace " + format(age_min, '.0f') +
                              " min (< " + str(COOLDOWN_MIN) + ").")
