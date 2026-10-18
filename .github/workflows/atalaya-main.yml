@@ -8,7 +8,7 @@ permissions:
 jobs:
   vigia:
     runs-on: ubuntu-latest
-    timeout-minures: 5
+    timeout-minutes: 5
     env:
       OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
       OKX_SECRET_KEY: ${{ secrets.OKX_SECRET_KEY }}
@@ -19,4 +19,4 @@ jobs:
         with:
           python-version: '3.12'
       - run: pip install ccxt pandas
-      - run: python atalaya.py
+      - run: python main-atalaya.py
