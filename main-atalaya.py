@@ -1,82 +1,432 @@
-import os, time, ccxt, pandas as pd
-def f(x):
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+# main-atalaya.py — EL VIGIA · ÚNICA CATAPULTA DE LA FLOTA · v4 (Carbono)
+#   MISIÓN VIGIA (v1 intacta): vigilar el mar de cada destructor. Cuando
+#   detecta una APERTURA DE OLAS (separación EMA rápida/lenta >= 0.15%)
+#   con cruce fresco en la ventana, CANTA LA SEÑAL.
+#   MISIÓN CATAPULTA (v4 — corrección del Capitán: LOS DESTRUCTORES NO
+#   USAN .yml): no dispara workflows ajenos. EJECUTA directamente el
+#   .py del destructor que viva en la RAÍZ del repo:
+#       python main-{moneda}.py   con SINGLE_CYCLE=1
+#   El navío NO se toca: hereda las llaves del arca (env) y SU LEY
+#   interna decide si muerde o no. Un ciclo por zarpe: entra, cumple su
+#   ley y vuelve a puerto (el perro exige SINGLE_CYCLE=1: sin ella
+#   entra en bucle eterno).
+#   ASTILLERO: quien tenga su main-{moneda}.py en la raíz es lanzable.
+#   Sin .yml de navíos, sin GITHUB_TOKEN, sin actions:write — el 403 de
+#   permisos muere para siempre.
+#   UN CRUCE = UN ZARPE (v4): el ARCA es el libro de bitácora. Antes de
+#   lanzar se mira: ¿posición abierta del casco? ¿fills desde la vela
+#   del cruce? Si ya hay rastro, no se relanza. Y aunque se relanzara,
+#   la idempotencia de cada navío (clOrdId = MONEDA+vela, 51016) lo
+#   bloquea. Venga el zarpe de la catapulta o de su propio cron, converge.
+#   JERARQUÍA (doctrina Carbono):
+#     - ATALAYA: ÚNICA autoridad de lanzamiento.
+#     - RADAR: apoyo de LECTURA — su carta del mar vive aquí como
+#       CANDADO DE RÉGIMEN (BTC EN RANGO 7d = candado cerrado, nadie
+#       zarpa). ATALAYA_GATE=0 la desarma.
+#     - PERRO: va suelto, como siempre. La catapulta puede darle un
+#       empujón extra; su ley, su clOrdId y su cooldown evitan dobles.
+#   Fail-closed: casco que no compila no se lanza; libro ilegible, no
+#   se lanza; sin lectura del mar, no se lanza.
+#   Claves env: OKX_API_KEY, OKX_SECRET_KEY, OKX_PASSWORD (heredadas al
+#   navío). Opcionales: LAUNCH_SHIPS, LAUNCH_TIMEOUT, ATALAYA_GATE,
+#   ATALAYA_LOCK, ATALAYA_WINDOW.
+import os
+import sys
+import time
+import subprocess
+import py_compile
+import ccxt
+import pandas as pd
+import requests
+
+HOST = 'https://my.okx.com'
+LOCK = float(os.getenv('ATALAYA_LOCK', '0.0015'))  # apertura de olas 0.15%
+WINDOW = tuple(int(x) for x in
+               os.getenv('ATALAYA_WINDOW', '-2,-3,-4').split(','))
+
+# LEYES DE LA FLOTA (mismo registro que el marcador)
+SHIPS = {
+    'DOGE': {'tf': '5m',  'fast': 3, 'slow': 21},
+    'ADA':  {'tf': '6h',  'fast': 4, 'slow': 17},
+    'AVAX': {'tf': '1h',  'fast': 8, 'slow': 34},
+    'HBAR': {'tf': '30m', 'fast': 3, 'slow': 21},  # stack real: 3/4/10/21/27
+    'XLM':  {'tf': '1h',  'fast': 3, 'slow': 21},
+    'XRP':  {'tf': '1h',  'fast': 3, 'slow': 21,
+             'shadow': True},
+}
+
+# ==================== CATAPULTA DIRECTA DEL ATALAYA =======================
+# DOCTRINA (v4): los destructores NO usan .yml. La catapulta ejecuta su
+# .py de la raíz con SINGLE_CYCLE=1. CUALQUIER destructor es lanzable —
+# el astillero (raíz del repo) decide quién tiene casco. Limitar con
+# LAUNCH_SHIPS si acaso.
+LAUNCH_DEFAULT = 'DOGE,ADA,AVAX,HBAR,XLM,XRP'
+LAUNCH_SHIPS = [s.strip().upper() for s in
+                os.getenv('LAUNCH_SHIPS', LAUNCH_DEFAULT).split(',')
+                if s.strip()]
+try:
+    LAUNCH_TIMEOUT = int(os.getenv('LAUNCH_TIMEOUT', '300'))
+except ValueError:
+    LAUNCH_TIMEOUT = 300  # tope de seguridad por zarpe (ciclo único)
+# .py que NO son destructores (buques de apoyo — nunca se lanzan)
+OWN_MARKS = ('atalaya', 'saldo', 'score', 'grid', 'auditoria', 'informe',
+             'backtest', 'radar', 'btc')
+TF_MS = {'1m': 60000, '5m': 300000, '15m': 900000, '30m': 1800000,
+         '1h': 3600000, '2h': 7200000, '4h': 14400000, '6h': 21600000,
+         '12h': 43200000, '1d': 86400000}
+
+
+def env_para_zarpar(base_env):
+    """Entorno del navío: el del puente + ciclo único + bitácora viva."""
+    env = dict(base_env)
+    env['SINGLE_CYCLE'] = '1'      # un zarpe = un ciclo (el perro lo exige)
+    env['PYTHONUNBUFFERED'] = '1'  # su cuaderno de bitácora en vivo
+    return env
+
+
+def script_for_ship(files, ship):
+    """Busca el casco del destructor en la raíz del astillero (cwd).
+    1) exacto: main-{moneda}.py (o {moneda}.py), sin importar mayúsculas.
+    2) fallback: cualquier .py de la raíz que contenga la moneda,
+       excluyendo buques de apoyo (OWN_MARKS) y la propia atalaya."""
+    s = ship.lower()
+    exactos = sorted(f for f in files
+                     if f.lower() in ('main-' + s + '.py', s + '.py'))
+    if exactos:
+        return exactos[0]
+    for f in sorted(files):
+        low = f.lower()
+        if not low.endswith('.py') or low == 'main-atalaya.py':
+            continue
+        if any(m in low for m in OWN_MARKS):
+            continue
+        if s in low:
+            return f
+    return None
+
+
+def casco_sano(script):
+    """Fail-closed: un casco que no compila no zarpa."""
+    try:
+        py_compile.compile(script, doraise=True)
+        return True
+    except Exception:
+        return False
+
+
+def decide_zarpe(pos_abierta, fills_despues):
+    """Un cruce = un zarpe. El arca es el libro: si hay posición abierta
+    o rastro de fills desde la vela del cruce, el navío ya zarpó."""
+    if pos_abierta:
+        return False, 'YA EN LA MAR (posición abierta)'
+    if fills_despues:
+        return False, 'YA ZARPÓ por esta señal (fills tras la vela del cruce)'
+    return True, 'mar limpio: sin posición ni rastro desde la señal'
+
+
+def bases_en_la_mar(ex):
+    """Bases con posición abierta (un solo lectura del arca).
+    None = lectura fallida (fail-closed: nadie zarpa esa ronda)."""
+    en_mar = set()
+    try:
+        for p in ex.fetch_positions():
+            try:
+                if (p.get('contracts') or 0) > 0:
+                    base = (p.get('base') or
+                            (p.get('symbol') or '').split('/')[0])
+                    if base:
+                        en_mar.add(str(base).upper())
+            except Exception:
+                continue
+        return en_mar
+    except Exception as e:
+        print('[CATAPULTA] sin lectura de posiciones (' + str(e) +
+              ') — fail-closed: nadie zarpa esta ronda')
+        return None
+
+
+def ya_zarpo_fills(ex, sym, bar_close_ms):
+    """¿Rastro del navío tras la vela del cruce? (bool, error)
+    fail-closed: libro ilegible -> se asume que ya zarpó (no relanza)."""
+    if not bar_close_ms:
+        return False, None
+    try:
+        fills = ex.fetch_my_trades(sym, since=bar_close_ms, limit=25)
+        return bool(fills), None
+    except Exception as e:
+        return True, str(e)
+
+
+def launch_one(script, ship, side, sep):
+    """Zarpe: un ciclo único del .py del destructor, con su propia ley."""
+    if not casco_sano(script):
+        print('[' + ship + '] casco ROTO (' + script +
+              ' no compila) — no se lanza (fail-closed)')
+        return False
+    print('>>> CATAPULTA [' + ship + '] ' + side + ' -> python ' + script +
+          ' SINGLE_CYCLE=1 (señal sep ' + format(sep * 100, '.2f') + '%)')
+    env = env_para_zarpar(os.environ)
+    try:
+        r = subprocess.run([sys.executable, script], env=env,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                           text=True, timeout=LAUNCH_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        print('[' + ship + '] no regresó en ' + str(LAUNCH_TIMEOUT) +
+              's — proceso cerrado; su clOrdId evita dobles si llegó a morder')
+        return False
+    except Exception as e:
+        print('[' + ship + '] fallo de lanzamiento: ' + str(e))
+        return False
+    for line in (r.stdout or '').splitlines()[-40:]:
+        print('   │ ' + line)
+    for line in (r.stderr or '').splitlines()[-12:]:
+        print('   ║ ' + line)
+    if r.returncode == 0:
+        print('[' + ship + '] ciclo único completo (exit 0) — de vuelta a puerto')
+        return True
+    print('[' + ship + '] regresó con avería (exit ' + str(r.returncode) + ')')
+    return False
+
+
+def catapulta(ex, seniales):
+    print('-' * 60)
+    files = [f for f in os.listdir('.') if f.lower().endswith('.py')]
+    print('CATAPULTA DIRECTA (los destructores no usan .yml): se ejecuta '
+          'su .py de la raíz con SINGLE_CYCLE=1.')
+    print('Lanzables: ' + ','.join(LAUNCH_SHIPS) +
+          ' | tope por zarpe: ' + str(LAUNCH_TIMEOUT) + 's')
+    en_mar = bases_en_la_mar(ex)
+    if en_mar is None:
+        return
+    print('Astillero: ' + ' | '.join(
+        n + '->' + (script_for_ship(files, n) or 'SIN CASCO')
+        for n in LAUNCH_SHIPS))
+    if en_mar:
+        print('Ya en la mar: ' + ', '.join(sorted(en_mar)))
+    disparos = 0
+    for name, side, sep, bar_close_ms in seniales:
+        if name not in LAUNCH_SHIPS:
+            print('[' + name + '] señal válida pero NO lanzable '
+                  '(fuera de LAUNCH_SHIPS)')
+            continue
+        script = script_for_ship(files, name)
+        if not script:
+            print('[' + name + '] sin casco en el astillero (falta su .py '
+                  'en la raíz) — no lanzo')
+            continue
+        if name in en_mar:
+            pos_abierta, fills, err = True, True, None
+        else:
+            fills, err = ya_zarpo_fills(ex, pick_future(ex, name),
+                                        bar_close_ms)
+            pos_abierta = False
+        if err:
+            print('[' + name + '] libro ilegible (' + err +
+                  ') — fail-closed: no lanzo')
+            continue
+        lanza, motivo = decide_zarpe(pos_abierta, fills)
+        if not lanza:
+            print('[' + name + '] sin disparo: ' + motivo)
+            continue
+        if launch_one(script, name, side, sep):
+            disparos += 1
+    if disparos:
+        print('Catapulta: ' + str(disparos) + ' zarpe(s) esta ronda.')
+    else:
+        print('Catapulta sin disparos esta ronda.')
+
+
+# ============ CANDADO DE RÉGIMEN (la carta del radar, sin llaves) =========
+# El radar es apoyo de LECTURA: no lanza. Su veredicto del mar (BTC 7d,
+# misma regla del mapa: rompe mástil 7d = mar abierto) se lee aquí en
+# el puente del vigía. EN RANGO = candado cerrado = nadie zarpa.
+GATE_OKX = 'https://www.okx.com'
+
+
+def gate_7d(hi, lo, px):
+    """Misma regla del mapa del radar (umbrales 0.5%)."""
+    return px > hi * 0.995, px < lo * 1.005
+
+
+def estado_mar():
+    """(rompe_arriba, rompe_abajo, ok) — BTC-USD-SWAP 1H, mástil 7d."""
+    try:
+        r = requests.get(
+            GATE_OKX + '/api/v5/market/candles',
+            params={'instId': 'BTC-USD-SWAP', 'bar': '1H', 'limit': '200'},
+            timeout=15)
+        r.raise_for_status()
+        rows = [x for x in (r.json().get('data') or [])
+                if len(x) > 8 and x[8] == '1']
+        if len(rows) < 7 * 24 + 2:
+            return False, False, False
+        df = pd.DataFrame([x[:6] for x in rows],
+                          columns=['ts', 'o', 'h', 'l', 'c', 'v'])
+        for col in ('h', 'l', 'c'):
+            df[col] = df[col].astype(float)
+        df['ts'] = df['ts'].astype('int64')
+        df = df.sort_values('ts').reset_index(drop=True)
+        win = df.iloc[-7 * 24:]
+        up, dn = gate_7d(win['h'].max(), win['l'].min(), df['c'].iloc[-1])
+        return up, dn, True
+    except Exception:
+        return False, False, False
+
+
+# ==================== VIGIA (v1 intacta + ts de cierre) ===================
+def _f(x):
     try:
         return float(x)
-    except Exception:
+    except (TypeError, ValueError):
         return 0.0
-SHIPS = {
-    'DOGE': ('5m', 3, 21),
-    'ADA': ('6h', 4, 17),
-    'AVAX': ('1h', 8, 34),
-    'HBAR': ('30m', 3, 21),
-    'XLM': ('1h', 3, 21),
-}
-k = os.getenv('OKX_API_KEY', '')
-s = os.getenv('OKX_SECRET_KEY', '')
-p = os.getenv('OKX_PASSWORD', '')
-if not (k and s and p):
-    raise SystemExit('[FALLO-CERRADO] keys')
-ex = ccxt.okx({
-    'apiKey': k, 'secret': s, 'password': p,
-    'enableRateLimit': True, 'timeout': 20000,
-    'options': {'defaultType': 'swap'},
-    'urls': {'api': {'rest': 'https://my.okx.com'}},
-})
-ex.load_markets()
-fut = {}
-for m in ex.markets.values():
-    b = m.get('base')
-    if (b in SHIPS and m.get('active')
-            and m.get('future')
-            and str(m.get('settle') or '') != 'USDT'):
-        e = f((m.get('info') or {}).get('expTime'))
-        if e >= fut.get(b, (0, None))[0]:
-            fut[b] = (e, m['symbol'])
-print('EL VIGIA | UTC',
-      time.strftime('%m-%d %H:%M', time.gmtime()))
-sen = []
-for name, (tf, nf, ns) in SHIPS.items():
-    sym = fut.get(name, (0, None))[1]
+
+
+def build_exchange():
+    k = os.getenv('OKX_API_KEY', '')
+    s = os.getenv('OKX_SECRET_KEY', '')
+    p = os.getenv('OKX_PASSWORD', '')
+    if not (k and s and p):
+        raise SystemExit('[FALLO-CERRADO] faltan keys')
+    return ccxt.okx({
+        'apiKey': k, 'secret': s, 'password': p,
+        'enableRateLimit': True, 'timeout': 20000,
+        'options': {'defaultType': 'swap'},
+        'urls': {'api': {'rest': HOST}},
+    })
+
+
+def pick_future(ex, base):
+    best, exp_max = None, -1
+    for m in ex.markets.values():
+        if (m.get('base') == base and m.get('future')
+                and m.get('active')
+                and str(m.get('settle') or '').upper() != 'USDT'):
+            try:
+                exp = int((m.get('info') or {}).get('expTime') or 0)
+            except (TypeError, ValueError):
+                exp = 0
+            if exp > exp_max:
+                best, exp_max = m['symbol'], exp
+    if best:
+        return best
+    for m in ex.markets.values():
+        if (m.get('base') == base and m.get('active')
+                and (m.get('swap') or
+                     (m.get('info') or {}).get('instType') == 'SWAP')
+                and str(m.get('settle') or '').upper() != 'USDT'):
+            return m['symbol']
+    return None
+
+
+def ema(s, n):
+    return s.ewm(span=n, adjust=False).mean()
+
+
+def watch_ship(ex, name, cfg):
+    sym = pick_future(ex, name)
     if not sym:
-        print(name, 'sin XPERP USD activo')
-        continue
-    try:
-        o = ex.fetch_ohlcv(sym, tf, limit=100)
-        df = pd.DataFrame(
-            o, columns=['t', 'o', 'h', 'l', 'c', 'v'])
-        ms = f(tf[:-1])
-        if tf.endswith('m'):
-            ms *= 60000
+        print('[' + name + '] sin instrumento USD activo — omitida')
+        return None
+    tf = cfg['tf']
+    ohlcv = ex.fetch_ohlcv(sym, tf, limit=100)
+    df = pd.DataFrame(ohlcv, columns=['ts', 'o', 'h', 'l',
+                                      'c', 'v'])
+    now_ms = int(time.time() * 1000)
+    ms = _f(tf.replace('m', '60000').replace('h', '3600000'))
+    if int(df['ts'].iloc[-1]) + ms > now_ms:
+        df = df.iloc[:-1].reset_index(drop=True)
+    ef = ema(df['c'], cfg['fast'])
+    es = ema(df['c'], cfg['slow'])
+    last = len(df) - 1
+    sep_now = abs(ef.iloc[last] - es.iloc[last]) / es.iloc[last]
+    estado = 'ALZA' if ef.iloc[last] > es.iloc[last] else 'BAJA'
+    tag = ' (SHADOW)' if cfg.get('shadow') else ''
+    print('[' + name + '] ' + sym + ' ' + tf +
+          ' | EMA' + str(cfg['fast']) + '/' + str(cfg['slow']) +
+          ': ' + format(ef.iloc[last], '.6g') + '/' +
+          format(es.iloc[last], '.6g') +
+          ' | sep ' + format(sep_now * 100, '.2f') + '%' +
+          ' | estado ' + estado + tag)
+    for i in WINDOW:
+        idx = len(df) + i
+        prev = idx - 1
+        if prev < cfg['slow'] + 2:
+            continue
+        sep = abs(ef.iloc[idx] - es.iloc[idx]) / es.iloc[idx]
+        if sep < LOCK:
+            continue
+        up = (ef.iloc[prev] <= es.iloc[prev]
+              and ef.iloc[idx] > es.iloc[idx])
+        dn = (ef.iloc[prev] >= es.iloc[prev]
+              and ef.iloc[idx] < es.iloc[idx])
+        if up or dn:
+            side = 'LONG' if up else 'SHORT'
+            ts = time.strftime(
+                '%m-%d %H:%M',
+                time.gmtime(df['ts'].iloc[idx] / 1000))
+            print('>>> SEÑAL [' + name + '] ' + side +
+                  ' — cruce EMA' + str(cfg['fast']) + '/' +
+                  str(cfg['slow']) + ' vela ' + str(i) +
+                  ' (' + ts + ' UTC, sep ' +
+                  format(sep * 100, '.2f') + '%)' +
+                  ' — el destructor cumple condiciones')
+            return (name, side, sep,
+                    int(df['ts'].iloc[idx]) + TF_MS[tf])
+        break
+    return None
+
+
+def main():
+    ex = build_exchange()
+    ex.load_markets()
+    raw = ex.privateGetAccountBalance()
+    det = ((raw or {}).get('data') or [{}])[0].get('details') or []
+    total = sum(_f(d.get('eqUsd')) for d in det)
+    print('=' * 60)
+    print('EL VIGIA · CATAPULTA DIRECTA — apertura de olas >= ' +
+          format(LOCK * 100, '.2f') + '% | ventana ' +
+          str(list(WINDOW)) + ' | UTC ' +
+          time.strftime('%Y-%m-%d %H:%M', time.gmtime()) +
+          ' | arca ~$' + format(total, '.2f'))
+    print('=' * 60)
+    seniales = []
+    for name, cfg in SHIPS.items():
+        try:
+            r = watch_ship(ex, name, cfg)
+            if r:
+                seniales.append(r)
+        except Exception as e:
+            print('[' + name + '] fallo de vigía: ' + str(e))
+    print('-' * 60)
+    if seniales:
+        for name, side, sep, _ts in seniales:
+            print('>>> ' + name + ' ' + side +
+                  ' (sep ' + format(sep * 100, '.2f') + '%)')
+    else:
+        print('Mar en calma: ninguna nave cumple condiciones.')
+    gate_on = os.getenv('ATALAYA_GATE', '1') != '0'
+    if not seniales:
+        pass  # nada en rango: sin lectura de mar ni catapulta
+    elif not gate_on:
+        print('MAR ABIERTO (candado de régimen DESARMADO): catapulta lista.')
+        catapulta(ex, seniales)
+    else:
+        up, dn, ok = estado_mar()
+        if not ok:
+            print('CANDADO CERRADO (fail-closed): sin lectura del mar —'
+                  ' nadie zarpa esta ronda.')
+        elif up or dn:
+            print('MAR ABIERTO (' +
+                  ('ROMPE ARRIBA' if up else 'ROMPE ABAJO') +
+                  ' del mástil 7d): catapulta lista.')
+            catapulta(ex, seniales)
         else:
-            ms *= 3600000
-        if int(df['t'].iloc[-1]) + ms > int(
-                time.time() * 1000):
-            df = df.iloc[:-1]
-        ef = df['c'].ewm(span=nf, adjust=False).mean()
-        es = df['c'].ewm(span=ns, adjust=False).mean()
-        n = len(df) - 1
-        sp0 = abs(ef.iloc[n] - es.iloc[n]) / es.iloc[n]
-        est = 'ALZA' if ef.iloc[n] > es.iloc[n] else 'BAJA'
-        print(name, sym, tf, '| sep',
-              format(sp0 * 100, '.2f') + '% |', est)
-        for i in (-2, -3, -4):
-            j = n + 1 + i
-            if j < ns + 2:
-                continue
-            sp = abs(ef.iloc[j] - es.iloc[j]) / es.iloc[j]
-            if sp < 0.0015:
-                continue
-            up = (ef.iloc[j - 1] <= es.iloc[j - 1]
-                  and ef.iloc[j] > es.iloc[j])
-            dn = (ef.iloc[j - 1] >= es.iloc[j - 1]
-                  and ef.iloc[j] < es.iloc[j])
-            if up or dn:
-                lado = 'LONG' if up else 'SHORT'
-                print('>>> SENAL', name, lado,
-                      format(sp * 100, '.2f') + '%')
-                sen.append(name + ' ' + lado)
-                break
-    except Exception as e:
-        print(name, 'fallo:', str(e))
-print('-' * 30)
-print('SENIALES:', sen if sen else 'mar en calma')
+            print('CANDADO CERRADO (BTC EN RANGO 7d): señales SOLO en'
+                  ' mapa — nadie zarpa (paciencia).')
+    print('Vigía cerrado. Las destructoras ejecutan por su ley.')
+
+
+if __name__ == '__main__':
+    main()
