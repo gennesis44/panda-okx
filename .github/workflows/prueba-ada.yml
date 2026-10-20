@@ -1,0 +1,54 @@
+# prueba-ada.yml — CANONAZO DE PRUEBA (boton manual)
+#   Objetivo: saber de una vez si la API key puede COMERCIAR en el
+#   mercado de la flota. Una bala al aire (~$2 de collar en ADA) con
+#   recogida inmediata: el coste es solo la fee de ida y vuelta.
+#
+#   CONTEXTO (20-oct): la flota canta senales pero el zarpe chocaba con
+#   la muralla 50124 ("This API Key does not have trading permission
+#   for the market"). Hay 9 llaves en el arca; los secrets apuntaban
+#   probablemente a una sin permisos de comercio. Capitan genera llave
+#   nueva (Read + Trade, alcance TODOS los mercados, sin IP, cuenta
+#   principal), actualiza los 3 secrets y dispara este boton.
+#
+#   USO: Actions -> prueba-ada -> Run workflow
+#     inst: instId OKX de la presa (default ADA X-Perp; puedes probar
+#           cualquier otro, p.ej. SUI-USD_UM_XPERP-310404)
+#     side: buy | sell
+#
+#   LECTURA DEL HUMO (en el log de Actions):
+#     "el canon DISPARA y RECOGE" -> llave operativa, flota lista
+#     "MURALLA 50124"             -> la llave no puede comerciar (o es
+#                                    muralla de cuenta: KYC L2/acuerdo)
+#     "51119"                     -> llave OK, arca sin fondos suficientes
+#     "401/50113/50123"           -> credenciales/permiso Trade mal
+name: prueba-ada
+on:
+  workflow_dispatch:
+    inputs:
+      inst:
+        description: 'Instrumento de prueba (instId OKX)'
+        required: false
+        default: 'ADA-USD_UM_XPERP-310404'
+      side:
+        description: 'Lado del disparo (buy/sell)'
+        required: false
+        default: 'buy'
+permissions:
+  contents: read
+jobs:
+  canonazo:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install requests
+      - name: Canonazo de prueba (1 bala + recogida)
+        run: python prueba-ada.py
+        env:
+          OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
+          OKX_SECRET_KEY: ${{ secrets.OKX_SECRET_KEY }}
+          OKX_PASSWORD: ${{ secrets.OKX_PASSWORD }}
+          TEST_INST: ${{ github.event.inputs.inst }}
+          TEST_SIDE: ${{ github.event.inputs.side }}
