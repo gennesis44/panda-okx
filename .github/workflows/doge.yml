@@ -7,7 +7,7 @@
 #   cada 15 min + boton manual. NO comparte job con la atalaya: si el
 #   Vigia falla, el Perro sigue cazando.
 #
-#   Su radar (perro-radar.py v4) vigila INJ y SUI con DOS senales:
+#   Su radar (perro-radar.py v4.2) vigila INJ y SUI con DOS senales:
 #     SENAL 1 — SALIR A MAR (los huesos): posicion abierta de INJ/SUI
 #       (de quien sea — la presa en el agua es presa) en zona optima de
 #       salida (TP >= +4% | escudo <= -3% | rotura 1H en contra)
@@ -23,10 +23,17 @@
 #   main-sui.py viven en raiz y LAUNCH_SHIPS los reconoce). El Perro no
 #   espera ni sustituye a la atalaya: va adelante con SU reloj.
 #
-#   COLLAR GPS: lista dura INJ-USD-SWAP + SUI-USD-SWAP, un estado una
-#   mision (con posicion caza huesos, en seco mira de zarpar; jamas
-#   acumula presas sobre presas), clOrdId = MORD/ZARPA+presa+vela
-#   cerrada (idempotente, 51016 = paz), bitacora total, fail-closed.
+#   COLLAR GPS: un estado una mision (con posicion caza huesos, en seco
+#   mira de zarpar; jamas acumula presas sobre presas), clOrdId =
+#   MORD/ZARPA+presa+vela cerrada (idempotente, 51016 = paz), bitacora
+#   total, fail-closed.
+#
+#   AVISO 20-oct (v4.2): el perp coin-margined INJ-USD-SWAP esta
+#   DESLISTADO en OKX (51001). La presa INJ VIVA es el X-Perp que el
+#   Capitan confirmo en su app: "INJUSD UM (X-Perp)" = instId
+#   INJ-USD_UM_XPERP-310711 (vence 2031-07-11, settle USD — el MISMO
+#   instrumento que comercia main-inj.py). COLLAZO: PERRO_PREY activo.
+#   El perro guarda los huesos del casco: mismo instId, misma presa.
 name: doge
 on:
   workflow_dispatch:
@@ -50,6 +57,7 @@ jobs:
           OKX_SECRET_KEY: ${{ secrets.OKX_SECRET_KEY }}
           OKX_PASSWORD: ${{ secrets.OKX_PASSWORD }}
           # PERRO_MODE: DRY        # descomentar la primera noche (solo ladridos)
+          PERRO_PREY: "INJ-USD_UM_XPERP-310711,SUI-USD-SWAP"   # INJ X-Perp USD + SUI
           # --- huesos (Senal 1: SALIR A MAR) ---
           # PERRO_TP_PCT: "4.0"
           # PERRO_SL_PCT: "3.0"
