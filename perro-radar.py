@@ -37,7 +37,8 @@
 #     caminos al mismo puerto, sin pisarse.
 #
 #   SU COLLAR GPS (cosido al codigo, imposible de quitar):
-#     a) LISTA DURA: solo INJ-USD-SWAP y SUI-USD-SWAP. Nada mas.
+#     a) LISTA DURA: presas fijadas en PERRO_PREY (default
+#        INJ-USD-SWAP,SUI-USD-SWAP). Nada mas entra en el collar.
 #     b) UN ESTADO, UNA MISION: sin posicion -> mira si hay que zarpar;
 #        con posicion -> caza huesos. Jamas acumula presas sobre presas.
 #     c) IDEMPOTENCIA: clOrdId = MORD/ZARPA+presa+vela cerrada. Re-run
@@ -52,14 +53,29 @@
 #     - El nombre lleva "radar": OWN_MARKS del Vigia lo clasifica como
 #       buque de apoyo — la catapulta JAMAS lo lanza como casco.
 #     - La atalaya NO SE TOCA: su dict SHIPS y su ley quedan intactos.
-#       Si el Vigia cantara INJ/SUI, zarparian con toda la flota por sus
-#       cascos de raiz; el Perro no compite: zarpa por SU reloj y gestiona
-#       los huesos de cualquier presa INJ/SUI que encuentre en el agua.
 #       Y si la presa ya esta cazando, el propio vigia la salta
 #       ("YA EN LA MAR") — el freno anti-doble ya viene de fabrica.
 #     - main-inj.py / main-sui.py NO se expurgan: son canoneros de la
 #       atalaya. DOGE es su radar adelantado, no su dueno.
 #     - btc-radar.py (norte-sur) sigue siendo buque de apoyo: intacto.
+#
+#   v4.1 (20-oct, tras el primer latido real en GitHub Actions):
+#     a) INJ-USD-SWAP (coin-margined) NO EXISTE en OKX (51001). Nuevo
+#        env PERRO_PREY para apuntar el collar sin tocar codigo.
+#     b) Los errores HTTP de OKX (401, etc.) ahora muestran el codigo y
+#        msg REALES de OKX en el log (antes un 401 crasheaba a ciegas).
+#     c) Un fallo en una presa ya NO mata la ronda: zarpe/mordida caida
+#        se loguea y el perro sigue con la siguiente presa.
+#
+#   v4.2 (20-oct, la presa INJ correcta):
+#     a) La presa INJ viva es INJ-USD_UM_XPERP-310711 (X-Perp, settle
+#        USD, vence 2031-07-11) — la del "INJUSD UM (X-Perp)" de la app
+#        del Capitan y la MISMA que comercia main-inj.py via ccxt
+#        (INJ/USD:USD-310711). Ni el perp coin-margined (deslistado)
+#        ni el USDT (fuera de doctrina). Collar via PERRO_PREY.
+#     b) El perro ahora LEE posiciones de SWAP y FUTURES (los huesos
+#        del X-Perp son huesos) y saca la ficha del instrumento de
+#        ambos tipos.
 
 import base64
 import datetime as dt
@@ -73,8 +89,9 @@ import requests
 
 HOST = 'https://my.okx.com'
 
-# ---- COLLAR GPS: lista dura de presas ------------------------------------
-PREY = ('INJ-USD-SWAP', 'SUI-USD-SWAP')
+# ---- COLLAR GPS: presas (env PERRO_PREY por si el Capitan cambia una) ----
+PREY = tuple(p.strip() for p in os.getenv(
+    'PERRO_PREY', 'INJ-USD-SWAP,SUI-USD-SWAP').split(',') if p.strip())
 
 TP_PCT = float(os.getenv('PERRO_TP_PCT', '4.0'))
 SL_PCT = float(os.getenv('PERRO_SL_PCT', '3.0'))
@@ -112,8 +129,11 @@ def okx_get(path, auth=True):
     headers = okx_headers('GET', path) if auth \
         else {'Content-Type': 'application/json'}
     r = requests.get(HOST + path, headers=headers, timeout=20)
-    r.raise_for_status()
-    j = r.json()
+    try:
+        j = r.json()
+    except Exception:
+        r.raise_for_status()
+        raise RuntimeError(f'OKX {path}: HTTP {r.status_code} sin JSON')
     if j.get('code') != '0':
         raise RuntimeError(f'OKX {path}: {j.get("code")} {j.get("msg")}')
     return j['data']
@@ -123,8 +143,14 @@ def okx_post(path, payload):
     body = json.dumps(payload)
     r = requests.post(HOST + path, headers=okx_headers('POST', path, body),
                       data=body, timeout=20)
-    r.raise_for_status()
-    return r.json()
+    try:
+        j = r.json()
+    except Exception:
+        r.raise_for_status()
+        raise RuntimeError(f'OKX {path}: HTTP {r.status_code} sin JSON')
+    if j.get('code') not in ('0', '1'):
+        raise RuntimeError(f'OKX {path}: {j.get("code")} {j.get("msg")}')
+    return j
 
 
 def ema(vals, n):
@@ -172,12 +198,19 @@ def ronda(px, tick, dec):
 
 
 def instrumento(inst_id):
-    d = okx_get(f'/api/v5/public/instruments?instType=SWAP&instId={inst_id}',
-                auth=False)
-    if not d:
-        raise RuntimeError(f'{inst_id}: instrumento desconocido')
-    i = d[0]
-    return float(i['ctVal']), float(i['lotSz']), float(i['minSz']), i['tickSz']
+    """Ficha del instrumento: perp (SWAP) primero, X-Perp/futuro
+    (FUTURES) despues — la presa puede vivir en cualquiera de los dos."""
+    for t in ('SWAP', 'FUTURES'):
+        try:
+            d = okx_get(f'/api/v5/public/instruments?instType={t}'
+                        f'&instId={inst_id}', auth=False)
+        except Exception:
+            d = []
+        if d:
+            i = d[0]
+            return (float(i['ctVal']), float(i['lotSz']),
+                    float(i['minSz']), i['tickSz'])
+    raise RuntimeError(f'{inst_id}: instrumento desconocido')
 
 
 def cruce_fresco(seps):
@@ -200,7 +233,11 @@ def zarpar(inst, coin, posmode):
     try:
         sep, seps, last_ts, e3, e21 = sep_1h(inst)
     except Exception as e:
-        log(f'[{coin}] collar: sin lectura del mar ({e}). Fail-closed.')
+        if '51001' in str(e):
+            log(f'[{coin}] presa INEXISTENTE en OKX (deslistada o mal '
+                f'escrita). El perro la da por muerta esta ronda.')
+        else:
+            log(f'[{coin}] collar: sin lectura del mar ({e}). Fail-closed.')
         return
     nacimiento = cruce_fresco(seps)
     lado = 'LONG' if sep > 0 else 'SHORT'
@@ -259,7 +296,11 @@ def zarpar(inst, coin, posmode):
     if MODE == 'DRY':
         log(f'[{coin}] LADRA: AVISO DE ZARPAR {resumen} | DRY: solo ladrido.')
         return
-    j = okx_post('/api/v5/trade/order', orden)
+    try:
+        j = okx_post('/api/v5/trade/order', orden)
+    except Exception as e:
+        log(f'[{coin}] fallo de zarpe (no mata la ronda): {e}')
+        return
     dd = (j.get('data') or [{}])[0]
     scode = dd.get('sCode', j.get('code', '?'))
     smsg = dd.get('sMsg', j.get('msg', ''))
@@ -272,7 +313,8 @@ def zarpar(inst, coin, posmode):
 
 
 def cazar(posmode):
-    posiciones = okx_get('/api/v5/account/positions?instType=SWAP')
+    posiciones = (okx_get('/api/v5/account/positions?instType=SWAP')
+                  + okx_get('/api/v5/account/positions?instType=FUTURES'))
     vivas = {p['instId']: p for p in posiciones
              if p.get('instId') in PREY and abs(float(p.get('pos') or 0)) > 0}
     log(f'perro: salidas TP>={TP_PCT}% | escudo<=-{SL_PCT}% | '
@@ -301,8 +343,12 @@ def cazar(posmode):
         try:
             sep, seps, last_ts, e3, e21 = sep_1h(inst)
         except Exception as e:
-            log(f'[{coin}] collar: sin lectura del mar ({e}). '
-                f'Fail-closed: no muerde.')
+            if '51001' in str(e):
+                log(f'[{coin}] presa INEXISTENTE en OKX (deslistada o '
+                    f'mal escrita). El perro la da por muerta esta ronda.')
+            else:
+                log(f'[{coin}] collar: sin lectura del mar ({e}). '
+                    f'Fail-closed: no muerde.')
             continue
         log(f'[{coin}] GPS: pos {side} {abs(pos):g} ct @ {avg} | '
             f'PnL {pnl:+.2f}% | EMA3/21 {TF}: {e3:.6g}/{e21:.6g} '
@@ -333,7 +379,11 @@ def cazar(posmode):
                    'clOrdId': cl, 'tag': 'dogeradar'}
         if hedge:
             payload['posSide'] = raw_side
-        j = okx_post('/api/v5/trade/close-position', payload)
+        try:
+            j = okx_post('/api/v5/trade/close-position', payload)
+        except Exception as e:
+            log(f'[{coin}] fallo de mordida (no mata la ronda): {e}')
+            continue
         d = (j.get('data') or [{}])[0]
         scode = d.get('sCode', j.get('code', '?'))
         smsg = d.get('sMsg', j.get('msg', ''))
