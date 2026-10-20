@@ -20,6 +20,9 @@
 #                   ese mercado (alcance de mercados/criptos de la key).
 #   51001        -> instrumento inexistente/mal escrito.
 #   51119        -> sin fondos suficientes (llave OK, arca no cubre).
+#   50105        -> passphrase incorrecta: pareja llave/passphrase rota.
+#                   El JUEZ de variantes prueba tal cual / sin espacios
+#                   de borde / sin comillas de borde antes de rendirse.
 #   401/50113    -> llave sin permiso Trade o credenciales mal puestas.
 #   51000-51099  -> parametro/margen/posicion (se loguea el msg real).
 #
@@ -46,9 +49,14 @@ if SIDE not in ('buy', 'sell'):
 MGN = os.getenv('TEST_MGN', 'cross').strip().lower() or 'cross'
 MIN_NOTIONAL = 1.0  # USD: la bala nunca baja de ~$1 de valor si se puede
 
-AK = os.getenv('OKX_API_KEY', '')
-SK = os.getenv('OKX_SECRET_KEY', '')
-PW = os.getenv('OKX_PASSWORD', '')
+AK0 = os.getenv('OKX_API_KEY', '')
+SK0 = os.getenv('OKX_SECRET_KEY', '')
+PW0 = os.getenv('OKX_PASSWORD', '')
+
+# Blindaje: GitHub NO recorta espacios ni saltos al pegar un secret.
+AK = AK0.strip()
+SK = SK0.strip()
+PW = PW0.strip()
 
 COIN = INST.split('-')[0]
 
@@ -57,19 +65,20 @@ def log(msg):
     print('[PRUEBA] ' + msg, flush=True)
 
 
-def okx_headers(method, path, body=''):
+def okx_headers(method, path, body='', pw=None):
     ts = dt.datetime.now(dt.timezone.utc).isoformat(
         timespec='milliseconds').replace('+00:00', 'Z')
     sign = base64.b64encode(hmac.new(
         SK.encode(), f'{ts}{method}{path}{body}'.encode(),
         hashlib.sha256).digest()).decode()
     return {'OK-ACCESS-KEY': AK, 'OK-ACCESS-SIGN': sign,
-            'OK-ACCESS-TIMESTAMP': ts, 'OK-ACCESS-PASSPHRASE': PW,
+            'OK-ACCESS-TIMESTAMP': ts,
+            'OK-ACCESS-PASSPHRASE': PW if pw is None else pw,
             'Content-Type': 'application/json'}
 
 
-def okx_get(path, auth=True):
-    headers = okx_headers('GET', path) if auth \
+def okx_get(path, auth=True, pw=None):
+    headers = okx_headers('GET', path, pw=pw) if auth \
         else {'User-Agent': 'Mozilla/5.0', 'Content-Type': 'application/json'}
     r = requests.get(HOST + path, headers=headers, timeout=20)
     try:
@@ -121,20 +130,55 @@ def instrumento(inst_id):
 
 
 def main():
+    global PW
     log('=== CANONAZO DE PRUEBA: una bala al aire, recogida inmediata. '
         'Objetivo: saber si la llave dispara ===')
     if not (AK and SK and PW):
         log('sin llaves del arca: fail-closed, ni un disparo.')
         sys.exit(1)
-    try:
-        cfg = okx_get('/api/v5/account/config')
-    except Exception as e:
-        log(f'FATAL: el arca no responde ({e}). Llave/passphrase mal?')
+    # JUEZ DE VARIANTES: el 50105 solo dice que ESA passphrase no casa.
+    # Antes de condenar a la pareja, prueba el pegado sucio tipico:
+    variantes = []
+    for etiq, pw in (('tal cual', PW0),
+                     ('sin espacios al borde', PW0.strip())):
+        if pw and pw not in [v[1] for v in variantes]:
+            variantes.append((etiq, pw))
+    s = PW0.strip()
+    if len(s) >= 2 and s[0] == s[-1] and s[0] in '"\'':
+        s2 = s[1:-1].strip()
+        if s2 and s2 not in [v[1] for v in variantes]:
+            variantes.append(('sin comillas al borde', s2))
+    cfg = None
+    for etiq, pw in variantes:
+        try:
+            cfg = okx_get('/api/v5/account/config', pw=pw)
+            PW = pw
+            break
+        except RuntimeError as e:
+            if '50105' in str(e):
+                log(f'juez: passphrase {etiq} -> 50105 rechazada')
+                continue
+            log(f'FATAL: el arca no responde ({e}).')
+            sys.exit(1)
+        except Exception as e:
+            log(f'FATAL: el arca no responde ({e}).')
+            sys.exit(1)
+    if cfg is None:
+        log('VEREDICTO DE PAREJA: 50105 en TODAS las variantes. La '
+            'passphrase del secret NO pertenece a esta API key. Ojo: '
+            '50105 y no 50111 = la llave EXISTE en OKX; con 9 llaves '
+            'anotadas, la pareja esta mezclada o mal anotada. CAMINO B: '
+            'llave nueva con passphrase propia anotada al crearla + '
+            'permiso Trade + los 3 secrets pegados juntos de corrido.')
         sys.exit(1)
+    if PW != PW0:
+        log('NOTA: la passphrase del secret tenia suciedad de pegado '
+            '(espacios/comillas al borde); el canon dispara con la '
+            'variante limpia. Al re-pegar el secret, hazlo sin bordes.')
     c = cfg[0] if cfg else {}
     posmode = c.get('posMode', 'net_mode')
     log(f'arca: acctLv {c.get("acctLv", "?")} | modo posicion {posmode} '
-        f'| la llave LEE el arca (credenciales validas)')
+        f'| la llave LEE el arca (passphrase EMPAREJADA)')
 
     try:
         tipo, i = instrumento(INST)
