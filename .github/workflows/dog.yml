@@ -1,0 +1,62 @@
+# doge.yml — EL LATIDO LIBRE DEL PERRO (decreto Carbono 20-oct)
+#   "El perro no deberia esperar a la atalaya. Que haga con su hueso
+#    lo que quiera. Pero tendra su collar GPS."
+#   "Objetivo: usar al perro para AMBAS tareas."
+#
+#   DOGE es EL PERRO: VA SUELTO. Este es SU .yml — su corazon propio,
+#   cada 15 min + boton manual. NO comparte job con la atalaya: si el
+#   Vigia falla, el Perro sigue cazando.
+#
+#   Su radar (perro-radar.py v4) vigila INJ y SUI con DOS senales:
+#     SENAL 1 — SALIR A MAR (los huesos): posicion abierta de INJ/SUI
+#       (de quien sea — la presa en el agua es presa) en zona optima de
+#       salida (TP >= +4% | escudo <= -3% | rotura 1H en contra)
+#       => close-position total a mercado.
+#     SENAL 2 — ZARPAR: presa en seco + cruce fresco en [-2,-3,-4] con
+#       sep >= 0.15% (la misma ley de flota del Vigia)
+#       => zarpa INJ, SUI o ambos a la vez: entrada a mercado con
+#       collar $10 y SL/TP atados (LONG SL 2% / TP 4% · SHORT SL 3% /
+#       TP 4%).
+#
+#   SIN PRIVANZA: DOGE no tiene presas privadas — INJ/SUI tambien salen
+#   con toda la flota cuando la atalaya canta (sus cascos main-inj.py /
+#   main-sui.py viven en raiz y LAUNCH_SHIPS los reconoce). El Perro no
+#   espera ni sustituye a la atalaya: va adelante con SU reloj.
+#
+#   COLLAR GPS: lista dura INJ-USD-SWAP + SUI-USD-SWAP, un estado una
+#   mision (con posicion caza huesos, en seco mira de zarpar; jamas
+#   acumula presas sobre presas), clOrdId = MORD/ZARPA+presa+vela
+#   cerrada (idempotente, 51016 = paz), bitacora total, fail-closed.
+name: doge
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '*/15 * * * *'
+permissions:
+  contents: read
+jobs:
+  perro:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install requests
+      - name: Radar del Perro - doble tarea INJ/SUI (huesos y zarpes)
+        run: python perro-radar.py
+        env:
+          OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
+          OKX_SECRET_KEY: ${{ secrets.OKX_SECRET_KEY }}
+          OKX_PASSWORD: ${{ secrets.OKX_PASSWORD }}
+          # PERRO_MODE: DRY        # descomentar la primera noche (solo ladridos)
+          # --- huesos (Senal 1: SALIR A MAR) ---
+          # PERRO_TP_PCT: "4.0"
+          # PERRO_SL_PCT: "3.0"
+          # PERRO_LOCK_PCT: "0.15"
+          # --- zarpar (Senal 2) ---
+          # PERRO_COLLAR_USD: "10"     # tamanio maximo por zarpe
+          # PERRO_SL_LONG_PCT: "2.0"
+          # PERRO_SL_SHORT_PCT: "3.0"
+          # PERRO_MGN: cross           # cross | isolated (como tenga el arca)
+          # PERRO_LEVER: ""            # vacio = usa el apalancamiento ya fijado en OKX
