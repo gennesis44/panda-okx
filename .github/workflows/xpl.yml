@@ -1,75 +1,35 @@
-# ==============================================================
-# xpl.yml — CONFIGURACIÓN DEL BOT DE TRADING XPL (Plasma)
-# ==============================================================
-# Especificación del usuario:
-#   "30min ema3/21 sl 1.5% tp 2% 0.15"
-#
-# Mapeo:
-#   30min  -> estrategia.timeframe
-#   ema3/21-> estrategia.ema_rapida / ema_lenta
-#   sl 1.5%-> estrategia.stop_loss_pct
-#   tp 2%  -> estrategia.take_profit_pct
-#   0.15   -> simulacion.tamano_fraccion (15% del capital por operación)
-#
-# Reglas básicas de YAML: indentación de 2 ESPACIOS (nunca tabuladores),
-# "clave: valor", listas con "- ", comentarios con #.
-# ==============================================================
+name: Atalaya
 
-# --- ESTRATEGIA ------------------------------------------------
-estrategia:
-  timeframe: "30m"          # Temporalidad de las velas (OKX: 1m 5m 15m 30m 1H 4H...)
-  ema_rapida: 3             # EMA rápida (3)
-  ema_lenta: 21             # EMA lenta (21)
-  stop_loss_pct: 1.5        # Stop Loss al 1.5% del precio de entrada
-  take_profit_pct: 2.0      # Take Profit al 2.0% del precio de entrada
-  direccion: "ambas"        # "largo" (solo compras) | "corto" (solo ventas) | "ambas"
-  usar_vela_cerrada: true   # Señales SOLO con velas cerradas (evita repintado)
-  cerrar_en_cruce_contrario: true  # Si abre cruce opuesto, cierra la posición aunque
-                            # no haya llegado aún al SL o al TP
+on:
+  schedule:
+    - cron: '*/18 * * * *'
+  workflow_dispatch:
 
-# --- FILTRO DE RÉGIMEN (no operar contra la marea) -------------
-# Problema que resuelve: los cruces EMA3/21 en 30m dan muchas señales
-# falsas cuando el marco mayor está lateral (el "sangrado" de abr-jul).
-# Solución: solo permitir LARGO si el régimen mayor es alcista y
-# CORTO solo si es bajista. El régimen se mide en un marco MAYOR.
-filtro_regimen:
-  activo: true
-  timeframe: "4H"            # marco del filtro (independiente del de entrada)
-  modo: "sobre_ema"          # "sobre_ema": precio por encima/debajo de la EMA
-                             # "pendiente_ema": dirección de la EMA en 4H
-                             # GANADOR del backtest 208 días (AMBOS: -2.4% vs
-                             #   -10.2% sin filtro). "pendiente_ema" rinde mejor
-                             #   si solo vas a operar en corto.
-  ema: 21                    # EMA que usa el filtro (calculada en 4H)
-  periodos_pendiente: 3      # pendiente = EMA ahora vs hace N velas de 4H
-  # OJO: si el filtro bloquea una señal, no se opera. Sin señal perdida
-  # imposible: lo que se gana es no entrar contra la tendencia mayor.
+concurrency:
+  group: atalaya
+  cancel-in-progress: false
 
-# --- MERCADO (OKX, datos públicos sin API key) -----------------
-mercado:
-  fuente: "okx"
-  instrumento: "XPL-USDT-SWAP"   # Perpetuo lineal XPL/USDT (el "XPLUSUSD" de la app)
-  velas_historicas: 100          # Cuántas velas 30m descarga para calcular EMAs
-  api_base: "https://www.okx.com"
+permissions:
+  contents: read
 
-# --- SIMULACIÓN (paper trading) --------------------------------
-simulacion:
-  modo: "simulado"          # "simulado" = opera con capital virtual (SIN riesgo).
-                            # "real" = NO implementado por seguridad: el bot lo
-                            # avisará y se detendrá. Nunca conectes claves API
-                            # sin probar antes semanas en simulado.
-  capital_inicial: 1000.0   # Capital virtual de partida (USDT)
-  tamano_fraccion: 0.15     # El "0.15" de tu nota: 15% del capital por operación.
-                            # Si lo prefieres como % de riesgo fijo, ajusta aquí.
-  comision_pct: 0.05        # Comisión simulada por lado (0.05% ≈ taker OKX)
+jobs:
+  vigia:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
 
-# --- BOT -------------------------------------------------------
-bot:
-  intervalo_segundos: 60    # Cada cuánto revisa precio/velas en modo bucle
-  archivo_estado: "xpl_estado.json"   # Posición abierta y capital persistente
-  archivo_log: "xpl_bot.log"          # Registro histórico de operaciones
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
 
-# --- LOGGING ---------------------------------------------------
-log:
-  nivel: "INFO"             # DEBUG para ver todos los cálculos internos
-  mostrar_en_pantalla: true
+      - name: Instalar dependencias
+        run: pip install ccxt pandas requests
+
+      - name: Ejecutar Atalaya
+        env:
+          OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
+          OKX_SECRET_KEY: ${{ secrets.OKX_SECRET_KEY }}
+          OKX_PASSWORD: ${{ secrets.OKX_PASSWORD }}
+        run: python main-atalaya.py
