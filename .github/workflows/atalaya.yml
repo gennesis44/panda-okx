@@ -1,35 +1,26 @@
-name: Atalaya
+name: XPL Engine
 
 on:
+  workflow_dispatch:    # <--- Esto activa el botón "Run workflow"
   schedule:
-    - cron: '*/18 * * * *'
-  workflow_dispatch:
-
-concurrency:
-  group: atalaya
-  cancel-in-progress: false
-
-permissions:
-  contents: read
+    - cron: '*/30 * * * *' # Ajusta la frecuencia según lo necesites
 
 jobs:
-  vigia:
+  ejecutar-xpl:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-          cache: 'pip'
 
       - name: Instalar dependencias
-        run: pip install ccxt pandas requests
+        run: pip install ccxt pyyaml
 
-      - name: Ejecutar Atalaya
+      - name: Ejecutar XPL
         env:
           OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
           OKX_SECRET_KEY: ${{ secrets.OKX_SECRET_KEY }}
           OKX_PASSWORD: ${{ secrets.OKX_PASSWORD }}
-        run: python main-atalaya.py
+        run: python xpl.py
