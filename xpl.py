@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
 # ==============================================================
-# xpl.py — lee "xpl.yml" y ejecuta las tareas activas (PRODUCCIÓN)
-#   python xpl.py                     -> todas las tareas activas
-#   python xpl.py --tarea saludo      -> solo una
-#   python xpl.py --config otro.yml   -> otro YAML
-#   python xpl.py --debug             -> nivel DEBUG (sin volcar config)
-# Requisitos: Python 3.10+, PyYAML (pip install pyyaml)
+# xpl.py — Motor de Ejecución de Trading OKX (PRODUCCIÓN)
+# Estrategia: EMA 3 / EMA 21 (30m) | USDC SWAP | 3 Ciclos de Verificación
+# Gestión de Riesgo: SL 1.5% | TP 2.3% | Apalancamiento 1x
+# Requisitos: Python 3.10+, PyYAML, ccxt (pip install pyyaml ccxt)
 # Códigos de salida: 0 = ok | 1 = tareas fallidas | 2 = config inválida
 # ==============================================================
 import argparse
 import logging
 import logging.handlers
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
+import ccxt
 import yaml
 
 RUTA_CONFIG_DEFECTO = Path(__file__).resolve().parent / "xpl.yml"
@@ -37,7 +37,7 @@ def cargar_config(ruta: Path) -> dict:
 
 
 def validar_config(cfg: dict) -> None:
-    """Fail-fast: errores de estructura se detectan antes de ejecutar nada."""
+    """Fail-fast: detección de errores de estructura previa a la ejecución."""
     tareas = cfg.get("tareas", [])
     if not isinstance(tareas, list):
         raise ValueError("'tareas' debe ser una lista.")
@@ -51,7 +51,7 @@ def validar_config(cfg: dict) -> None:
         if tid in ids:
             raise ValueError(f"id de tarea duplicado: '{tid}'.")
         ids.add(tid)
-    for seccion in ("app", "log", "ajustes"):
+    for seccion in ("app", "log", "ajustes", "exchange"):
         if seccion in cfg and not isinstance(cfg[seccion], dict):
             raise ValueError(f"'{seccion}' debe ser un mapa.")
 
@@ -64,7 +64,6 @@ def configurar_logging(cfg_log: dict, debug: bool) -> None:
         handlers.append(logging.StreamHandler())
     archivo = cfg_log.get("archivo")
     if archivo:
-        # Rotación: evita que el log crezca sin límite en producción
         handlers.append(logging.handlers.RotatingFileHandler(
             archivo, maxBytes=1_000_000, backupCount=5, encoding="utf-8"))
     if not handlers:
@@ -77,45 +76,167 @@ def configurar_logging(cfg_log: dict, debug: bool) -> None:
     )
 
 
-# ---------------------------- TAREAS ----------------------------
-def tarea_saludo(tarea: dict, cfg: dict) -> str:
-    return str(tarea.get("texto", "Hola"))
+# ---------------------------- CÁLCULO EMA ----------------------------
+def calcular_ema(precios: list[float], periodo: int) -> float:
+    """Calcula la Media Móvil Exponencial (EMA) sobre una serie de precios."""
+    if len(precios) < periodo:
+        raise ValueError(f"Se necesitan al menos {periodo} velas para calcular la EMA.")
+    k = 2 / (periodo + 1)
+    ema = sum(precios[:periodo]) / periodo
+    for precio in precios[periodo:]:
+        ema = (precio * k) + (ema * (1 - k))
+    return ema
 
 
-def tarea_calculo(tarea: dict, cfg: dict) -> str:
-    aj = cfg.get("ajustes", {})
-    factor = float(aj.get("factor", 1.0))
-    limite = max(0, min(int(aj.get("limite_registros", 5)), 1000))
-    lineas = [f"  {i:>2} x {factor:<4} = {i * factor}" for i in range(1, limite + 1)]
-    return "Tabla de multiplicar (factor del YAML):\n" + "\n".join(lineas)
+# ---------------------------- LÓGICA DE TRADING OKX ----------------------------
+def inicializar_exchange(cfg: dict) -> ccxt.okx:
+    cfg_ex = cfg.get("exchange", {})
+    exchange = ccxt.okx({
+        "apiKey": cfg_ex.get("api_key", ""),
+        "secret": cfg_ex.get("secret", ""),
+        "password": cfg_ex.get("passphrase", ""),
+        "enableRateLimit": True,
+        "options": {
+            "defaultType": "swap",
+        }
+    })
+    
+    # Redirección a endpoints my.okx.com / Dominio EEA
+    if cfg_ex.get("eea_domain", True):
+        exchange.urls["api"] = {
+            "rest": "https://my.okx.com",
+            "public": "https://my.okx.com",
+            "private": "https://my.okx.com",
+        }
+    
+    if cfg_ex.get("sandbox", False):
+        exchange.set_sandbox_mode(True)
+        
+    return exchange
 
 
-def tarea_fecha(tarea: dict, cfg: dict) -> str:
-    return datetime.now().astimezone().strftime(
-        "Hoy es %d/%m/%Y — son las %H:%M:%S %Z")
+def seleccionar_simbolo_usdc_lejano(exchange: ccxt.okx, par_base: str) -> str:
+    """
+    Filtra y selecciona contratos SWAP/Futures en USDC (vetando USDT)
+    y prioriza el vencimiento más lejano si existen múltiples series.
+    """
+    markets = exchange.load_markets()
+    candidatos = []
+    
+    for symbol, market in markets.items():
+        if market.get("settle") == "USDC" and market.get("base") == par_base:
+            if "USDT" in symbol:
+                continue
+            if market.get("swap", False) or market.get("future", False):
+                expiry = market.get("expiry", 0) or 0
+                candidatos.append((expiry, symbol))
+                
+    if not candidatos:
+        raise RuntimeError(f"No se encontraron mercados USDC Swap para '{par_base}' (USDT vetado).")
+    
+    candidatos.sort(key=lambda x: x[0], reverse=True)
+    simbolo_elegido = candidatos[0][1]
+    log.info("Símbolo USDC seleccionado (más lejano): %s", simbolo_elegido)
+    return simbolo_elegido
 
 
-def tarea_contador(tarea: dict, cfg: dict) -> str:
+def tarea_ema_trading(tarea: dict, cfg: dict) -> str:
+    exchange = inicializar_exchange(cfg)
+    base_asset = tarea.get("base_asset", "BTC").upper()
+    timeframe = tarea.get("timeframe", "30m")
+    max_intentos = int(tarea.get("intentos", 3))
+    
+    # 1. Selección de símbolo USDC excluyendo USDT
+    symbol = seleccionar_simbolo_usdc_lejano(exchange, base_asset)
+    market = exchange.market(symbol)
+    
+    # 2. Configurar Apalancamiento a 1x
     try:
-        n = int(tarea.get("texto", "3"))
-    except (TypeError, ValueError):
-        n = 3
-    n = max(1, min(n, 1000))
-    return "Cuenta: " + ", ".join(str(i) for i in range(1, n + 1))
+        exchange.set_leverage(1, symbol, params={"mgnMode": "isolated"})
+    except Exception as e:
+        log.warning("No se pudo fijar apalancamiento a 1x: %s", e)
+
+    resultados_ciclos = []
+
+    # 3. Bucle de verificación (Entra 3 veces por ejecución)
+    for ciclo in range(1, max_intentos + 1):
+        log.info("Iniciando ciclo de verificación %d/%d para %s (%s)", ciclo, max_intentos, symbol, timeframe)
+        
+        try:
+            ohlcv = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=50)
+            precios_cierre = [v[4] for v in ohlcv]
+            
+            ema3 = calcular_ema(precios_cierre, 3)
+            ema21 = calcular_ema(precios_cierre, 21)
+            precio_actual = precios_cierre[-1]
+            
+            distancia_ema_pct = (abs(ema3 - ema21) / ema21) * 100
+            log.info("[Ciclo %d] %s %s -> EMA3: %.4f | EMA21: %.4f | Separación: %.3f%%", 
+                     ciclo, symbol, timeframe, ema3, ema21, distancia_ema_pct)
+
+            # Filtro de apertura mínima de 0.15%
+            if distancia_ema_pct < 0.15:
+                resultados_ciclos.append(f"Ciclo {ciclo}: Sin entrada (Separación {distancia_ema_pct:.3f}% < 0.15%)")
+                if ciclo < max_intentos:
+                    time.sleep(2)
+                continue
+
+            # Dimensionamiento por valor nominal del contrato
+            val_contrato = float(market.get("contractSize", 1.0))
+            monto_contratos = 1 if val_contrato > 0.50 else 3
+
+            # Dirección y Riesgo (SL 1.5% | TP 2.3%)
+            if ema3 > ema21:
+                lado = "buy"
+                precio_sl = precio_actual * (1.0 - 0.015)
+                precio_tp = precio_actual * (1.0 + 0.023)
+            else:
+                lado = "sell"
+                precio_sl = precio_actual * (1.0 + 0.015)
+                precio_tp = precio_actual * (1.0 - 0.023)
+
+            params = {
+                "stopLoss": {"triggerPrice": exchange.price_to_precision(symbol, precio_sl), "orderPrice": "-1"},
+                "takeProfit": {"triggerPrice": exchange.price_to_precision(symbol, precio_tp), "orderPrice": "-1"}
+            }
+
+            if tarea.get("ejecutar_orden", False):
+                orden = exchange.create_order(
+                    symbol=symbol, type="market", side=lado, amount=monto_contratos, params=params
+                )
+                return (
+                    f"[+] CONDICIÓN CUMPLIDA Y ORDEN EJECUTADA EN CICLO {ciclo} [{lado.upper()}] en {symbol}\n"
+                    f"Temporalidad: {timeframe} | Separación EMAs: {distancia_ema_pct:.3f}% | Contratos: {monto_contratos}\n"
+                    f"Precio: {precio_actual:.4f} | SL (1.5%): {precio_sl:.4f} | TP (2.3%): {precio_tp:.4f}\n"
+                    f"ID Orden: {orden.get('id')}"
+                )
+            else:
+                return (
+                    f"[SIMULACIÓN] CONDICIÓN CUMPLIDA EN CICLO {ciclo} [{lado.upper()}] en {symbol}\n"
+                    f"Temporalidad: {timeframe} | Separación EMAs: {distancia_ema_pct:.3f}% (>= 0.15%)\n"
+                    f"Contratos: {monto_contratos} (Val: {val_contrato} USDC) | Precio: {precio_actual:.4f}\n"
+                    f"Stop Loss (-1.5%): {precio_sl:.4f} | Take Profit (+2.3%): {precio_tp:.4f}"
+                )
+
+        except Exception as e:
+            log.error("Error en ciclo %d para %s: %s", ciclo, symbol, e)
+            resultados_ciclos.append(f"Ciclo {ciclo}: Error ({e})")
+        
+        if ciclo < max_intentos:
+            time.sleep(2)
+
+    return f"Resumen de 3 ciclos completados en {symbol} ({timeframe}):\n" + "\n".join(resultados_ciclos)
 
 
 TAREAS_DISPONIBLES = {
-    "saludo": tarea_saludo,
-    "calculo": tarea_calculo,
-    "fecha": tarea_fecha,
-    "contador": tarea_contador,
+    "ema_trading": tarea_ema_trading,
 }
 
 
 # ---------------------------- EJECUCIÓN ----------------------------
 def ejecutar_tareas(cfg: dict, solo_una: str | None) -> int:
     app = cfg.get("app", {})
-    print(f"\n=== {app.get('nombre', 'XPL')} v{app.get('version', '?')} ===\n")
+    print(f"\n=== {app.get('nombre', 'XPL Engine')} v{app.get('version', '2.1.0')} ===\n")
 
     tareas = cfg.get("tareas", [])
     if not tareas:
@@ -155,7 +276,7 @@ def ejecutar_tareas(cfg: dict, solo_una: str | None) -> int:
 
 
 def parsear_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Lee xpl.yml y ejecuta sus tareas.")
+    p = argparse.ArgumentParser(description="Motor XPL — Estrategia EMA OKX USDC 30m.")
     p.add_argument("--config", type=Path, default=RUTA_CONFIG_DEFECTO)
     p.add_argument("--tarea", metavar="ID", default=None)
     p.add_argument("--debug", action="store_true")
