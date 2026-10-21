@@ -34,6 +34,9 @@
 #   INJ-USD_UM_XPERP-310711 (vence 2031-07-11, settle USD — el MISMO
 #   instrumento que comercia main-inj.py). COLLAZO: PERRO_PREY activo.
 #   El perro guarda los huesos del casco: mismo instId, misma presa.
+#   v4.3 (21-oct): SUI unificado a SU X-Perp vivo SUI-USD_UM_XPERP-310404
+#   (vence 2031-04-04, ctVal 1 — el MISMO instId que comercia
+#   main-sui.py). El collar ya no apunta a un casco muerto.
 name: doge
 on:
   workflow_dispatch:
@@ -57,7 +60,7 @@ jobs:
           OKX_SECRET_KEY: ${{ secrets.OKX_SECRET_KEY }}
           OKX_PASSWORD: ${{ secrets.OKX_PASSWORD }}
           # PERRO_MODE: DRY        # descomentar la primera noche (solo ladridos)
-          PERRO_PREY: "INJ-USD_UM_XPERP-310711,SUI-USD-SWAP"   # INJ X-Perp USD + SUI
+          PERRO_PREY: "INJ-USD_UM_XPERP-310711,SUI-USD_UM_XPERP-310404"   # INJ X-Perp + SUI X-Perp (los dos vivos)
           # --- huesos (Senal 1: SALIR A MAR) ---
           # PERRO_TP_PCT: "4.0"
           # PERRO_SL_PCT: "3.0"
