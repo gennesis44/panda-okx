@@ -1,4 +1,4 @@
-ñ#!/usr/bin/env python3
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # xpl.py — Nave Autónoma XPL · Ley de la Flota (Carbono)
 #   Operaciones sobre XPL (USDT prohibido, solo USDC/USD-settled si aplica).
