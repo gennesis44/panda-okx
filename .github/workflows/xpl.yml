@@ -1,24 +1,35 @@
-app:
-  nombre: "GSCSI-XPL Trading Engine"
-  version: "2.1.0"
+name: xpl
 
-exchange:
-  eea_domain: true       # Forzar endpoints de my.okx.com
-  sandbox: false         # True para pruebas en Paper Trading / Demo
-  api_key: "TU_API_KEY"
-  secret: "TU_SECRET"
-  passphrase: "TU_PASSPHRASE"
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '*/30 * * * *'
 
-log:
-  nivel: "INFO"
-  mostrar_en_pantalla: true
-  archivo: "xpl_trading.log"
+concurrency:
+  group: xpl
+  cancel-in-progress: false
 
-tareas:
-  - id: "est_ema_btc_30m"
-    tipo: "ema_trading"
-    activa: true
-    base_asset: "BTC"
-    timeframe: "30m"      # Marco temporal de 30 minutos
-    intentos: 3           # Entra a verificar 3 veces por ejecución
-    ejecutar_orden: false # Cambiar a true para enviar órdenes reales al exchange
+permissions:
+  contents: read
+
+jobs:
+  ejecutar-xpl:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Instalar dependencias
+        run: pip install ccxt pyyaml pandas
+
+      - name: Ejecutar XPL
+        env:
+          OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
+          OKX_SECRET_KEY: ${{ secrets.OKX_SECRET_KEY }}
+          OKX_PASSWORD: ${{ secrets.OKX_PASSWORD }}
+        run: python xpl.py
