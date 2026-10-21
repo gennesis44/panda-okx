@@ -1,0 +1,41 @@
+name: Decreto Carbono - ADA Swing Trading
+
+on:
+  schedule:
+    # Se ejecuta de manera automática cada 30 minutos
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+    # Permite activar el bot manualmente desde la pestaña "Actions"
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Clonar el repositorio código
+      uses: actions/checkout@v4
+
+    - name: Configurar Entorno de Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+        cache: 'pip'
+
+    - name: Instalar dependencias requeridas (CCXT y Pandas)
+      run: |
+        python -m pip install --upgrade pip
+        pip install ccxt pandas
+
+    - name: Ejecutar motor de vuelo Ax2-ADA
+      env:
+        # Credenciales mapeadas desde tus GitHub Secrets
+        OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
+        OKX_SECRET_KEY: ${{ secrets.OKX_SECRET_KEY }}
+        OKX_PASSWORD: ${{ secrets.OKX_PASSWORD }}
+        
+        # El bloque de leyes exactas para operar en producción real
+        TEST_MODE: '0'          # 0 = CUENTA REAL / PRODUCCIÓN (1=Demo)
+        SINGLE_CYCLE: '1'       # Ejecución única por llamada en bash
+        OKX_ADA_MAX_NOTIONAL: '6.0' # Guardia de nocional defensivo
+      run: |
+        python main-ada.py
