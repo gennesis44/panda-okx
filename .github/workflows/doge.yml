@@ -1,19 +1,19 @@
-name: xpl
+name: doge
 
 on:
   schedule:
-    - cron: '*/30 * * * *'
+    - cron: '*/15 * * * *'
   workflow_dispatch:
 
 concurrency:
-  group: xpl
+  group: doge
   cancel-in-progress: false
 
 permissions:
   contents: read
 
 jobs:
-  ejecutar-xpl:
+  perro-caza:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -27,9 +27,10 @@ jobs:
       - name: Instalar dependencias
         run: pip install ccxt pandas requests
 
-      - name: Ejecutar XPL
+      - name: Ejecutar Perro DOGE
         env:
           OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
           OKX_SECRET_KEY: ${{ secrets.OKX_SECRET_KEY }}
           OKX_PASSWORD: ${{ secrets.OKX_PASSWORD }}
-        run: python xpl.py
+          SINGLE_CYCLE: '1'
+        run: python main-doge.py
