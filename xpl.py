@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # xpl.py — Nave Autónoma XPL · Ley de la Flota (Carbono)
-#   Operaciones sobre XPL (USDT prohibido, solo USDC/USD-settled si aplica).
+#   Operaciones sobre XPL estrictamente en USDC (USDT y EUR prohibidos).
 #   Protección fail-closed: si falta configuración o credenciales, se detiene ordenadamente.
 
 import os
@@ -43,18 +43,22 @@ def build_exchange():
 def pick_future(ex):
     ex.load_markets()
     for m in ex.markets.values():
-        if (m.get('base') == BASE_ASSET and m.get('active')
-                and str(m.get('settle') or '').upper() != 'USDT'):
-            return m['symbol']
+        settle = str(m.get('settle') or '').upper()
+        quote = str(m.get('quote') or '').upper()
+        
+        # Filtro estricto: la moneda base debe ser XPL, el mercado activo y liquida/cotiza en USDC
+        if m.get('base') == BASE_ASSET and m.get('active'):
+            if settle == 'USDC' or quote == 'USDC':
+                return m['symbol']
     return None
 
 def main():
-    log.info("Iniciando ciclo de XPL (X-Perp / Swap USD)...")
+    log.info("Iniciando ciclo de XPL (X-Perp / Swap USDC)...")
     ex = build_exchange()
     sym = pick_future(ex)
     
     if not sym:
-        log.info("XPL: No se encontró un instrumento activo con liquidación en USD/USDC (USDT prohibido). Saliendo a puerto.")
+        log.info("XPL: No se encontró un instrumento activo con liquidación/cotización en USDC. Saliendo a puerto.")
         return
 
     log.info(f"Instrumento XPL detectado: {sym}")
