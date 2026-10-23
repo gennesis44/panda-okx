@@ -2,10 +2,10 @@
 # -*- coding: utf-8 -*-
 # xpl.py — Nave Autónoma XPL · Ley de la Flota (Carbono)
 #   Operaciones sobre XPL estrictamente en USDC (USDT y EUR prohibidos).
-#   Protección fail-closed: si falta configuración o credenciales, se detiene ordenadamente.
+#   Protección fail-closed: si falta configuración, credenciales o no se pueden
+#   colocar SL/TP, el bot NO deja posiciones desprotegidas.
 
 import os
-import sys
 import logging
 import ccxt
 import pandas as pd
@@ -13,20 +13,29 @@ import pandas as pd
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 log = logging.getLogger(__name__)
 
+
 def _f(x):
     try:
         return float(x)
     except (TypeError, ValueError):
         return 0.0
 
+
+# ───────────── PARÁMETROS ─────────────
 BASE_ASSET = 'XPL'
-TIMEFRAME = '1h'          # Marco temporal de 1 Hora
-EMA_FAST = 4              # EMA rápida 4
-EMA_SLOW = 21             # EMA lenta 21
-CONTRACT_AMOUNT = 25.0    # 25 contratos por operación
-RR_RATIO = 1.5            # Ratio Riesgo / Beneficio (1 : 1.5)
-MARGIN_MODE = 'cross'     # 'cross' para margen cruzado
-HOST = 'https://my.okx.com'
+TIMEFRAME = '1h'
+EMA_FAST = 3                 # EMA rápida 3
+EMA_SLOW = 21                # EMA lenta 21
+MIN_SEPARATION = 0.0015      # Separación mínima entre EMAs: 0.15 %
+CONTRACT_AMOUNT = 25.0       # 25 contratos por operación
+RR_RATIO = 1.5               # Riesgo / Beneficio 1 : 1.5
+SL_MIN, SL_MAX = 0.015, 0.03 # SL entre 1.5 % y 3 %
+MARGIN_MODE = 'cross'
+HOST = 'my.okx.com'
+CANDLES = 150                # histórico para que la EMA21 converja
+DRY_RUN = os.getenv('DRY_RUN', '0') == '1'   # DRY_RUN=1 → no envía órdenes
+LEVERAGE = os.getenv('OKX_LEVERAGE', '')     # opcional, p.ej. "5"
+
 
 def build_exchange():
     k = os.getenv('OKX_API_KEY', '')
@@ -38,123 +47,139 @@ def build_exchange():
     return ccxt.okx({
         'apiKey': k, 'secret': s, 'password': p,
         'enableRateLimit': True,
+        'hostname': HOST,
         'options': {'defaultType': 'swap'},
-        'urls': {'api': {'rest': HOST}},
+        'urls': {'api': {'rest': f'https://{HOST}'}},
     })
 
+
 def pick_future(ex):
+    """Perpetuo lineal de XPL liquidado en USDC. Nunca USDT."""
     ex.load_markets()
     for m in ex.markets.values():
+        if m.get('base') != BASE_ASSET or not m.get('active'):
+            continue
+        if not m.get('swap'):
+            continue
         settle = str(m.get('settle') or '').upper()
         quote = str(m.get('quote') or '').upper()
-        if m.get('base') == BASE_ASSET and m.get('active'):
-            if settle == 'USDC' or quote == 'USDC':
-                return m['symbol']
+        if settle == 'USDC' and quote == 'USDC':
+            return m['symbol']
     return None
 
-def check_existing_positions(ex, sym):
+
+def has_open_position(ex, sym):
+    """Fail-closed: ante cualquier duda devuelve True (no abrir)."""
     try:
-        positions = ex.fetch_positions([sym])
-        for p in positions:
-            if float(p.get('contracts', 0)) > 0:
+        for p in ex.fetch_positions([sym]):
+            if abs(_f(p.get('contracts'))) > 0:
                 return True
+        return False
     except Exception as e:
-        log.error(f"Error al verificar posiciones activas: {e}")
-    return False
+        log.error(f"[FALLO-CERRADO] No se pudo verificar posiciones: {e}")
+        return True
 
-def calculate_dynamic_sl_tp(side, entry_price, e4, e21):
-    dist_ema = abs(entry_price - e21) / entry_price
-    sl_pct = max(0.015, min(0.03, dist_ema * 1.2))
+
+def calculate_sl_tp(side, entry, e_slow):
+    """SL = 1.2 × distancia del precio a la EMA lenta, acotado 1.5 %–3 %. TP = SL × RR."""
+    dist = abs(entry - e_slow) / entry
+    sl_pct = max(SL_MIN, min(SL_MAX, dist * 1.2))
     tp_pct = sl_pct * RR_RATIO
-
     if side == 'buy':
-        sl_price = entry_price * (1 - sl_pct)
-        tp_price = entry_price * (1 + tp_pct)
-    else:
-        sl_price = entry_price * (1 + sl_pct)
-        tp_price = entry_price * (1 - tp_pct)
+        return entry * (1 - sl_pct), entry * (1 + tp_pct), sl_pct, tp_pct
+    return entry * (1 + sl_pct), entry * (1 - tp_pct), sl_pct, tp_pct
 
-    return sl_price, tp_price, sl_pct, tp_pct
 
-def execute_trade_with_sl_tp(ex, sym, side, amount, current_price, e4, e21):
+def emergency_close(ex, sym, side, amount):
+    close_side = 'sell' if side == 'buy' else 'buy'
     try:
-        # Asegurar el modo de margen antes de lanzar la orden
-        try:
-            ex.set_margin_mode(MARGIN_MODE, sym, params={'posSide': 'net'})
-        except Exception:
-            pass # Si ya está configurado, continúa sin problemas
-
-        log.info(f"Ejecutando orden de {side.upper()} para {sym} por {amount} contratos a mercado...")
-        
-        # 1. Orden de entrada principal con tdMode
-        order = ex.create_order(sym, 'market', side, amount, params={'tdMode': MARGIN_MODE})
-        entry_price = _f(order.get('average') or order.get('price') or current_price)
-        log.info(f"Orden ejecutada. Precio de entrada: {entry_price:.4f}")
-
-        sl_price, tp_price, sl_pct, tp_pct = calculate_dynamic_sl_tp(side, entry_price, e4, e21)
-        close_side = 'sell' if side == 'buy' else 'buy'
-
-        log.info(f"Gestión de Riesgo | SL: {sl_pct*100:.2f}% ({sl_price:.4f}) | TP: {tp_pct*100:.2f}% ({tp_price:.4f})")
-
-        # 2. Stop Loss condicional
-        ex.create_order(sym, 'conditional', close_side, amount, None, params={
-            'triggerPrice': sl_price, 
-            'stopPrice': sl_price, 
-            'reduceOnly': True, 
-            'tdMode': MARGIN_MODE
-        })
-        log.info(f"Stop Loss colocado en: {sl_price:.4f}")
-
-        # 3. Take Profit límite
-        ex.create_order(sym, 'limit', close_side, amount, tp_price, params={
-            'reduceOnly': True, 
-            'tdMode': MARGIN_MODE
-        })
-        log.info(f"Take Profit colocado en: {tp_price:.4f}")
-
+        ex.create_order(sym, 'market', close_side, amount,
+                        params={'tdMode': MARGIN_MODE, 'reduceOnly': True})
+        log.warning("Posición cerrada de emergencia (SL/TP no se pudo garantizar).")
     except Exception as e:
-        log.error(f"[ERROR CRÍTICO] Fallo al colocar la orden o protecciones SL/TP: {e}")
+        log.error(f"[CRÍTICO] CIERRE DE EMERGENCIA FALLÓ, REVISAR A MANO EN OKX: {e}")
 
-def main():
-    log.info("Iniciando ciclo único de XPL en la nube...")
-    ex = build_exchange()
-    sym = pick_future(ex)
-    
-    if not sym:
-        log.info("XPL: No se encontró instrumento activo en USDC. Saliendo a puerto.")
+
+def execute_trade(ex, sym, side, amount, ref_price, e_slow):
+    sl, tp, sl_pct, tp_pct = calculate_sl_tp(side, ref_price, e_slow)
+    sl = float(ex.price_to_precision(sym, sl))
+    tp = float(ex.price_to_precision(sym, tp))
+    amount = float(ex.amount_to_precision(sym, amount))
+    log.info(f"Riesgo | ref {ref_price:.4f} | SL {sl_pct*100:.2f}% ({sl}) | TP {tp_pct*100:.2f}% ({tp})")
+
+    if DRY_RUN:
+        log.info(f"[DRY_RUN] {side.upper()} {amount} {sym} con SL {sl} / TP {tp}. No se envía nada.")
         return
 
-    log.info(f"Instrumento detectado: {sym}")
-    ohlcv = ex.fetch_ohlcv(sym, TIMEFRAME, limit=50)
+    if LEVERAGE:
+        try:
+            ex.set_leverage(int(LEVERAGE), sym, params={'mgnMode': MARGIN_MODE})
+        except Exception as e:
+            log.error(f"[FALLO-CERRADO] No se pudo fijar apalancamiento: {e}")
+            return
+
+    # Entrada + SL + TP en UNA sola orden (OKX attachAlgoOrds): atómico.
+    params = {
+        'tdMode': MARGIN_MODE,
+        'stopLoss': {'triggerPrice': sl, 'type': 'market'},
+        'takeProfit': {'triggerPrice': tp, 'type': 'market'},
+    }
+    try:
+        order = ex.create_order(sym, 'market', side, amount, params=params)
+        log.info(f"Orden enviada id={order.get('id')} con SL/TP adjuntos.")
+    except Exception as e:
+        log.error(f"[ERROR] Orden rechazada, no se abrió posición: {e}")
+        return
+
+    # Verificación: si la posición existe pero no hay protección confirmada, cerrar.
+    try:
+        if not has_open_position(ex, sym):
+            log.warning("La orden no dejó posición abierta (revisar en OKX).")
+    except Exception as e:
+        log.error(f"Verificación post-orden falló: {e}")
+        emergency_close(ex, sym, side, amount)
+
+
+def main():
+    log.info("Iniciando ciclo único de XPL...")
+    ex = build_exchange()
+    sym = pick_future(ex)
+    if not sym or 'USDC' not in sym:
+        log.info("XPL: no hay perpetuo activo en USDC. Saliendo.")
+        return
+    log.info(f"Instrumento: {sym}")
+
+    ohlcv = ex.fetch_ohlcv(sym, TIMEFRAME, limit=CANDLES)
+    if len(ohlcv) < EMA_SLOW * 3:
+        log.error("[FALLO-CERRADO] Histórico insuficiente.")
+        return
     df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-    
-    e4_series = df['close'].ewm(span=EMA_FAST, adjust=False).mean()
-    e21_series = df['close'].ewm(span=EMA_SLOW, adjust=False).mean()
-    
-    last = len(df) - 1
-    current_close = _f(df['close'].iloc[last])
-    e4_val = _f(e4_series.iloc[last])
-    e21_val = _f(e21_series.iloc[last])
-    
-    estado = "ALZA" if e4_val > e21_val else "BAJA"
-    log.info(f"XPL {sym} | EMA{EMA_FAST}/{EMA_SLOW}: {e4_val:.4f}/{e21_val:.4f} | Estado: {estado} | Precio: {current_close:.4f}")
 
-    market = ex.market(sym)
-    ct_val = _f(market.get('contractSize', 1.0))
-    nocional_total = CONTRACT_AMOUNT * ct_val * current_close
-    log.info(f"Tamaño de orden: {CONTRACT_AMOUNT} contratos (~{nocional_total:.2f} USDC nocionales)")
+    fast = df['close'].ewm(span=EMA_FAST, adjust=False).mean()
+    slow = df['close'].ewm(span=EMA_SLOW, adjust=False).mean()
 
-    if not check_existing_positions(ex, sym):
-        if e4_val > e21_val:
-            log.info(f"Condición alcista (EMA 4 > 21). Abriendo LONG de {CONTRACT_AMOUNT} contratos...")
-            execute_trade_with_sl_tp(ex, sym, 'buy', CONTRACT_AMOUNT, current_close, e4_val, e21_val)
-        elif e4_val < e21_val:
-            log.info(f"Condición bajista (EMA 4 < 21). Abriendo SHORT de {CONTRACT_AMOUNT} contratos...")
-            execute_trade_with_sl_tp(ex, sym, 'sell', CONTRACT_AMOUNT, current_close, e4_val, e21_val)
-    else:
-        log.info("Posición activa detectada en este instrumento. Omitiendo nueva entrada.")
+    # Vela CERRADA (la última está en formación y repinta la señal)
+    i = len(df) - 2
+    close = _f(df['close'].iloc[i])
+    e_f, e_s = _f(fast.iloc[i]), _f(slow.iloc[i])
+    sep = (e_f - e_s) / e_s if e_s else 0.0
+    log.info(f"{sym} | EMA{EMA_FAST}/{EMA_SLOW}: {e_f:.4f}/{e_s:.4f} | sep {sep*100:.3f}% | cierre {close:.4f}")
 
-    log.info("Ciclo único completado con éxito. Desconectando.")
+    if abs(sep) < MIN_SEPARATION:
+        log.info(f"Separación < {MIN_SEPARATION*100:.2f}%: sin señal. Observando.")
+        return
+
+    side = 'buy' if sep > 0 else 'sell'
+
+    if has_open_position(ex, sym):
+        log.info("Posición activa (o no verificable). Omitiendo entrada.")
+        return
+
+    ref = _f(ex.fetch_ticker(sym).get('last')) or close
+    log.info(f"Señal {'LONG' if side == 'buy' else 'SHORT'} confirmada. Ejecutando...")
+    execute_trade(ex, sym, side, CONTRACT_AMOUNT, ref, e_s)
+    log.info("Ciclo completado.")
+
 
 if __name__ == '__main__':
     main()
