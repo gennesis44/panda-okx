@@ -3,7 +3,7 @@
 # xpl.py — Nave Autónoma XPL · Ley de la Flota (Carbono)
 #   Opera el X-Perp XPLUSD (UM, margen en USDC). USDT y EUR prohibidos.
 #   Protección fail-closed: si falta configuración, credenciales o no se pueden
-#   colocar SL/TP, el bot NO deja posiciones desprotegidas.
+#   colocar/confirmar SL/TP, el bot NO deja posiciones desprotegidas.
 
 import os
 import logging
@@ -21,8 +21,35 @@ def _f(x):
         return 0.0
 
 
+def _px_match(a, b):
+    """Compara dos precios con 0,5 % de tolerancia."""
+    a, b = _f(a), _f(b)
+    if a <= 0 or b <= 0:
+        return False
+    return abs(a - b) / b < 0.005
+
+
+def protection_confirmed(ex, sym, sl, tp):
+    """True SOLO si hay un algo vivo en OKX con esos triggers de SL y TP.
+    Ante cualquier duda devuelve False (fail-closed -> cierre)."""
+    try:
+        inst_id = ex.market(sym)['id']
+        for ord_type in ('oco', 'conditional'):
+            resp = ex.private_get_trade_orders_algo_pending(
+                {'instId': inst_id, 'ordType': ord_type})
+            for algo in (resp or {}).get('data', []):
+                log.info(f"Algo vivo [{ord_type}] id={algo.get('algoId')} "
+                         f"SL={algo.get('slTriggerPx')} TP={algo.get('tpTriggerPx')}")
+                if (_px_match(algo.get('slTriggerPx'), sl)
+                        and _px_match(algo.get('tpTriggerPx'), tp)):
+                    return True
+    except Exception as e:
+        log.error(f"[FALLO-CERRADO] Consulta de algos falló: {e}")
+    return False
+
+
 # ───────────── PARÁMETROS ─────────────
-VERSION = 'v4-xperp'
+VERSION = 'v4.1-xperp'
 BASE_ASSET = 'XPL'
 TIMEFRAME = '1h'
 EMA_FAST = 3
@@ -146,12 +173,18 @@ def execute_trade(ex, sym, side, amount, ref_price, e_slow):
         log.error(f"[ERROR] Orden rechazada, no se abrió posición: {e}")
         return
 
-    try:
-        if not has_open_position(ex, sym):
-            log.warning("La orden no dejó posición abierta (revisar en OKX).")
-    except Exception as e:
-        log.error(f"Verificación post-orden falló: {e}")
+    pos_ok = has_open_position(ex, sym)
+    prot_ok = protection_confirmed(ex, sym, sl, tp)
+
+    if not pos_ok and not prot_ok:
+        log.warning("Orden aceptada pero sin posición ni protección verificables. Revisar OKX.")
+        return
+    if not prot_ok:
+        log.error("[FALLO-CERRADO] Posición abierta pero SL/TP SIN confirmar. Cerrando por seguridad.")
         emergency_close(ex, sym, side, amount)
+        return
+    extra = "" if pos_ok else " (posición no verificable, protección sí)"
+    log.info(f"Nave blindada: SL/TP confirmados en OKX{extra}")
 
 
 def main():
