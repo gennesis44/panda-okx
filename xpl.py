@@ -22,19 +22,20 @@ def _f(x):
 
 
 # ───────────── PARÁMETROS ─────────────
+VERSION = 'v3-diagnostico'
 BASE_ASSET = 'XPL'
 TIMEFRAME = '1h'
-EMA_FAST = 3                 # EMA rápida 3
-EMA_SLOW = 21                # EMA lenta 21
-MIN_SEPARATION = 0.0015      # Separación mínima entre EMAs: 0.15 %
-CONTRACT_AMOUNT = 25.0       # 25 contratos por operación
-RR_RATIO = 1.5               # Riesgo / Beneficio 1 : 1.5
-SL_MIN, SL_MAX = 0.015, 0.03 # SL entre 1.5 % y 3 %
+EMA_FAST = 3
+EMA_SLOW = 21
+MIN_SEPARATION = 0.0015      # 0.15 %
+CONTRACT_AMOUNT = 25.0
+RR_RATIO = 1.5
+SL_MIN, SL_MAX = 0.015, 0.03
 MARGIN_MODE = 'cross'
 HOST = 'my.okx.com'
-CANDLES = 150                # histórico para que la EMA21 converja
-DRY_RUN = os.getenv('DRY_RUN', '0') == '1'   # DRY_RUN=1 → no envía órdenes
-LEVERAGE = os.getenv('OKX_LEVERAGE', '')     # opcional, p.ej. "5"
+CANDLES = 150
+DRY_RUN = os.getenv('DRY_RUN', '0') == '1'
+LEVERAGE = os.getenv('OKX_LEVERAGE', '')
 
 
 def build_exchange():
@@ -54,16 +55,30 @@ def build_exchange():
 
 
 def pick_future(ex):
-    """Perpetuo lineal de XPL liquidado en USDC. Nunca USDT."""
+    """Perpetuo de XPL liquidado en USDC (incluye XPLUSD X-Perp). Nunca USDT."""
     ex.load_markets()
+    log.info(f"Mercados cargados: {len(ex.markets)}")
+
+    # Diagnóstico: todo lo que huela a XPL
     for m in ex.markets.values():
-        if m.get('base') != BASE_ASSET or not m.get('active'):
-            continue
-        if not m.get('swap'):
+        mid = str(m.get('id') or '').upper()
+        base = str(m.get('base') or '').upper()
+        if base == BASE_ASSET or mid.startswith(BASE_ASSET + '-') or mid.startswith(BASE_ASSET + 'USD'):
+            lim = (m.get('limits') or {}).get('amount') or {}
+            log.info(f"MERCADO {BASE_ASSET}: {m.get('symbol')} | id={m.get('id')} | "
+                     f"tipo={m.get('type')} | quote={m.get('quote')} | settle={m.get('settle')} | "
+                     f"active={m.get('active')} | contractSize={m.get('contractSize')} | min={lim.get('min')}")
+
+    for m in ex.markets.values():
+        if str(m.get('base') or '').upper() != BASE_ASSET:
             continue
         settle = str(m.get('settle') or '').upper()
         quote = str(m.get('quote') or '').upper()
-        if settle == 'USDC' and quote == 'USDC':
+        mid = str(m.get('id') or '').upper()
+        if 'USDT' in (settle, quote) or 'USDT' in mid:
+            continue
+        if m.get('swap') and m.get('active') is not False \
+                and (settle == 'USDC' or quote == 'USDC'):
             return m['symbol']
     return None
 
@@ -118,7 +133,6 @@ def execute_trade(ex, sym, side, amount, ref_price, e_slow):
             log.error(f"[FALLO-CERRADO] No se pudo fijar apalancamiento: {e}")
             return
 
-    # Entrada + SL + TP en UNA sola orden (OKX attachAlgoOrds): atómico.
     params = {
         'tdMode': MARGIN_MODE,
         'stopLoss': {'triggerPrice': sl, 'type': 'market'},
@@ -131,7 +145,6 @@ def execute_trade(ex, sym, side, amount, ref_price, e_slow):
         log.error(f"[ERROR] Orden rechazada, no se abrió posición: {e}")
         return
 
-    # Verificación: si la posición existe pero no hay protección confirmada, cerrar.
     try:
         if not has_open_position(ex, sym):
             log.warning("La orden no dejó posición abierta (revisar en OKX).")
@@ -141,10 +154,10 @@ def execute_trade(ex, sym, side, amount, ref_price, e_slow):
 
 
 def main():
-    log.info("Iniciando ciclo único de XPL...")
+    log.info(f"Iniciando ciclo único de XPL... [{VERSION}]")
     ex = build_exchange()
     sym = pick_future(ex)
-    if not sym or 'USDC' not in sym:
+    if not sym:
         log.info("XPL: no hay perpetuo activo en USDC. Saliendo.")
         return
     log.info(f"Instrumento: {sym}")
@@ -158,8 +171,7 @@ def main():
     fast = df['close'].ewm(span=EMA_FAST, adjust=False).mean()
     slow = df['close'].ewm(span=EMA_SLOW, adjust=False).mean()
 
-    # Vela CERRADA (la última está en formación y repinta la señal)
-    i = len(df) - 2
+    i = len(df) - 2          # vela cerrada
     close = _f(df['close'].iloc[i])
     e_f, e_s = _f(fast.iloc[i]), _f(slow.iloc[i])
     sep = (e_f - e_s) / e_s if e_s else 0.0
