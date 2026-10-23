@@ -1,4 +1,4 @@
-#!/usr/init/env python3
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # xpl.py — Nave Autónoma XPL · Ley de la Flota (Carbono)
 #   Operaciones sobre XPL estrictamente en USDC (USDT y EUR prohibidos).
@@ -23,8 +23,9 @@ BASE_ASSET = 'XPL'
 TIMEFRAME = '1h'          # Marco temporal de 1 Hora
 EMA_FAST = 4              # EMA rápida 4
 EMA_SLOW = 21             # EMA lenta 21
-CONTRACT_AMOUNT = 25.0     # 25 contratos por operación
+CONTRACT_AMOUNT = 25.0    # 25 contratos por operación (ajustado para superar el mínimo)
 RR_RATIO = 1.5            # Ratio Riesgo / Beneficio (1 : 1.5)
+MARGIN_MODE = 'cross'     # Modo de margen en OKX: 'cross' (cruzado) o 'isolated' (aislado)
 HOST = 'https://my.okx.com'
 
 def build_exchange():
@@ -78,7 +79,9 @@ def calculate_dynamic_sl_tp(side, entry_price, e4, e21):
 def execute_trade_with_sl_tp(ex, sym, side, amount, current_price, e4, e21):
     try:
         log.info(f"Ejecutando orden de {side.upper()} para {sym} por {amount} contratos a mercado...")
-        order = ex.create_order(sym, 'market', side, amount)
+        
+        # 1. Orden de entrada principal con tdMode requerido por OKX
+        order = ex.create_order(sym, 'market', side, amount, params={'tdMode': MARGIN_MODE})
         entry_price = _f(order.get('average') or order.get('price') or current_price)
         log.info(f"Orden ejecutada. Precio de entrada: {entry_price:.4f}")
 
@@ -87,13 +90,19 @@ def execute_trade_with_sl_tp(ex, sym, side, amount, current_price, e4, e21):
 
         log.info(f"Gestión de Riesgo | SL: {sl_pct*100:.2f}% ({sl_price:.4f}) | TP: {tp_pct*100:.2f}% ({tp_price:.4f})")
 
+        # 2. Stop Loss condicional con tdMode
         ex.create_order(sym, 'conditional', close_side, amount, None, params={
-            'triggerPrice': sl_price, 'stopPrice': sl_price, 'reduceOnly': True
+            'triggerPrice': sl_price, 
+            'stopPrice': sl_price, 
+            'reduceOnly': True, 
+            'tdMode': MARGIN_MODE
         })
         log.info(f"Stop Loss colocado en: {sl_price:.4f}")
 
+        # 3. Take Profit límite con tdMode
         ex.create_order(sym, 'limit', close_side, amount, tp_price, params={
-            'reduceOnly': True
+            'reduceOnly': True, 
+            'tdMode': MARGIN_MODE
         })
         log.info(f"Take Profit colocado en: {tp_price:.4f}")
 
@@ -131,10 +140,10 @@ def main():
 
     if not check_existing_positions(ex, sym):
         if e4_val > e21_val:
-            log.info("Condición alcista (EMA 4 > 21). Abriendo LONG de 6 contratos...")
+            log.info(f"Condición alcista (EMA 4 > 21). Abriendo LONG de {CONTRACT_AMOUNT} contratos...")
             execute_trade_with_sl_tp(ex, sym, 'buy', CONTRACT_AMOUNT, current_close, e4_val, e21_val)
         elif e4_val < e21_val:
-            log.info("Condición bajista (EMA 4 < 21). Abriendo SHORT de 6 contratos...")
+            log.info(f"Condición bajista (EMA 4 < 21). Abriendo SHORT de {CONTRACT_AMOUNT} contratos...")
             execute_trade_with_sl_tp(ex, sym, 'sell', CONTRACT_AMOUNT, current_close, e4_val, e21_val)
     else:
         log.info("Posición activa detectada en este instrumento. Omitiendo nueva entrada.")
