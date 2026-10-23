@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # xpl.py — Nave Autónoma XPL · Ley de la Flota (Carbono)
-#   Operaciones sobre XPL estrictamente en USDC (USDT y EUR prohibidos).
+#   Opera el X-Perp XPLUSD (UM, margen en USDC). USDT y EUR prohibidos.
 #   Protección fail-closed: si falta configuración, credenciales o no se pueden
 #   colocar SL/TP, el bot NO deja posiciones desprotegidas.
 
@@ -22,13 +22,13 @@ def _f(x):
 
 
 # ───────────── PARÁMETROS ─────────────
-VERSION = 'v3-diagnostico'
+VERSION = 'v4-xperp'
 BASE_ASSET = 'XPL'
 TIMEFRAME = '1h'
 EMA_FAST = 3
 EMA_SLOW = 21
 MIN_SEPARATION = 0.0015      # 0.15 %
-CONTRACT_AMOUNT = 25.0
+CONTRACT_AMOUNT = 25.0       # contratos (1 contrato = 10 XPL)
 RR_RATIO = 1.5
 SL_MIN, SL_MAX = 0.015, 0.03
 MARGIN_MODE = 'cross'
@@ -55,32 +55,33 @@ def build_exchange():
 
 
 def pick_future(ex):
-    """Perpetuo de XPL liquidado en USDC (incluye XPLUSD X-Perp). Nunca USDT."""
+    """X-Perp de XPL (UM, USD/USDC). Excluye siempre cualquier mercado USDT."""
     ex.load_markets()
     log.info(f"Mercados cargados: {len(ex.markets)}")
-
-    # Diagnóstico: todo lo que huela a XPL
-    for m in ex.markets.values():
-        mid = str(m.get('id') or '').upper()
-        base = str(m.get('base') or '').upper()
-        if base == BASE_ASSET or mid.startswith(BASE_ASSET + '-') or mid.startswith(BASE_ASSET + 'USD'):
-            lim = (m.get('limits') or {}).get('amount') or {}
-            log.info(f"MERCADO {BASE_ASSET}: {m.get('symbol')} | id={m.get('id')} | "
-                     f"tipo={m.get('type')} | quote={m.get('quote')} | settle={m.get('settle')} | "
-                     f"active={m.get('active')} | contractSize={m.get('contractSize')} | min={lim.get('min')}")
-
+    now_ms = ex.milliseconds()
+    elegido = None
     for m in ex.markets.values():
         if str(m.get('base') or '').upper() != BASE_ASSET:
             continue
+        if not (m.get('swap') or m.get('future')):
+            continue
+        mid = str(m.get('id') or '').upper()
         settle = str(m.get('settle') or '').upper()
         quote = str(m.get('quote') or '').upper()
-        mid = str(m.get('id') or '').upper()
+        log.info(f"DERIVADO {BASE_ASSET}: {m.get('symbol')} | id={m.get('id')} | tipo={m.get('type')} | "
+                 f"settle={settle} | active={m.get('active')} | contractSize={m.get('contractSize')} | "
+                 f"expiry={m.get('expiryDatetime')}")
         if 'USDT' in (settle, quote) or 'USDT' in mid:
             continue
-        if m.get('swap') and m.get('active') is not False \
-                and (settle == 'USDC' or quote == 'USDC'):
-            return m['symbol']
-    return None
+        if m.get('active') is False:
+            continue
+        exp = m.get('expiry')
+        if exp and exp < now_ms:
+            continue
+        if 'XPERP' in mid or settle == 'USDC' or quote == 'USDC':
+            if elegido is None:
+                elegido = m
+    return elegido['symbol'] if elegido else None
 
 
 def has_open_position(ex, sym):
@@ -120,7 +121,7 @@ def execute_trade(ex, sym, side, amount, ref_price, e_slow):
     sl = float(ex.price_to_precision(sym, sl))
     tp = float(ex.price_to_precision(sym, tp))
     amount = float(ex.amount_to_precision(sym, amount))
-    log.info(f"Riesgo | ref {ref_price:.4f} | SL {sl_pct*100:.2f}% ({sl}) | TP {tp_pct*100:.2f}% ({tp})")
+    log.info(f"Riesgo | ref {ref_price:.5f} | SL {sl_pct*100:.2f}% ({sl}) | TP {tp_pct*100:.2f}% ({tp})")
 
     if DRY_RUN:
         log.info(f"[DRY_RUN] {side.upper()} {amount} {sym} con SL {sl} / TP {tp}. No se envía nada.")
@@ -158,9 +159,11 @@ def main():
     ex = build_exchange()
     sym = pick_future(ex)
     if not sym:
-        log.info("XPL: no hay perpetuo activo en USDC. Saliendo.")
+        log.info("XPL: no hay X-Perp activo fuera de USDT. Saliendo.")
         return
-    log.info(f"Instrumento: {sym}")
+    mk = ex.market(sym)
+    ct_val = _f(mk.get('contractSize')) or 1.0
+    log.info(f"Instrumento: {sym} | id={mk.get('id')} | 1 contrato = {ct_val} XPL")
 
     ohlcv = ex.fetch_ohlcv(sym, TIMEFRAME, limit=CANDLES)
     if len(ohlcv) < EMA_SLOW * 3:
@@ -175,7 +178,9 @@ def main():
     close = _f(df['close'].iloc[i])
     e_f, e_s = _f(fast.iloc[i]), _f(slow.iloc[i])
     sep = (e_f - e_s) / e_s if e_s else 0.0
-    log.info(f"{sym} | EMA{EMA_FAST}/{EMA_SLOW}: {e_f:.4f}/{e_s:.4f} | sep {sep*100:.3f}% | cierre {close:.4f}")
+    log.info(f"EMA{EMA_FAST}/{EMA_SLOW}: {e_f:.5f}/{e_s:.5f} | sep {sep*100:.3f}% | cierre {close:.5f}")
+    log.info(f"Tamaño: {CONTRACT_AMOUNT} contratos = {CONTRACT_AMOUNT*ct_val:.0f} XPL "
+             f"(~{CONTRACT_AMOUNT*ct_val*close:.2f} USD nocionales)")
 
     if abs(sep) < MIN_SEPARATION:
         log.info(f"Separación < {MIN_SEPARATION*100:.2f}%: sin señal. Observando.")
