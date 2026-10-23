@@ -2,8 +2,9 @@ name: XPL Autonomous Fleet Cycle
 
 on:
   schedule:
+    # Se ejecuta automáticamente cada 20 minutos
     - cron: '*/20 * * * *'
-  workflow_dispatch: # <--- Este es el gatillo obligatorio para que aparezca el botón en la web de GitHub
+  workflow_dispatch: # Habilita el botón de ejecución manual en la interfaz de GitHub
 
 jobs:
   run-bot:
