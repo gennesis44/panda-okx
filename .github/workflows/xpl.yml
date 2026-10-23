@@ -1,37 +1,35 @@
-name: xpl-bot
+name: XPL Nave Autónoma (Carbono)
 
 on:
   schedule:
-    - cron: '2 * * * *'      # cada hora, al minuto 2 (UTC)
-  workflow_dispatch:          # permite lanzarlo a mano desde la pestaña Actions
-    inputs:
-      dry_run:
-        description: 'Simulación (1 = no envía órdenes)'
-        default: '1'
+    - cron: '5 * * * *'
+  workflow_dispatch:
 
 concurrency:
-  group: xpl-bot
-  cancel-in-progress: false   # evita dos ejecuciones a la vez
+  group: xpl-carbono
+  cancel-in-progress: false
 
 jobs:
-  run:
+  nave:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
+    env:
+      OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
+      OKX_SECRET_KEY: ${{ secrets.OKX_SECRET_KEY }}
+      OKX_PASSWORD: ${{ secrets.OKX_PASSWORD }}
+      DRY_RUN: ${{ vars.DRY_RUN || '1' }}
+      OKX_LEVERAGE: ${{ vars.OKX_LEVERAGE || '' }}
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - name: Python
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
-          cache: 'pip'
+          python-version: '3.12'
 
-      - name: Instalar dependencias
-        run: pip install ccxt pandas
+      - name: Dependencias
+        run: pip install --upgrade ccxt pandas
 
-      - name: Ejecutar xpl.py
+      - name: Ciclo único XPL
         run: python xpl.py
-        env:
-          OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
-          OKX_SECRET_KEY: ${{ secrets.OKX_SECRET_KEY }}
-          OKX_PASSWORD: ${{ secrets.OKX_PASSWORD }}
-          DRY_RUN: ${{ github.event.inputs.dry_run || '0' }}
