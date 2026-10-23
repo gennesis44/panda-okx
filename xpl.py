@@ -23,7 +23,7 @@ BASE_ASSET = 'XPL'
 TIMEFRAME = '1h'          # Marco temporal de 1 Hora
 EMA_FAST = 4              # EMA rápida 4
 EMA_SLOW = 21             # EMA lenta 21
-CONTRACT_AMOUNT = 6.0     # 6 contratos por operación
+CONTRACT_AMOUNT = 15.0     # 15 contratos por operación
 RR_RATIO = 1.5            # Ratio Riesgo / Beneficio (1 : 1.5)
 HOST = 'https://my.okx.com'
 
