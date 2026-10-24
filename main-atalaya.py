@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# main-atalaya.py — EL VIGIA · ÚNICA CATAPULTA DE LA FLOTA · v4.2 (Carbono)
+# main-atalaya.py — EL VIGIA · ÚNICA CATAPULTA DE LA FLOTA · v4.3 (Carbono)
 #   MISIÓN VIGIA: vigilar el mar de cada destructor (incluyendo INJ y SUI).
 #   Cuando detecta una APERTURA DE OLAS (separación EMA rápida/lenta >= 0.15%)
 #   con cruce fresco en la ventana, CANTA LA SEÑAL.
@@ -9,6 +9,15 @@
 #   Fail-closed: casco que no compila no se lanza; libro ilegible, no se lanza.
 #   v4.2: tope de zarpes por ronda (MAX_ZARPS), mar releída antes de cada
 #   disparo, naves sombra blindadas (shadow no zarpa), TF_MS correcto.
+#   v4.3 (auditoría GSCSI-TRADE, tres parches mínimos):
+#     P1 Ley Carbono lista blanca: settle == 'USD' en AMBAS ramas de pick_future
+#        (antes: lista negra !=USDT que admitía inversores coin-margined y
+#        swaps USDC/EUR/TRY). Vencimiento: expTime con respaldo expiry ccxt.
+#     P2 sin `break` en la ventana del vigía: el cruce legal más reciente con
+#        sep >= candado dispara aunque la ola siga expandiendo (doctrina
+#        "ruido no borra señal", idéntica al doge v3.2 certificado).
+#     P3 abs() en bases_en_la_mar: patrón blindado de la flota (cortos siempre
+#        visibles, sin depender del parseo interno de ccxt).
 #   Claves env: OKX_API_KEY, OKX_SECRET_KEY, OKX_PASSWORD.
 
 import os
@@ -108,7 +117,7 @@ def bases_en_la_mar(ex):
     try:
         for p in ex.fetch_positions():
             try:
-                if (p.get('contracts') or 0) > 0:
+                if abs(float(p.get('contracts') or 0)) > 0:  # patrón certificado: cortos visibles
                     base = (p.get('base') or (p.get('symbol') or '').split('/')[0])
                     if base:
                         en_mar.add(str(base).upper())
@@ -272,9 +281,10 @@ def pick_future(ex, base):
     for m in ex.markets.values():
         if (m.get('base') == base and m.get('future')
                 and m.get('active')
-                and str(m.get('settle') or '').upper() != 'USDT'):
+                and str(m.get('settle') or '').upper() == 'USD'):  # Ley Carbono: SOLO settle USD
             try:
-                exp = int((m.get('info') or {}).get('expTime') or 0)
+                exp = int((m.get('info') or {}).get('expTime')
+                          or m.get('expiry') or 0)
             except (TypeError, ValueError):
                 exp = 0
             if exp > exp_max:
@@ -284,7 +294,7 @@ def pick_future(ex, base):
     for m in ex.markets.values():
         if (m.get('base') == base and m.get('active')
                 and (m.get('swap') or (m.get('info') or {}).get('instType') == 'SWAP')
-                and str(m.get('settle') or '').upper() != 'USDT'):
+                and str(m.get('settle') or '').upper() == 'USD'):  # Ley Carbono: SOLO settle USD
             return m['symbol']
     return None
 
@@ -333,7 +343,7 @@ def watch_ship(ex, name, cfg):
                   ' — cruce EMA' + str(cfg['fast']) + '/' + str(cfg['slow']) +
                   ' vela ' + str(i) + ' (' + ts + ' UTC, sep ' + format(sep * 100, '.2f') + '%)')
             return (name, side, sep, int(df['ts'].iloc[idx]) + TF_MS[tf])
-        break
+        # v4.3: sin `break` — la ventana sigue hacia atrás (ruido no borra señal)
     return None
 
 
