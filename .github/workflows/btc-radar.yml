@@ -1,0 +1,29 @@
+name: BTC-RADAR DEL PORTAAVIONES
+
+on:
+  schedule:
+    - cron: '15 */2 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: radar-portaaviones
+  cancel-in-progress: true
+
+jobs:
+  cartografiar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Desplegar el radar
+        uses: actions/checkout@v4
+
+      - name: Montar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Armar instrumentos
+        run: pip install --upgrade requests pandas numpy
+
+      - name: Cartografiar BTC
+        run: python btc-radar.py
