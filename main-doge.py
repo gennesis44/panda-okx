@@ -1,4 +1,4 @@
-# main-doge.py — Ax2-DOGE · EL PERRO · ley v3.1 (12-oct: ventana ampliada)
+# main-doge.py — Ax2-DOGE · EL PERRO · ley v3.2 (24-oct: blindaje fail-closed)
 #   LEY: cruce EMA3/21 en velas 5m CERRADAS (ventana -2/-8 — A565G)
 #   v3.1 ENMIENDA (decreto Carbono 12-oct): ventana -2/-3/-4 → -2/-8
 #     MOTIVO: dos trenes perdidos (ruptura 11-oct, recruce 12-oct) —
@@ -9,7 +9,7 @@
 #   SHORT (cruce bajista): SL 3.0% / TP 4.0%   (R:R 1.33 · breakeven ~43%)
 #   CANDADO v2 FAIL-CLOSED: separación EMA3/21 < 0.15% = veto (senial=ruido)
 #   Reimplantado 10-oct cumpliendo la lección documentada: .iloc, índice
-#   positivo, fail-closed.
+#     positivo, fail-closed.
 #   Validación: triple (8-oct original + 10-oct v2 IS/OOS + 10-oct v2 71d)
 #     — 5m/3/21/0.15: ret +60.5% · PF 2.36 · DD 6.1% · la mejor de la flota
 #   PRIMERA CAZA LIVE (v1): SL −$0.1594. Registro: perro neto +0.22 tras TP v2.
@@ -23,6 +23,10 @@
 # Ax5 (18-oct): FIX COOLDOWN — fill.get('pnl') no existe en OKX
 #      fills-history; el campo real es fillPnl. Sin el fix, pnl siempre
 #      era 0.0 y el cooldown post-pérdida NUNCA disparaba. Restaurado.
+# Ax6 (24-oct): BLINDAJE v3.2 — get_open_position FAIL-CLOSED (mar ilegible
+#      = posición fantasma = no se opera; SL/TP vivos = posición asumida,
+#      mismo patrón que xpl v4.2) y set_leverage fallido = BLOQUEO (nunca
+#      zarpar con apalancamiento ajeno heredado de la cuenta).
 import os
 import time
 import logging
@@ -181,13 +185,23 @@ def fetch_data(symbol, timeframe, limit=100):
 
 # ==================== POSICIÓN ====================
 def get_open_position(symbol):
+    """Ax6 fail-closed: mar ilegible = posición fantasma = no operar.
+    Plan B anti-doble: SL/TP vivos en el instrumento = posición asumida."""
     try:
         for pos in exchange.fetch_positions([symbol]):
             if pos.get('symbol') == symbol and float(pos.get('contracts') or 0) > 0:
                 return pos
+        inst = exchange.market(symbol)['id']
+        for ord_type in ('oco', 'conditional'):
+            resp = exchange.private_get_trade_orders_algo_pending(
+                {'instId': inst, 'ordType': ord_type})
+            if (resp or {}).get('data'):
+                log.info("Sin posición visible pero hay SL/TP vivos: asumo posición.")
+                return {'symbol': symbol, 'contracts': 1, 'side': 'desconocido'}
+        return None
     except Exception as e:
-        log.error("Error consultando posiciones: " + str(e))
-    return None
+        log.error("Posiciones ilegibles (" + str(e) + ") — BLOQUEO fail-closed.")
+        return {'symbol': symbol, 'contracts': 1, 'side': 'ilegible'}
 
 # ==================== ENTRADA CON SL/TP ASIMÉTRICOS ====================
 def _post_trade_order(req):
@@ -404,10 +418,12 @@ def run_cycle():
     except Exception as e:
         log.debug("set_position_mode skip: " + str(e))
 
+    # Ax6: apalancamiento fallido = no se zarpa con el ajeno heredado.
     try:
         exchange.set_leverage(LEVERAGE, symbol, params={'mgnMode': TD_MODE})
     except Exception as e:
-        log.warning("No se pudo fijar apalancamiento (se usa el de OKX): " + str(e))
+        log.error("No se pudo fijar apalancamiento (" + str(e) + ") — BLOQUEO fail-closed.")
+        return
 
     pos = get_open_position(symbol)
     if pos:
@@ -437,7 +453,7 @@ def run_cycle():
         log.error("Entrada rechazada: " + str(e))
 
 def run_once():
-    log.info("Modo ciclo unico | DOGE EMA3/21 5m v3.1 + CANDADO v2 FAIL-CLOSED (XPERP USD).")
+    log.info("Modo ciclo unico | DOGE EMA3/21 5m v3.2 + CANDADO v2 FAIL-CLOSED (XPERP USD).")
     verify_setup()
     if TEST_MODE:
         catalog_doge()
@@ -445,7 +461,7 @@ def run_once():
     run_cycle()
 
 def main_loop():
-    log.info("Bot " + BASE_ASSET + " | 5m EMA3/21 v3.1 | LONG SL2/TP4 · SHORT SL3/TP4 | " +
+    log.info("Bot " + BASE_ASSET + " | 5m EMA3/21 v3.2 | LONG SL2/TP4 · SHORT SL3/TP4 | " +
              str(AMOUNT) + " ct | ventana -2/-8 | cooldown " + str(COOLDOWN_MIN) + "m | " + HOST)
     verify_setup()
     while True:
