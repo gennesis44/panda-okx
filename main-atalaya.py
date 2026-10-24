@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# main-atalaya.py — EL VIGIA · ÚNICA CATAPULTA DE LA FLOTA · v4.1 (Carbono)
+# main-atalaya.py — EL VIGIA · ÚNICA CATAPULTA DE LA FLOTA · v4.2 (Carbono)
 #   MISIÓN VIGIA: vigilar el mar de cada destructor (incluyendo INJ y SUI).
 #   Cuando detecta una APERTURA DE OLAS (separación EMA rápida/lenta >= 0.15%)
 #   con cruce fresco en la ventana, CANTA LA SEÑAL.
 #   MISIÓN CATAPULTA: ejecuta directamente el .py del destructor que viva
 #   en la RAÍZ del repo con SINGLE_CYCLE=1.
 #   Fail-closed: casco que no compila no se lanza; libro ilegible, no se lanza.
+#   v4.2: tope de zarpes por ronda (MAX_ZARPS), mar releída antes de cada
+#   disparo, naves sombra blindadas (shadow no zarpa), TF_MS correcto.
 #   Claves env: OKX_API_KEY, OKX_SECRET_KEY, OKX_PASSWORD.
 
 import os
@@ -42,6 +44,11 @@ try:
     LAUNCH_TIMEOUT = int(os.getenv('LAUNCH_TIMEOUT', '300'))
 except ValueError:
     LAUNCH_TIMEOUT = 300  # tope de seguridad por zarpe (300 segundos)
+
+try:
+    MAX_ZARPS = int(os.getenv('ATALAYA_MAX_ZARPS', '1'))
+except ValueError:
+    MAX_ZARPS = 1  # tope de zarpes por ronda (anti-ráfaga correlacionada)
 
 OWN_MARKS = ('atalaya', 'saldo', 'score', 'grid', 'auditoria', 'informe', 'backtest', 'radar', 'btc', 'xpl')
 TF_MS = {
@@ -95,8 +102,8 @@ def decide_zarpe(pos_abierta, fills_despues):
 
 
 def bases_en_la_mar(ex):
-    """Bases con posición abierta (un solo lectura del arca).
-    None = lectura fallida (fail-closed: nadie zarpa esa ronda)."""
+    """Bases con posición abierta (una sola lectura del arca).
+    None = lectura fallida (fail-closed: nadie zarpa)."""
     en_mar = set()
     try:
         for p in ex.fetch_positions():
@@ -114,7 +121,7 @@ def bases_en_la_mar(ex):
 
 
 def ya_zarpo_fills(ex, sym, bar_close_ms):
-    """¿Rastro del navío tras la vela del cruce? (bool, error)
+    """¿Rastro del navío tras la vela del cruce? (fills, error)
     fail-closed: libro ilegible -> se asume que ya zarpó."""
     if not bar_close_ms:
         return False, None
@@ -160,12 +167,11 @@ def catapulta(ex, seniales):
     print('-' * 60)
     files = [f for f in os.listdir('.') if f.lower().endswith('.py')]
     print('CATAPULTA DIRECTA: Ejecuta el .py de la raíz con SINGLE_CYCLE=1.')
-    print('Lanzables: ' + ','.join(LAUNCH_SHIPS) + ' | Tope por zarpe: ' + str(LAUNCH_TIMEOUT) + 's')
-    
-    en_mar = bases_en_la_mar(ex)
-    if en_mar is None:
-        return
+    print('Lanzables: ' + ','.join(LAUNCH_SHIPS) +
+          ' | Tope por zarpe: ' + str(LAUNCH_TIMEOUT) + 's' +
+          ' | Tope por ronda: ' + str(MAX_ZARPS) + ' zarpe(s)')
 
+    en_mar = bases_en_la_mar(ex)
     print('Astillero: ' + ' | '.join(
         n + '->' + (script_for_ship(files, n) or 'SIN CASCO') for n in LAUNCH_SHIPS))
     if en_mar:
@@ -173,28 +179,32 @@ def catapulta(ex, seniales):
 
     disparos = 0
     for name, side, sep, bar_close_ms in seniales:
+        if disparos >= MAX_ZARPS:
+            print('[' + name + '] Tope de zarpes por ronda (' + str(MAX_ZARPS) + ') — señal solo en mapa')
+            continue
         if name not in LAUNCH_SHIPS:
             print('[' + name + '] Señal válida pero NO lanzable (fuera de LAUNCH_SHIPS)')
+            continue
+        cfg = SHIPS.get(name, {})
+        if cfg.get('shadow'):
+            print('[' + name + '] Nave sombra: señal SOLO en mapa (no se lanza)')
             continue
         script = script_for_ship(files, name)
         if not script:
             print('[' + name + '] Sin casco en el astillero (falta su .py en la raíz) — no lanzo')
             continue
-        if name in en_mar:
-            pos_abierta, fills, err = True, True, None
-        else:
-            fills, err = ya_zarpo_fills(ex, pick_future(ex, name), bar_close_ms)
-            pos_abierta = False
-
+        en_mar_now = bases_en_la_mar(ex)   # mar RELEÍDA justo antes de decidir
+        if en_mar_now is None or name in en_mar_now:
+            print('[' + name + '] Mar cambiado o ilegible: posición presente — no lanzo (fail-closed)')
+            continue
+        fills, err = ya_zarpo_fills(ex, pick_future(ex, name), bar_close_ms)
         if err:
             print('[' + name + '] Libro ilegible (' + err + ') — fail-closed: no lanzo')
             continue
-
-        lanza, motivo = decide_zarpe(pos_abierta, fills)
+        lanza, motivo = decide_zarpe(False, fills)
         if not lanza:
             print('[' + name + '] Sin disparo: ' + motivo)
             continue
-
         if launch_one(script, name, side, sep):
             disparos += 1
 
@@ -292,7 +302,7 @@ def watch_ship(ex, name, cfg):
     ohlcv = ex.fetch_ohlcv(sym, tf, limit=100)
     df = pd.DataFrame(ohlcv, columns=['ts', 'o', 'h', 'l', 'c', 'v'])
     now_ms = int(time.time() * 1000)
-    ms = _f(tf.replace('m', '60000').replace('h', '3600000'))
+    ms = TF_MS[tf]
     if int(df['ts'].iloc[-1]) + ms > now_ms:
         df = df.iloc[:-1].reset_index(drop=True)
     ef = ema(df['c'], cfg['fast'])
@@ -336,7 +346,8 @@ def main():
     print('=' * 60)
     print('EL VIGIA · CATAPULTA DIRECTA — Apertura de olas >= ' +
           format(LOCK * 100, '.2f') + '% | Ventana ' + str(list(WINDOW)) +
-          ' | UTC ' + time.strftime('%Y-%m-%d %H:%M', time.gmtime()) +
+          ' | Tope ronda ' + str(MAX_ZARPS) + ' | UTC ' +
+          time.strftime('%Y-%m-%d %H:%M', time.gmtime()) +
           ' | Arca ~$' + format(total, '.2f'))
     print('=' * 60)
 
