@@ -1,4 +1,4 @@
-name: Atalaya Fleet Catapult
+name: Atalaya.yml
 
 on:
   schedule:
