@@ -49,7 +49,7 @@ def protection_confirmed(ex, sym, sl, tp):
 
 
 # ───────────── PARÁMETROS ─────────────
-VERSION = 'v4.1-xperp'
+VERSION = 'v4.2-xperp'
 BASE_ASSET = 'XPL'
 TIMEFRAME = '1h'
 EMA_FAST = 3
@@ -112,10 +112,18 @@ def pick_future(ex):
 
 
 def has_open_position(ex, sym):
-    """Fail-closed: ante cualquier duda devuelve True (no abrir)."""
+    """Fail-closed: ante cualquier duda devuelve True (no abrir).
+    Anti-doble-entrada: si hay SL/TP vivos en el instrumento, asume posición."""
     try:
         for p in ex.fetch_positions([sym]):
             if abs(_f(p.get('contracts'))) > 0:
+                return True
+        inst_id = ex.market(sym)['id']
+        for ord_type in ('oco', 'conditional'):
+            resp = ex.private_get_trade_orders_algo_pending(
+                {'instId': inst_id, 'ordType': ord_type})
+            if (resp or {}).get('data'):
+                log.info("Sin posición visible pero hay SL/TP vivos: asumo posición abierta.")
                 return True
         return False
     except Exception as e:
