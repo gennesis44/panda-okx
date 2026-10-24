@@ -1,35 +1,35 @@
-name: XPL Nave Autónoma (Carbono)
+name: Ax2-DOGE EL PERRO
 
 on:
   schedule:
-    - cron: '5 * * * *'
+    - cron: '*/30 * * * *'
   workflow_dispatch:
 
 concurrency:
-  group: xpl-carbono
+  group: perro-doge
   cancel-in-progress: false
 
 jobs:
-  nave:
+  zarpar:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    env:
-      OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
-      OKX_SECRET_KEY: ${{ secrets.OKX_SECRET_KEY }}
-      OKX_PASSWORD: ${{ secrets.OKX_PASSWORD }}
-      DRY_RUN: ${{ vars.DRY_RUN || '1' }}
-      OKX_LEVERAGE: ${{ vars.OKX_LEVERAGE || '' }}
     steps:
-      - name: Checkout
+      - name: Desplegar el perro
         uses: actions/checkout@v4
 
-      - name: Python
+      - name: Montar Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: '3.11'
 
-      - name: Dependencias
-        run: pip install --upgrade ccxt pandas
+      - name: Armar ccxt
+        run: pip install --upgrade ccxt
 
-      - name: Ciclo único XPL
-        run: python xpl.py
+      - name: Zarpar
+        env:
+          OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
+          OKX_SECRET_KEY: ${{ secrets.OKX_SECRET_KEY }}
+          OKX_PASSPHRASE: ${{ secrets.OKX_PASSPHRASE }}
+          OKX_DOGE_MAX_NOTIONAL: ${{ vars.OKX_DOGE_MAX_NOTIONAL || '15.0' }}
+          DRY_RUN: ${{ vars.DRY_RUN || '0' }}
+        run: python main-doge.py
