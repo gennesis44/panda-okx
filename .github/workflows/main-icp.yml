@@ -50,7 +50,7 @@ jobs:
           OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
           OKX_SECRET_KEY: ${{ secrets.OKX_SECRET_KEY }}
           OKX_PASSWORD: ${{ secrets.OKX_PASSWORD || secrets.OKX_PASSPHRASE }}
-          SHADOW: '1'
+          SHADOW: '0'
           DRY_RUN: ${{ vars.DRY_RUN || '0' }}
           ICP_CONTRACTS: '6'
         run: python main-icp.py
