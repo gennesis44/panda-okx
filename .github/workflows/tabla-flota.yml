@@ -1,0 +1,25 @@
+name: TABLA DE SERVICIO · flota en vivo (solo lectura)
+on:
+  schedule:
+    - cron: '*/20 * * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: tabla-flota
+  cancel-in-progress: false
+
+jobs:
+  tabla:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
+      OKX_SECRET_KEY: ${{ secrets.OKX_SECRET_KEY }}
+      OKX_PASSWORD: ${{ secrets.OKX_PASSWORD || secrets.OKX_PASSPHRASE }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - run: pip install ccxt==4.5.90
+      - run: python tabla_flota.py
