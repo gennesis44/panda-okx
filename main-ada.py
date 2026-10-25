@@ -47,7 +47,7 @@ EMA_SLOW = 17
 TD_MODE = 'cross'
 LEVERAGE = 1
 COOLDOWN_MIN = 60
-TEST_MODE = os.getenv('TEST_MODE') == '0'
+TEST_MODE = os.getenv('TEST_MODE') == '1'
 SINGLE_CYCLE = os.getenv('SINGLE_CYCLE') == '1'
 MAX_NOTIONAL_USD = _f(os.getenv('OKX_ADA_MAX_NOTIONAL', '6.0')) or 6.0
 SIGNAL_WINDOW = (-2, -3)
