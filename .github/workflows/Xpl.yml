@@ -1,52 +1,37 @@
-# ==============================================================
-# .github/workflows/xpl.yml — GitHub ACTIONS para el BOT DE TRADING
-# ==============================================================
-# Version para cuando el xpl.py del repo es el bot de trading
-# (EMA3/21 30m, SL 1.5%, TP 2%). Diferencias clave respecto al demo:
-#
-#   1. Ejecuta UN ciclo por arranque:  python xpl.py --una-vez
-#      (GitHub ya hace de "reloj": cada 30 min = cada cierre de vela)
-#   2. GUARDA el estado en el repo (xpl_estado.json): asi el bot
-#      recuerda su capital y su posicion abierta entre ejecuciones.
-#      Sin esto, perderia la posicion al acabar cada ejecucion.
-# ==============================================================
+# xpl.yml — EL ATUNERO · Motor del ciclo autónomo XPL
+# ESTADO: ARMADO — SHADOW: '0' -> munición real
+# FRENO:   volver a SHADOW: '1' -> sombra (bitácora sin disparar)
 
-name: main-xpl
+name: XPL Atunero Fleet Cycle
 
 on:
   schedule:
-    - cron: "*/30 * * * *"   # cada 30 min UTC = justo tras cerrar cada vela
-  workflow_dispatch:          # boton "Run workflow" para probar a mano
-
-permissions:
-  contents: write             # necesario para poder guardar el estado
-
-concurrency:
-  group: xpl-bot              # nunca dos ciclos a la vez
-  cancel-in-progress: false
+    - cron: '*/20 * * * *'
+  workflow_dispatch: # Habilita el botón manual en la web de GitHub
 
 jobs:
-  bot:
+  run-bot:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
     steps:
-      - name: Bajar el codigo del repo
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Instalar Python 3.12
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: '3.10'
 
-      - name: Instalar librerias
-        run: pip install pyyaml requests
-
-      - name: Un ciclo del bot (vela cerrada / SL / TP)
-        run: python main-xpl.py --una-vez --config xpl-main.yml
-
-      - name: Guardar el estado del bot en el repo
+      - name: Install dependencies
         run: |
-          git config user.name "bot-xpl"
-          git config user.email "actions@github.com"
-          git add xpl_estado.json
-          git diff --cached --quiet || (git commit -m "estado XPL [skip ci]" && git push)
+          python -m pip install --upgrade pip
+          pip install ccxt pandas
+
+      - name: Run XPL Trading Script
+        env:
+          OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
+          OKX_SECRET_KEY: ${{ secrets.OKX_SECRET_KEY }}
+          OKX_PASSWORD: ${{ secrets.OKX_PASSWORD }}
+          # ARMADO por decreto: '0' = munición real. Freno: volver a '1'.
+          SHADOW: '0'
+        run: |
+          python main-xpl.py
