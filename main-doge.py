@@ -63,23 +63,21 @@ SL_LONG = 0.020     # 2.0%
 TP_LONG = 0.040     # 4.0%
 SL_SHORT = 0.030    # 3.0%
 TP_SHORT = 0.040    # 4.0%
-TIMEFRAME = '5m'
+TIMEFRAME = '1h'   # v3.4 (decreto 25-oct): 5m -> 1h — cazador suelto con candado
 EMA_FAST = 3
 EMA_SLOW = 21
 TD_MODE = 'cross'
 LEVERAGE = 1
 COOLDOWN_MIN = 60
-TEST_MODE = os.getenv('TEST_MODE') == '1'
+TEST_MODE = os.getenv('TEST_MODE') == '0'
 SINGLE_CYCLE = os.getenv('SINGLE_CYCLE') == '1'
 MAX_NOTIONAL_USD = _f(os.getenv('OKX_DOGE_MAX_NOTIONAL', '15.0')) or 15.0
-SIGNAL_WINDOW = (-2, -3, -4, -5, -6, -7, -8)   # v3.1: ~40 min — cubre cron real
+SIGNAL_WINDOW = (-2, -3, -4)   # v3.4: ley 1h — 3 velas bastan con cron */10
 WARMUP_5M = 40
 
-# C4 (v3.3): misión dual — radar del ayudante de Atalaya. SOLO BITÁCORA.
-VIGIA_SHIPS = {
-    'INJ': {'tf': '1h', 'fast': 3, 'slow': 21},
-    'SUI': {'tf': '1h', 'fast': 3, 'slow': 21},
-}
+# C4 (v3.3 -> v3.4): misión dual CUMPLIDA — INJ y SUI tienen timón propio
+# (main-inj.yml / main-sui.yml, 25-oct). El Perro vuelve a caza pura.
+VIGIA_SHIPS = {}                     # sin naves asignadas: el radar vigía queda mudo
 VIGIA_WINDOW = (-2, -3, -4)          # mismo estándar de flota que Atalaya
 VIGIA_LOCK = 0.0015                  # mismo umbral de apertura (0.15%)
 TF_MS = {'5m': 300000, '15m': 900000, '30m': 1800000, '1h': 3600000, '6h': 21600000}
@@ -354,7 +352,7 @@ def evaluate_signal(symbol):
             return None, None, None
 
         now_ms = int(time.time() * 1000)
-        if int(df['timestamp'].iloc[-1]) + 300000 > now_ms:
+        if int(df['timestamp'].iloc[-1]) + 3600000 > now_ms:   # v3.4: 1h (era 300000 — mina de repintado)
             df = df.iloc[:-1].reset_index(drop=True)
             if len(df) < WARMUP_5M + 10:
                 log.error("5m insuficiente tras descartar vela en formacion.")
