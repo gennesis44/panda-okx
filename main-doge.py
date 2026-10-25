@@ -1,4 +1,17 @@
-# main-doge.py — Ax2-DOGE · EL PERRO · ley v3.2 (24-oct: blindaje fail-closed)
+# main-doge.py — Ax2-DOGE · EL PERRO · ley v3.3 (25-oct: MISIÓN DUAL + Ley Carbono lista blanca)
+#   v3.3 (decreto del Capitán: "doge busca su bolsa de huesos y AL MISMO TIEMPO observa
+#     el mar de INJ y SUI — para que Atalaya tenga un ayudante"):
+#     C4 VIGÍA AUXILIAR: bitácora INJ/SUI (1h EMA3/21, ventana -2/-3/-4) tras cada ciclo.
+#       SOLO LECTURA — cero munición (no toca órdenes ni posiciones), fail-safe por nave:
+#       si el radar falla, la caza ni se entera. La munición la deciden Atalaya y las
+#       destructoras; el Perro solo deja inteligencia escrita en el log.
+#     C2 LEY CARBONO LISTA BLANCA: _is_forbidden = settle != 'USD'. En v3.2 vetaba solo
+#       USDT (lista negra) — los inversores coin-margined (DOGE/USD:DOGE, settle=DOGE)
+#       y los swaps EUR/TRY/USDC (settle vacío) PASABAN el filtro: la misma mina E1
+#       que se encontró en Atalaya v4.2 y se desactivó en Atalaya v4.3.
+#     C3 PATRÓN CERTIFICADO DE FLOTA: abs() sobre contracts en resolve_symbol y
+#       get_open_position — un corto (-n) sin abs() es invisible (lección Atalaya P3;
+#       hoy latente por el parseo string_abs de ccxt 4.5.90, blindado para siempre).
 #   LEY: cruce EMA3/21 en velas 5m CERRADAS (ventana -2/-8 — A565G)
 #   v3.1 ENMIENDA (decreto Carbono 12-oct): ventana -2/-3/-4 → -2/-8
 #     MOTIVO: dos trenes perdidos (ruptura 11-oct, recruce 12-oct) —
@@ -62,6 +75,15 @@ MAX_NOTIONAL_USD = _f(os.getenv('OKX_DOGE_MAX_NOTIONAL', '15.0')) or 15.0
 SIGNAL_WINDOW = (-2, -3, -4, -5, -6, -7, -8)   # v3.1: ~40 min — cubre cron real
 WARMUP_5M = 40
 
+# C4 (v3.3): misión dual — radar del ayudante de Atalaya. SOLO BITÁCORA.
+VIGIA_SHIPS = {
+    'INJ': {'tf': '1h', 'fast': 3, 'slow': 21},
+    'SUI': {'tf': '1h', 'fast': 3, 'slow': 21},
+}
+VIGIA_WINDOW = (-2, -3, -4)          # mismo estándar de flota que Atalaya
+VIGIA_LOCK = 0.0015                  # mismo umbral de apertura (0.15%)
+TF_MS = {'5m': 300000, '15m': 900000, '30m': 1800000, '1h': 3600000, '6h': 21600000}
+
 HOST = 'https://my.okx.com'
 
 exchange = ccxt.okx({
@@ -110,8 +132,11 @@ def _contract_meta(symbol, price=None):
     return ctval, ccy, settle, price, usd
 
 def _is_forbidden(symbol):
+    # C2 (v3.3): Ley Carbono LISTA BLANCA — solo settle USD navega.
+    # v3.2 vetaba solo USDT: coin-margined (:DOGE, settle=DOGE) y swaps
+    # EUR/TRY/USDC (settle vacío) pasaban el filtro — mina E1 latente.
     settle = str(exchange.market(symbol).get('settle') or '').upper()
-    return settle == 'USDT'
+    return settle != 'USD'
 
 def pick_future():
     exchange.load_markets()
@@ -152,10 +177,11 @@ def resolve_symbol():
     exchange.load_markets()
     try:
         for p in exchange.fetch_positions():
-            if (p.get('contracts') or 0) > 0 and (p.get('symbol') or '').startswith(BASE_ASSET + '/'):
+            # C3 (v3.3): abs() — un corto (-n) sin abs() es invisible
+            if abs(float(p.get('contracts') or 0)) > 0 and (p.get('symbol') or '').startswith(BASE_ASSET + '/'):
                 if _is_forbidden(p['symbol']):
-                    log.error("VETO: posicion abierta en USDT — prohibido.")
-                    raise RuntimeError("Posicion abierta en instrumento USDT prohibido.")
+                    log.error("VETO: posicion en instrumento NO-USD — prohibido.")
+                    raise RuntimeError("Posicion abierta en instrumento NO-USD prohibido.")
                 log.info("Instrumento (posicion abierta): " + str(p['symbol']))
                 _log_contract_size(p['symbol'])
                 return p['symbol']
@@ -189,7 +215,8 @@ def get_open_position(symbol):
     Plan B anti-doble: SL/TP vivos en el instrumento = posición asumida."""
     try:
         for pos in exchange.fetch_positions([symbol]):
-            if pos.get('symbol') == symbol and float(pos.get('contracts') or 0) > 0:
+            # C3 (v3.3): abs() — patrón certificado de flota
+            if pos.get('symbol') == symbol and abs(float(pos.get('contracts') or 0)) > 0:
                 return pos
         inst = exchange.market(symbol)['id']
         for ord_type in ('oco', 'conditional'):
@@ -372,6 +399,75 @@ def evaluate_signal(symbol):
         log.error("Error en evaluacion: " + str(e))
     return None, None, None
 
+# ==================== C4 (v3.3): VIGÍA AUXILIAR — INJ/SUI SOLO BITÁCORA ====================
+def vigia_symbol(base):
+    """Instrumento del mar vigiado: futuro XPERP settle USD con vencimiento mas
+    lejano (mismo criterio de pick_future, parametrizado por base)."""
+    exchange.load_markets()
+    best = None
+    best_exp = -1
+    for m in exchange.markets.values():
+        if (m.get('base') == base and m.get('future') and m.get('active')
+                and str(m.get('settle') or '').upper() == 'USD'):
+            info = m.get('info') or {}
+            try:
+                exp = int(info.get('expTime') or 0)
+            except (TypeError, ValueError):
+                exp = 0
+            if exp > best_exp:
+                best = m['symbol']
+                best_exp = exp
+    return best
+
+def vigia_observa():
+    """C4 (v3.3): misión dual del Perro — vigía auxiliar de INJ/SUI para Atalaya.
+    SOLO BITÁCORA: lectura pública de velas + EMAs. CERO munición (no llama a
+    execute_order, no toca posiciones, no cambia estado). Fail-safe por nave:
+    si el radar falla, la caza ni se entera. Inteligencia para el registro de flota."""
+    log.info("[VIGIA] El Perro observa el mar de INJ y SUI (bitacora — sin municion).")
+    for name, cfg in VIGIA_SHIPS.items():
+        try:
+            sym = vigia_symbol(name)
+            if not sym:
+                log.warning("[VIGIA " + name + "] sin futuro USD activo. Vigilando otro dia.")
+                continue
+            df = fetch_data(sym, cfg['tf'], limit=100)
+            now_ms = int(time.time() * 1000)
+            tf_ms = TF_MS.get(cfg['tf'], 3600000)
+            if int(df['timestamp'].iloc[-1]) + tf_ms > now_ms:
+                df = df.iloc[:-1].reset_index(drop=True)   # vela en formacion fuera
+            if len(df) < 30:
+                log.warning("[VIGIA " + name + "] velas insuficientes (" + str(len(df)) + ").")
+                continue
+            ef = ema(df['close'], cfg['fast'])
+            es = ema(df['close'], cfg['slow'])
+            sep_now = abs(ef.iloc[-2] - es.iloc[-2]) / es.iloc[-2] if es.iloc[-2] else 0.0
+            estado = 'ALZA' if ef.iloc[-2] > es.iloc[-2] else 'BAJA'
+            fresco = 'NINGUNO'
+            for i_curr in VIGIA_WINDOW:
+                i_prev = i_curr - 1
+                idx = len(df) + i_curr                     # indice positivo real
+                if abs(i_prev) > len(df) - 1 or idx < 20:
+                    continue
+                sep_c = abs(ef.iloc[idx] - es.iloc[idx]) / es.iloc[idx] if es.iloc[idx] else 0.0
+                if sep_c < VIGIA_LOCK:
+                    continue                               # apertura sin fuerza = ruido
+                up = (ef.iloc[i_prev] <= es.iloc[i_prev] and ef.iloc[idx] > es.iloc[idx])
+                down = (ef.iloc[i_prev] >= es.iloc[i_prev] and ef.iloc[idx] < es.iloc[idx])
+                if up:
+                    fresco = 'ALZA (sep ' + format(sep_c * 100, '.2f') + '%, vela ' + str(i_curr) + ')'
+                    break                                  # cruce fresco mas reciente
+                if down:
+                    fresco = 'BAJA (sep ' + format(sep_c * 100, '.2f') + '%, vela ' + str(i_curr) + ')'
+                    break
+            log.info("[VIGIA " + name + "] " + sym + " " + cfg['tf'] +
+                     " | EMA" + str(cfg['fast']) + "/" + str(cfg['slow']) + ": " +
+                     format(ef.iloc[-2], '.5f') + "/" + format(es.iloc[-2], '.5f') +
+                     " | sep " + format(sep_now * 100, '.2f') + "% | estado " + estado +
+                     " | cruce fresco: " + fresco)
+        except Exception as e:
+            log.warning("[VIGIA " + name + "] fallo de observacion: " + str(e))
+
 # ==================== CAPACIDAD ====================
 def capacity_ok(symbol):
     try:
@@ -453,15 +549,17 @@ def run_cycle():
         log.error("Entrada rechazada: " + str(e))
 
 def run_once():
-    log.info("Modo ciclo unico | DOGE EMA3/21 5m v3.2 + CANDADO v2 FAIL-CLOSED (XPERP USD).")
+    log.info("Modo ciclo unico | DOGE EMA3/21 5m v3.3 + CANDADO v2 FAIL-CLOSED + VIGIA INJ/SUI (XPERP USD).")
     verify_setup()
     if TEST_MODE:
         catalog_doge()
-        return
-    run_cycle()
+    else:
+        run_cycle()
+    # C4 (v3.3): la misión dual corre SIEMPRE — cazador y vigía en el mismo ciclo.
+    vigia_observa()
 
 def main_loop():
-    log.info("Bot " + BASE_ASSET + " | 5m EMA3/21 v3.2 | LONG SL2/TP4 · SHORT SL3/TP4 | " +
+    log.info("Bot " + BASE_ASSET + " | 5m EMA3/21 v3.3 | LONG SL2/TP4 · SHORT SL3/TP4 | " +
              str(AMOUNT) + " ct | ventana -2/-8 | cooldown " + str(COOLDOWN_MIN) + "m | " + HOST)
     verify_setup()
     while True:
@@ -473,6 +571,10 @@ def main_loop():
         except Exception as e:
             log.error("Error en el ciclo principal: " + str(e))
             time.sleep(60)
+        try:
+            vigia_observa()   # C4: bitacora INJ/SUI en cada vuelta — corre aunque la caza falle
+        except Exception as e:
+            log.warning("Vigia fallo: " + str(e))
         time.sleep(300)   # 5 min — cada vela nueva es un chequeo
 
 if __name__ == "__main__":
