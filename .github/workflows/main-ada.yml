@@ -14,7 +14,7 @@ jobs:
     timeout-minutes: 10
     env:
       SINGLE_CYCLE: '1'
-      TEST_MODE: '1'
+      TEST_MODE: '0'
       OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
       OKX_SECRET_KEY: ${{ secrets.OKX_SECRET_KEY }}
       OKX_PASSWORD: ${{ secrets.OKX_PASSWORD || secrets.OKX_PASSPHRASE }}
