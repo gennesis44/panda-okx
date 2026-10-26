@@ -7,8 +7,9 @@
 # Casco: blindaje certificado del xpl v4.2 · Motor: EMA 3/21 · 1h
 # Instrumento: XLM-USD XPERP (futuro fechado USD, vencimiento lejano)
 #
-# v1.0 — botadura desde el dique seco (decreto del capitan, 25-oct).
-# Nace en SOMBRA (SHADOW=1): bitacora de senales, sin municion.
+# v1.1 — ARMADO TOTAL (decreto del Capitan, 26-oct-2026):
+#   "Pasalo al astillero y que salga totalmente armado"
+#   Sale del dique seco con municion real. SHADOW=0 por defecto.
 #
 # PERITAJE FORENSE DEL MAR (60 dias, 1440 velas 1H reales OKX,
 # XLM-USD_UM_XPERP-310704, auditoria 25-oct):
@@ -19,7 +20,7 @@
 #     ventana 48 velas): PISO 1.5% -> PF 1.19, winrate 44%, avgR +0.10
 #     (piso 1.2: PF 1.08 · piso 2.0: PF 1.07 · piso 2.5: PF 1.11)
 #   · dist cruda 1.2x EMA21 mediana 0.68% — el techo nunca apreto en
-#     la muestra -> se fija defensivo 3.5% (~65% del dia mediano)
+#     la muestra -> se fija defensivo 3.5% (\~65% del dia mediano)
 #
 # BLINDAJE A BORDO (herencia xpl v4.2 + perro Ax + leccion Portaaviones):
 #   · pick_future            -> reanclaje automatico al vencimiento mas lejano
@@ -42,18 +43,19 @@
 #   · TP = 1.5 x SL
 #   · ventana de cruce: ultimas 2 velas cerradas (cron */20)
 #   · candado de separacion >= 0.15%
-#   · 1 ct = 100 XLM (~$17 nocional) — unidad estelar minima
+#   · 1 ct = 100 XLM (\~$17 nocional) — unidad estelar minima
 # VARIABLES DE ENTORNO (todas opcionales):
-#   SHADOW=1             sombra (defecto). 0 = municion real
+#   SHADOW=0             armado (defecto). 1 = sombra
 #   DRY_RUN=1            freno de flota -> fuerza sombra
 #   XLM_TF=1h            marco temporal
-#   XLM_CONTRACTS=1      1 ct = 100 XLM ~ $17 (ctVal=100, minSz=1)
+#   XLM_CONTRACTS=1      1 ct = 100 XLM \~ $17 (ctVal=100, minSz=1)
 #   XLM_SEP_LOCK=0.15    candado de separacion %
 #   XLM_SL_MULT=1.2      multiplicador distancia EMA21
 #   XLM_SL_FLOOR=1.5     piso SL %
 #   XLM_SL_CAP=3.5       techo SL %
 #   XLM_TP_MULT=1.5      TP = x * SL
-#   XLM_MAX_NOTIONAL=20  guardia de nocional $ #   COOLDOWN_MIN=60      calma tras perdida
+#   XLM_MAX_NOTIONAL=20  guardia de nocional $
+#   COOLDOWN_MIN=60      calma tras perdida
 # =====================================================================
 
 import os
@@ -67,12 +69,12 @@ try:
 except ImportError:
     ccxt = None
 
-VERSION = "v1.0"
+VERSION = "v1.1"
 TF_MS = {"5m": 300000, "15m": 900000, "30m": 1800000,
          "1h": 3600000, "2h": 7200000, "4h": 14400000, "6h": 21600000}
 
 # ---------------- CONFIG ----------------
-SHADOW = os.environ.get("SHADOW", "1") == "1"
+SHADOW = os.environ.get("SHADOW", "0") == "1"          # ← ARMADO por defecto
 DRY_RUN = os.environ.get("DRY_RUN", "0") == "1"
 XLM_TF = os.environ.get("XLM_TF", "1h")
 XLM_CONTRACTS = int(float(os.environ.get("XLM_CONTRACTS", "1")))
@@ -153,15 +155,14 @@ def auth_and_collateral(ex, has_creds):
             return 0.0
 
     tot_eq = None
-    # 1) totEq del crudo OKX (equidad total en USD), si existe y es > 0
+    # 1) totEq del crudo OKX
     try:
         d0 = bal.get("info", {}).get("data", [{}])[0]
         if d0.get("totEq"):
             tot_eq = ff(d0["totEq"])
     except Exception:
         pass
-    # 2) METODO DEL PERRO (probado en flota, 15:32 UTC leyo ~$67.89):
-    #    suma de eqUsd por divisa en details
+    # 2) METODO DEL PERRO
     if not tot_eq:
         try:
             details = bal.get("info", {}).get("data", [{}])[0].get("details") or []
@@ -170,7 +171,7 @@ def auth_and_collateral(ex, has_creds):
                 tot_eq = suma
         except Exception:
             pass
-    # 3) Ultimo recurso: bolsillos unificados reales (USD/USDC/USDT)
+    # 3) Ultimo recurso
     if not tot_eq:
         try:
             suma = sum(ff((bal.get(c) or {}).get("total"))
@@ -183,7 +184,7 @@ def auth_and_collateral(ex, has_creds):
         host = str(ex.urls["api"]["private"]).replace("{hostname}", getattr(ex, "hostname", ""))
     except Exception:
         host = "?"
-    log.info("Autenticacion OK | host=%s | Colateral real (USD): ~%.2f", host, tot_eq or 0.0)
+    log.info("Autenticacion OK | host=%s | Colateral real (USD): \~%.2f", host, tot_eq or 0.0)
     return tot_eq
 
 
@@ -337,13 +338,13 @@ def fire(ex, market, inst_id, sig, contracts, tot_eq):
     csize = float(market.get("contractSize") or 1.0)
     notional = contracts * csize * px
     if notional > MAX_NOTIONAL:
-        fail("[ERROR] nocional ~$%.2f > guardia $%.2f — DETENIDO"
+        fail("[ERROR] nocional \~$%.2f > guardia $%.2f — DETENIDO"
              % (notional, MAX_NOTIONAL))
     if tot_eq is not None and notional * 3.0 > tot_eq:
-        fail("[ERROR] margen ~$%.2f (1x) vs colateral ~$%.2f -> NO CABE. DETENIDO"
+        fail("[ERROR] margen \~\( %.2f (1x) vs colateral \~ \)%.2f -> NO CABE. DETENIDO"
              % (notional, tot_eq))
 
-    log.info("Disparo %s | %d ct | nocional ~$%.2f | SL %s (dist %.2f%%) | TP %s | clOrdId %s",
+    log.info("Disparo %s | %d ct | nocional \~$%.2f | SL %s (dist %.2f%%) | TP %s | clOrdId %s",
              "LONG" if long_dir else "SHORT", contracts, notional, sl_s, dist_pct, tp_s, cl)
     body = {
         "instId": inst_id, "tdMode": "cross", "posSide": "net",
@@ -385,7 +386,7 @@ def main():
     if DRY_RUN and not SHADOW:
         log.info("Freno de flota DRY_RUN=1 -> forzando SOMBRA")
     log.info("Modo ciclo unico | NAVIO XLM EMA3/21 %s %s + BLINDAJE xpl-v4.2 (XPERP USD) | %s",
-             XLM_TF, VERSION, "SOMBRA" if shadow else "REAL")
+             XLM_TF, VERSION, "SOMBRA" if shadow else "REAL — ARMADO")
     if XLM_TF not in TF_MS:
         fail("[ERROR] XLM_TF invalido: %s" % XLM_TF)
 
@@ -426,8 +427,8 @@ def main():
     bar_h = datetime.fromtimestamp(sig["bar_ts"] / 1000, tz=timezone.utc).strftime("%d-%m %H:%M")
 
     if shadow:
-        log.info("[SOMBRA] Senal %s legal | vela %s UTC | sep %.2f%% | SL ~%.5f (dist %.2f%%) | "
-                 "TP ~%.5f | %d ct — sin municion, solo bitacora",
+        log.info("[SOMBRA] Senal %s legal | vela %s UTC | sep %.2f%% | SL \~%.5f (dist %.2f%%) | "
+                 "TP \~%.5f | %d ct — sin municion, solo bitacora",
                  dir_txt, bar_h, sig["sep"], sl, dist_pct, tp, XLM_CONTRACTS)
         return 0
 
