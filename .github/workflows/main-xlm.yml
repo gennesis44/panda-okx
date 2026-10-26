@@ -6,10 +6,8 @@
 # Este workflow solo instala la libreria ccxt (version certificada)
 # y suelta el barco al mar cada 20 minutos.
 #
-# ESTADO: BOTADURA EN SOMBRA — SHADOW: '1' (bitacora de senales, sin
-#         municion). Doctrina: sombra antes que munición.
-# ARMADO: cambiar SHADOW: '1' -> SHADOW: '0' cuando la sombra haya
-#         registrado senales legales y el capitan lo decrete.
+# ESTADO: ARMADO (decreto 26-oct-2026)
+#         SHADOW: '0' — munición real. 
 # FRENO FLOTA: variable del repo DRY_RUN=1 -> fuerza sombra en todo
 #
 # SECRETS (REQUERIDOS en modo ARMADO — sin ellos, fail-closed, no zarpa):
@@ -51,7 +49,7 @@ jobs:
           OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
           OKX_SECRET_KEY: ${{ secrets.OKX_SECRET_KEY }}
           OKX_PASSWORD: ${{ secrets.OKX_PASSWORD || secrets.OKX_PASSPHRASE }}
-          SHADOW: '1'
+          SHADOW: '0'                    # ← ARMADO
           DRY_RUN: ${{ vars.DRY_RUN || '0' }}
           XLM_CONTRACTS: '1'
         run: python main-xlm.py
