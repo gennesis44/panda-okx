@@ -1,8 +1,16 @@
 # main-avax.py — Ax2-AVAX · EL OCTAVO · chasis Catamaran SUI 1:1
-#   LEY VALIDADA (backtest-avax.py run 27-sep, unica que pasa los 4 criterios):
-#     cruce EMA8/34 en velas 1H CERRADAS (ventana -2/-3/-4)
+#   ALINEADO ESTRICTAMENTE con CLAUDE_CONTEXT.md:
+#     cruce EMA3/21 en velas 1H CERRADAS (ventana -2/-3/-4)
+#     FILTRO OBLIGATORIO: separation_pct = abs(EMA3-EMA21)/EMA21*100 >= 0.17
+#                         (el cruce NO basta; sin separacion suficiente NO se opera)
 #     LONG y SHORT (bidireccional): SL 4.0% / TP 5.5%
-#     27 trades · WR 37.0% (BE 27.3%) · PF 1.57 · +0.476%/trade · DD -10.3% · +12.86%
+#   Arquitectura temporal:
+#     4D = referencia macro (informativa) | 1H = senal oficial | 30m = apoyo (informativo)
+#     La entrada nace SOLO del marco 1H. Nunca velas abiertas.
+#   NOTA DE VALIDACION: la ley previa EMA8/34 (backtest-avax.py 27-sep: 27 trades,
+#     WR 37.0%, PF 1.57, +0.476%/trade, DD -10.3%) fue sustituida por EMA3/21 + filtro
+#     0.17% por CLAUDE_CONTEXT.md. SL 4.0%/TP 5.5% estan validados para 8/34, NO para
+#     3/21 — REVALIDAR. Para restaurar la ley previa: EMA_FAST=8, EMA_SLOW=34.
 #   SIN RSI. SIN candado anti-rango (extirpado por A/B HBAR, confirmado XRP).
 #   TALLADO v2 (27-sep): 1 ct = 10 AVAX (~$109) > collar $7.5 → el tallado
 #     usa el MINIMO TRADABLE (0.1 ct ~ $10.9) si cabe bajo el guardia $15.
@@ -10,6 +18,8 @@
 #   Ax3: HOST my.okx.com | clOrdId AVAX | cooldown fail-closed | no entrar si NO CABE | 51016
 #   Ax3.1: unidades honestas (ctValCcy) | posicion primero | vela cerrada siempre
 #   Ax3.2: guardia de nocional — unidad sorpresa = bot bloqueado
+#   Ax3.3: nunca asumir datos — ctVal/ctValCcy/lotSz/minSz de la API, posicion no
+#          verificable = bloqueo, veto USDT por settle/quote/instId (CLAUDE_CONTEXT.md)
 #   Ax4 (panda 🐼): set_position_mode(False, symbol) añadido para blindaje
 #      defensivo anti-hedge. Si la cuenta está en one-way (normal EEE),
 #      es no-op benigna. Si algún día OKX migra a hedge, previene SL/TP
@@ -39,9 +49,12 @@ SL_LONG = 0.040     # 4.0%
 TP_LONG = 0.055     # 5.5%
 SL_SHORT = 0.040    # 4.0%
 TP_SHORT = 0.055    # 5.5%
-TIMEFRAME = '1h'
-EMA_FAST = 8
-EMA_SLOW = 34
+TIMEFRAME = '1h'            # marco oficial de senal
+SUPPORT_TIMEFRAME = '30m'   # apoyo operacional (informativo, no bloquea)
+MACRO_TIMEFRAME = '4d'      # referencia macro (informativa, no bloquea)
+EMA_FAST = 3
+EMA_SLOW = 21
+MIN_SEPARATION_PCT = 0.17   # filtro obligatorio de separacion EMA3/EMA21 (%)
 TD_MODE = 'cross'
 LEVERAGE = 1
 COOLDOWN_MIN = 60
@@ -89,18 +102,34 @@ def _inst_type(symbol):
 def _contract_meta(symbol, price=None):
     market = exchange.market(symbol)
     info = market.get('info') or {}
-    ctval = float(market.get('contractSize') or info.get('ctVal') or 1)
-    ccy = str(info.get('ctValCcy') or BASE_ASSET).upper()
+    # Nunca asumir el tamano del contrato: ctVal y ctValCcy salen SIEMPRE de la API.
+    ctval = _f(info.get('ctVal') or market.get('contractSize'))
+    ccy = str(info.get('ctValCcy') or '').upper()
+    if ctval <= 0 or not ccy:
+        raise RuntimeError("Contrato sin ctVal/ctValCcy validos en la API (ctVal=" +
+                           str(info.get('ctVal')) + ", ctValCcy=" + str(info.get('ctValCcy')) +
+                           "). NO SE OPERA.")
     settle = str(info.get('settleCcy') or market.get('settle') or '?').upper()
     if price is None:
         price = exchange.fetch_ticker(symbol).get('last') or 0
     price = _f(price)
-    usd = ctval if ccy in ('USD', 'USDT', 'USDC') else ctval * price
+    if ccy in ('USD', 'USDC'):
+        usd = ctval
+    elif ccy == BASE_ASSET:
+        if price <= 0:
+            raise RuntimeError("Precio no valido (" + str(price) +
+                               ") para valorar contrato en " + ccy + ". NO SE OPERA.")
+        usd = ctval * price
+    else:
+        raise RuntimeError("ctValCcy inesperada (" + ccy + ") — unidad sorpresa. NO SE OPERA.")
     return ctval, ccy, settle, price, usd
 
 def _is_forbidden(symbol):
-    settle = str(exchange.market(symbol).get('settle') or '').upper()
-    return settle == 'USDT'
+    m = exchange.market(symbol)
+    settle = str(m.get('settle') or '').upper()
+    quote = str(m.get('quote') or '').upper()
+    inst_id = str(m.get('id') or '').upper()
+    return settle == 'USDT' or quote == 'USDT' or 'USDT' in inst_id
 
 def pick_future():
     exchange.load_markets()
@@ -151,7 +180,8 @@ def resolve_symbol():
     except RuntimeError:
         raise
     except Exception as e:
-        log.warning("Posiciones no leidas al resolver simbolo: " + str(e))
+        log.error("Posiciones no leidas al resolver simbolo: " + str(e) + " — BLOQUEO fail-closed.")
+        raise RuntimeError("No se pudieron leer las posiciones: " + str(e))
     sym = pick_future()
     if sym:
         log.info("Instrumento: " + str(sym) + " (XPERP — vencimiento mas lejano)")
@@ -172,7 +202,17 @@ def fetch_data(symbol, timeframe, limit=200):
     ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
     return pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
 
+def separation_pct(fast_val, slow_val):
+    """Separacion porcentual: abs(EMA3 - EMA21) / EMA21 * 100. None si no calculable."""
+    slow_val = _f(slow_val)
+    if slow_val == 0:
+        return None
+    return abs(_f(fast_val) - slow_val) / slow_val * 100.0
+
 # ==================== POSICIÓN ====================
+class PositionCheckError(Exception):
+    """La posicion no pudo verificarse: NUNCA se interpreta como 'sin posicion'."""
+
 def get_open_position(symbol):
     try:
         for pos in exchange.fetch_positions([symbol]):
@@ -180,6 +220,7 @@ def get_open_position(symbol):
                 return pos
     except Exception as e:
         log.error("Error consultando posiciones: " + str(e))
+        raise PositionCheckError(str(e))
     return None
 
 # ==================== TALLADO v2 (minimo fraccional si cabe) ====================
@@ -191,13 +232,20 @@ def compute_amount(symbol):
     ctval, ccy, _settle, price, usd1 = _contract_meta(symbol)
     log.info("Contrato: 1 ct = " + str(ctval) + " " + ccy + " = ~$" +
              format(usd1, '.4f') + " (precio " + str(price) + ")")
+    if usd1 <= 0:
+        raise RuntimeError("Valor por contrato no valido ($" + format(usd1, '.4f') +
+                           "). NO SE OPERA.")
 
     m = exchange.market(symbol)
     info = m.get('info') or {}
-    lot = _f(info.get('lotSz')) or 0.1
-    minsz = _f(info.get('minSz')) or 0.1
+    # Nunca asumir: lotSz y minSz salen de la API.
+    lot = _f(info.get('lotSz'))
+    minsz = _f(info.get('minSz'))
+    if lot <= 0 or minsz <= 0:
+        raise RuntimeError("lotSz/minSz no disponibles en la API (lotSz=" + str(info.get('lotSz')) +
+                           ", minSz=" + str(info.get('minSz')) + "). NO SE OPERA.")
 
-    c = math.floor((TARGET_NOTIONAL / usd1) / lot) * lot
+    c = round(math.floor((TARGET_NOTIONAL / usd1) / lot) * lot, 10)
     if c < minsz:
         c = minsz
     nocional = c * usd1
@@ -245,11 +293,16 @@ def candle_already_traded(symbol, candle_ts):
         return True
 
 def execute_order(side, symbol, ref_price, amount, candle_ts):
+    if _is_forbidden(symbol):
+        raise RuntimeError("VETO: instrumento USDT prohibido (" + str(symbol) + "). NO SE OPERA.")
     ctval, ccy, _settle, _p, usd = _contract_meta(symbol, ref_price)
     nocional = amount * usd
     log.info("Nocional: " + str(amount) + " contrato x " + str(ctval) + " " + ccy +
              " (~$" + format(nocional, '.2f') + ")")
 
+    if nocional <= 0:
+        raise RuntimeError("GUARDIA: nocional no valido ($" + format(nocional, '.2f') +
+                           "). NO SE OPERA.")
     if nocional > MAX_NOTIONAL_USD:
         raise RuntimeError("GUARDIA: nocional $" + format(nocional, '.2f') +
                            " > maximo $" + format(MAX_NOTIONAL_USD, '.2f') +
@@ -324,7 +377,40 @@ def cooldown_active(symbol):
         log.warning("No se pudo verificar cooldown (" + str(e) + "); BLOQUEO fail-closed.")
         return True
 
-# ==================== SEÑAL: CRUCE EMA8/34 1H CERRADA ====================
+# ==================== CONTEXTO MULTI-MARCO (INFORMATIVO, NO BLOQUEA) ====================
+def log_context_frames(symbol):
+    """4D = referencia macro, 30m = apoyo operacional.
+    Solo velas CERRADAS. Puramente informativo: nunca bloquea ni genera senal.
+    Cualquier fallo se registra y se ignora; la entrada nace SOLO del marco 1H."""
+    for label, tf in (('MACRO', MACRO_TIMEFRAME), ('APOYO', SUPPORT_TIMEFRAME)):
+        try:
+            offered = getattr(exchange, 'timeframes', None) or {}
+            if offered and tf not in offered:
+                log.info(label + " " + tf + ": marco no ofrecido por OKX/ccxt — omitido (informativo).")
+                continue
+            df = fetch_data(symbol, tf, limit=100)
+            if df.empty:
+                log.info(label + " " + tf + ": sin datos (informativo).")
+                continue
+            tf_ms = int(exchange.parse_timeframe(tf)) * 1000
+            now_ms = int(time.time() * 1000)
+            if int(df['timestamp'].iloc[-1]) + tf_ms > now_ms:
+                df = df.iloc[:-1].reset_index(drop=True)
+            if len(df) < EMA_SLOW + 5:
+                log.info(label + " " + tf + ": velas cerradas insuficientes (" + str(len(df)) +
+                         ") (informativo).")
+                continue
+            f = ema(df['close'], EMA_FAST)
+            s = ema(df['close'], EMA_SLOW)
+            sep = separation_pct(f.iloc[-1], s.iloc[-1])
+            log.info(label + " " + tf + " (cerrada) EMA" + str(EMA_FAST) + "/" + str(EMA_SLOW) +
+                     ": EMA" + str(EMA_FAST) + (" > " if f.iloc[-1] > s.iloc[-1] else " < ") +
+                     "EMA" + str(EMA_SLOW) + " | separacion " +
+                     (format(sep, '.3f') + "%" if sep is not None else "n/d") + " (informativo)")
+        except Exception as e:
+            log.warning(label + " " + tf + ": contexto no disponible (" + str(e) + ") — se ignora.")
+
+# ==================== SEÑAL: CRUCE EMA3/21 1H CERRADA + FILTRO DE SEPARACIÓN ====================
 def evaluate_signal(symbol):
     try:
         df = fetch_data(symbol, TIMEFRAME, limit=200)
@@ -343,9 +429,13 @@ def evaluate_signal(symbol):
         es = ema(df['close'], EMA_SLOW)
         price = exchange.fetch_ticker(symbol).get('last') or df['close'].iloc[-1]
 
-        log.info("Precio: " + str(price) + " | 1H EMA8/34: " +
-                 format(ef.iloc[-2], '.5f') + "/" + format(es.iloc[-2], '.5f') +
-                 " | EMA8 " + (">" if ef.iloc[-2] > es.iloc[-2] else "<") + " EMA34 (estado)")
+        # Tras descartar la vela en formacion, -1 es la ultima vela CERRADA.
+        log.info("Precio: " + str(price) + " | 1H EMA" + str(EMA_FAST) + "/" + str(EMA_SLOW) + ": " +
+                 format(ef.iloc[-1], '.5f') + "/" + format(es.iloc[-1], '.5f') +
+                 " | EMA" + str(EMA_FAST) + " " + (">" if ef.iloc[-1] > es.iloc[-1] else "<") +
+                 " EMA" + str(EMA_SLOW) + " (estado)")
+
+        log_context_frames(symbol)
 
         for i_curr in SIGNAL_WINDOW:
             i_prev = i_curr - 1
@@ -359,14 +449,29 @@ def evaluate_signal(symbol):
             down = (ef.iloc[i_prev] >= es.iloc[i_prev]
                     and ef.iloc[i_curr] < es.iloc[i_curr])
 
-            if up:
-                log.info("Cruce ALCISTA EMA8/34 detectado. Senal LONG.")
-                return 'LONG', price, candle_ts
-            if down:
-                log.info("Cruce BAJISTA EMA8/34 detectado. Senal SHORT.")
-                return 'SHORT', price, candle_ts
+            if not (up or down):
+                continue
 
-        log.info("Sin cruce EMA8/34 en la ventana. Vigilando.")
+            direction = 'LONG' if up else 'SHORT'
+            nombre = 'ALCISTA' if up else 'BAJISTA'
+
+            # FILTRO OBLIGATORIO: el cruce NO es suficiente.
+            sep = separation_pct(ef.iloc[i_curr], es.iloc[i_curr])
+            if sep is None:
+                log.warning("Cruce " + nombre + " EMA" + str(EMA_FAST) + "/" + str(EMA_SLOW) +
+                            " (vela " + str(i_curr) + "): separacion no calculable -> NO OPERAR (fail-closed).")
+                continue
+            if sep >= MIN_SEPARATION_PCT:
+                log.info("Cruce " + nombre + " EMA" + str(EMA_FAST) + "/" + str(EMA_SLOW) +
+                         " (vela " + str(i_curr) + ") | Separación EMA = " + format(sep, '.3f') +
+                         "% -> válida (min " + format(MIN_SEPARATION_PCT, '.2f') + "%). Senal " + direction + ".")
+                return direction, price, candle_ts
+            log.info("Cruce " + nombre + " EMA" + str(EMA_FAST) + "/" + str(EMA_SLOW) +
+                     " (vela " + str(i_curr) + ") | Separación EMA = " + format(sep, '.3f') +
+                     "% -> rechazada (min " + format(MIN_SEPARATION_PCT, '.2f') + "%). NO OPERAR.")
+
+        log.info("Sin cruce EMA" + str(EMA_FAST) + "/" + str(EMA_SLOW) +
+                 " valido en la ventana. Vigilando.")
     except Exception as e:
         log.error("Error en evaluacion: " + str(e))
     return None, None, None
@@ -376,6 +481,9 @@ def capacity_ok(symbol, amount):
     try:
         _ctval, _ccy, _settle, _price, usd = _contract_meta(symbol)
         nocional = usd * amount
+        if nocional <= 0:
+            log.error("GUARDIA: nocional no valido ($" + format(nocional, '.2f') + "). NO SE OPERA.")
+            return False
         if nocional > MAX_NOTIONAL_USD:
             log.error("GUARDIA: nocional $" + format(nocional, '.2f') +
                       " > maximo $" + format(MAX_NOTIONAL_USD, '.2f') + ". NO SE OPERA.")
@@ -422,7 +530,11 @@ def run_cycle():
     except Exception as e:
         log.warning("No se pudo fijar apalancamiento (se usa el de OKX): " + str(e))
 
-    pos = get_open_position(symbol)
+    try:
+        pos = get_open_position(symbol)
+    except PositionCheckError:
+        log.error("Posicion no verificable. BLOQUEO fail-closed; se espera al siguiente ciclo.")
+        return
     if pos:
         log.info("Posicion abierta (" + str(pos['side']) + "). Esperando SL/TP.")
         return
@@ -448,14 +560,15 @@ def run_cycle():
     if candle_already_traded(symbol, candle_ts):
         return
 
-    log.info("Senal " + signal + " (cruce EMA8/34 1H). Abriendo " + str(amount) + " contrato...")
+    log.info("Senal " + signal + " (cruce EMA" + str(EMA_FAST) + "/" + str(EMA_SLOW) +
+             " 1H + separacion valida). Abriendo " + str(amount) + " contrato...")
     try:
         execute_order(signal, symbol, price, amount, candle_ts)
     except Exception as e:
         log.error("Entrada rechazada: " + str(e))
 
 def run_once():
-    log.info("Modo ciclo unico | AVAX OCTAVO EMA8/34 1H | SL4/TP5.5 (XPERP USD).")
+    log.info("Modo ciclo unico | AVAX OCTAVO EMA3/21 1H (sep>=0.17%) | SL4/TP5.5 (XPERP USD).")
     verify_setup()
     if TEST_MODE:
         catalog_avax()
@@ -463,7 +576,7 @@ def run_once():
     run_cycle()
 
 def main_loop():
-    log.info("Bot " + BASE_ASSET + " OCTAVO | 1H EMA8/34 | SL4/TP5.5 bidireccional | " +
+    log.info("Bot " + BASE_ASSET + " OCTAVO | 1H EMA3/21 sep>=0.17% | SL4/TP5.5 bidireccional | " +
              "minimo tradable bajo guardia $" + format(MAX_NOTIONAL_USD, '.2f') +
              " | cooldown " + str(COOLDOWN_MIN) + "m | " + HOST)
     verify_setup()
