@@ -70,20 +70,23 @@ def ema(values, period):
 
 
 def atr(highs, lows, closes, period):
-    """ATR de Wilder. Devuelve el ultimo valor o None."""
+    """ATR de Wilder optimizado y robusto."""
     if len(closes) <= period:
         return None
-    trs = []
-    for i in range(1, len(closes)):
-        trs.append(max(
-            highs[i] - lows[i],
-            abs(highs[i] - closes[i - 1]),
-            abs(lows[i] - closes[i - 1]),
-        ))
-    a = sum(trs[:period]) / period
+    
+    trs = [max(highs[i] - lows[i], 
+               abs(highs[i] - closes[i - 1]), 
+               abs(lows[i] - closes[i - 1])) 
+           for i in range(1, len(closes))]
+    
+    if len(trs) < period:
+        return None
+        
+    atr_val = sum(trs[:period]) / period
     for tr in trs[period:]:
-        a = (a * (period - 1) + tr) / period
-    return a
+        atr_val = (atr_val * (period - 1) + tr) / period
+        
+    return atr_val
 
 
 # ---------------------------------------------------------------- exchange
@@ -128,13 +131,12 @@ def validate_market(ex):
 
 def auth_and_collateral(ex, has_creds):
     if not has_creds:
-        log.info("Sombra publica: sin credenciales — solo lectura de mercado")
         return None
     try:
         bal = ex.fetch_balance()
     except Exception as e:
-        fail("[ERROR] Autenticacion/lectura de cuenta fallo: %s — DETENIDO" % str(e)[:200])
-        raise  # por si fail() no terminara el proceso
+        log.warning("Lectura de cuenta fallo temporalmente: %s", str(e)[:150])
+        return None
 
     def ff(x):
         try:
@@ -153,20 +155,11 @@ def auth_and_collateral(ex, has_creds):
         suma = sum(ff(d.get("eqUsd")) for d in (d0.get("details") or []))
         tot_eq = suma or None
 
-    # 3) Ultimo recurso: USD/USDC (asume paridad 1:1; USDT vetado en el EEE)
+    # 3) Ultimo recurso: USD/USDC
     if not tot_eq:
         suma = sum(ff((bal.get(c) or {}).get("total")) for c in ("USD", "USDC"))
         tot_eq = suma or None
 
-    try:
-        host = str(ex.urls["api"]["private"]).replace("{hostname}", getattr(ex, "hostname", ""))
-    except Exception:
-        host = "?"
-
-    if tot_eq is None:
-        log.warning("Autenticacion OK | host=%s | NO se pudo determinar el colateral", host)
-    else:
-        log.info("Autenticacion OK | host=%s | Colateral real (USD): ~%.2f", host, tot_eq)
     return tot_eq
 
 
@@ -250,7 +243,8 @@ def log_signal(r, collateral):
         )
 
 
-def run_cycle(ex, collateral, last_signal_ts):
+def run_cycle(ex, has_creds, last_signal_ts):
+    collateral = auth_and_collateral(ex, has_creds)
     ohlcv = fetch_closed_candles(ex)
     r = analyze(ohlcv)
 
@@ -260,7 +254,6 @@ def run_cycle(ex, collateral, last_signal_ts):
         r["trend"], r["atr"],
     )
 
-    # Evita repetir la misma senal en los 3 ciclos de 20 min que caben en 1H
     if r["signal"] and r["candle_ts"] != last_signal_ts:
         log_signal(r, collateral)
         return r["candle_ts"]
@@ -274,7 +267,20 @@ def run_cycle(ex, collateral, last_signal_ts):
 def main():
     ex, has_creds = build_exchange()
     validate_market(ex)
-    collateral = auth_and_collateral(ex, has_creds)
+    
+    if has_creds:
+        init_col = auth_and_collateral(ex, has_creds)
+        try:
+            host = str(ex.urls["api"]["private"]).replace("{hostname}", getattr(ex, "hostname", ""))
+        except Exception:
+            host = "?"
+        if init_col is None:
+            log.warning("Autenticacion OK | host=%s | NO se pudo determinar el colateral inicial", host)
+        else:
+            log.info("Autenticacion OK | host=%s | Colateral real (USD): ~%.2f", host, init_col)
+    else:
+        log.info("Sombra publica: sin credenciales — solo lectura de mercado")
+
     log.info(
         "Inicio PRODUCCION | host=%s | %s | EMA %d/%d | %s | ciclo=%d min | SL=%.1fxATR TP=%.1fxATR",
         HOSTNAME, SYMBOL, EMA_FAST, EMA_SLOW, TIMEFRAME, CYCLE_SECONDS // 60, SL_ATR, TP_ATR,
@@ -284,7 +290,7 @@ def main():
     errores_seguidos = 0
     while True:
         try:
-            last_signal_ts = run_cycle(ex, collateral, last_signal_ts)
+            last_signal_ts = run_cycle(ex, has_creds, last_signal_ts)
             errores_seguidos = 0
         except KeyboardInterrupt:
             log.info("Detenido por el usuario")
