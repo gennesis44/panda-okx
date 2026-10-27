@@ -1,4 +1,4 @@
-name: ICP Shadow Bot (OKX EEE)
+name: main-icp.yml
 
 on:
   schedule:
