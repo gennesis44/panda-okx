@@ -32,6 +32,16 @@
 #       marco 1h | candado sep 0.17% | ventana (-2,-3,-4) | nocional $12
 #       (guardia $15) | 2x aislado | SL 2.0% / TP 3.0%.
 #
+# v2.1-1h-xperp — soldadura tras la 1a ronda REAL del FARO (06:06 UTC):
+#   P0 · cooldown_active llamaba a ex.privateGetTradeFillPnl — ESE METODO
+#        NO EXISTE en ccxt 4.5.90 (los fillPnl de OKX REST ya solo bajan
+#        por WebSocket). AttributeError silencioso -> fail-closed ->
+#        BLOQUEO PERMANENTE: con señal legal, el barco nunca dispara.
+#        FIX: fuente REST certificada /api/v5/account/positions-history
+#        (PnL realizado de la posicion cerrada, campo realizedPnl del
+#        parser ccxt). Con SL/TP atomicos (cierre completo en una pieza)
+#        la semantica de calma es identica. FAIL-CLOSED conservado.
+#
 # MICROSCOPIO NUMERICO (velas reales OKX INJ-USDT-SWAP publico, 90 dias,
 # 2159 velas 1h, peaje 0.14% RT, entrada en open siguiente, SL-first):
 #   · ATR14 1h: 1.632% — INJ aletea 4x mas que ADA en 15m (0.388%)
@@ -57,8 +67,8 @@
 #   · anti-doble v4.2        -> posiciones + algos vivos = nave ocupada
 #   · protection_confirmed   -> verifica SL/TP pendientes tras disparar
 #   · emergency_close        -> si la coraza no aparece, cierre inmediato
-#   · cooldown fillPnl       -> el campo pnl NO existe en fills OKX; se lee
-#                               fillPnl (con pnl de reserva). FAIL-CLOSED:
+#   · cooldown v2.1          -> PnL realizado via positions-history REST
+#                               (fillPnl solo baja por WebSocket). FAIL-CLOSED:
 #                               consulta rota = BLOQUEO
 #   · bodega ilegible        -> totEq/eqUsd ilegible = DETENIDO (fail-closed Ax3)
 #   · host resuelto          -> log sin plantilla cosmica {hostname}
@@ -93,7 +103,7 @@ try:
 except ImportError:
     ccxt = None
 
-VERSION = "v2.0-1h-xperp-microscopio"
+VERSION = "v2.1-1h-xperp-microscopio"
 TF_MS = {"5m": 300000, "15m": 900000, "30m": 1800000,
          "1h": 3600000, "2h": 7200000, "4h": 14400000, "6h": 21600000}
 
@@ -340,18 +350,22 @@ def already_traded(ex, inst_id, cl_ord_id):
 
 
 def cooldown_active(ex, inst_id):
-    """Calma tras perdida. FIX A1 (auditado en flota): OKX devuelve fillPnl
-    en fills de PnL — el campo pnl NO existe. Se lee fillPnl con pnl de
-    reserva. FAIL-CLOSED: si la consulta falla, BLOQUEO — no se dispara con
-    cooldown ilegible. (El original del capitan ya lo leia bien: conservado.)"""
+    """Calma tras perdida. FIX v2.1 (ronda real del FARO 06:06): los fills
+    REST de OKX ya no traen PnL (fillPnl solo por WebSocket) y el metodo
+    privateGetTradeFillPnl NO existe en ccxt 4.5.90 -> AttributeError
+    silencioso = bloqueo permanente con senal legal. Fuente REST
+    certificada: /api/v5/account/positions-history (PnL realizado de la
+    posicion cerrada). Con SL/TP atomicos (cierre completo en una pieza)
+    la semantica es identica a la de fills. FAIL-CLOSED: si la consulta
+    falla, BLOQUEO — no se dispara con cooldown ilegible."""
     try:
-        r = ex.privateGetTradeFillPnl({"instId": inst_id})
+        r = ex.privateGetAccountPositionsHistory(
+            {"instType": "FUTURES", "instId": inst_id, "limit": "10"})
         now = ex.milliseconds()
         for rec in (r.get("data") or []):
-            ft = int(float(rec.get("fillTime") or 0))
-            pnl = _f(rec.get("fillPnl"))
-            if pnl == 0.0:
-                pnl = _f(rec.get("pnl"))
+            ft = int(_f(rec.get("uTime")) or _f(rec.get("closedTime"))
+                     or _f(rec.get("cTime")))
+            pnl = _f(rec.get("realizedPnl"))
             if pnl < 0 and ft > 0 and (now - ft) < COOLDOWN_MIN * 60 * 1000:
                 return True, pnl, ft
     except Exception as e:
