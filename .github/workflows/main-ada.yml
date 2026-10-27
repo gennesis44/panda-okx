@@ -1,28 +1,65 @@
-name: ADA ALAS · EMA4/17 6H · swing
+# =====================================================================
+# main-ada.yml — NAVIO ADA · LA FLOTA CARBONO · BUQUE: EL TITAN
+# .github/workflows/main-ada.yml
+#
+# 100% AUTONOMO: main-ada.py no necesita ningun otro archivo del repo.
+# Este workflow solo instala la libreria ccxt (version certificada)
+# y suelta el barco al mar cada 15 minutos (vela 15m -> chequeo por vela).
+#
+# PARAMETROS DEL DECRETO "15 AGRESIVO" (auditoria 60 dias velas 15m reales OKX):
+#   SEP_LOCK 0.15% | SL 2.0% / TP 3.0% | PF 1.30 | WR 48.7% | +37.14% / 60d
+#   (sin candado el mismo marco pierde -90%: el candado es vida)
+#
+# ESTADO: ARMADO — SHADOW: '0' -> municion real (decreto "agresivo")
+# FRENO:   volver a SHADOW: '1' -> sombra (bitacora de senales, sin municion)
+# FRENO FLOTA: variable del repo DRY_RUN=1 -> fuerza sombra en todo
+#
+# SECRETS (REQUERIDOS en modo ARMADO — sin ellos, fail-closed, no zarpa):
+#   OKX_API_KEY, OKX_SECRET_KEY, OKX_PASSWORD (u OKX_PASSPHRASE)
+# =====================================================================
+
+name: main-ada
+
 on:
   schedule:
-    - cron: '15 * * * *'
-  workflow_dispatch:
+    - cron: '*/15 * * * *'   # 4 vigilias por hora (vela 15m -> chequeo por vela)
+  workflow_dispatch:          # boton manual "Run workflow" para pruebas
+
+permissions:
+  contents: read
 
 concurrency:
-  group: main-ada
-  cancel-in-progress: false
+  group: ada-carbono          # una sola vigilia ADA a la vez, sin solapes
+  cancel-in-progress: false   # buque armado: la vigilia NUNCA se aborta
 
 jobs:
-  nave:
+  vigilia:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    env:
-      SINGLE_CYCLE: '1'
-      TEST_MODE: '0'
-      OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
-      OKX_SECRET_KEY: ${{ secrets.OKX_SECRET_KEY }}
-      OKX_PASSWORD: ${{ secrets.OKX_PASSWORD || secrets.OKX_PASSPHRASE }}
-      OKX_ADA_MAX_NOTIONAL: '6.0'
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Abordar el repo
+        uses: actions/checkout@v4
+
+      - name: Python 3.11
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
-      - run: pip install ccxt==4.5.90 pandas
-      - run: python main-ada.py
+          python-version: '3.11'
+
+      - name: Arsenal (ccxt version certificada en pruebas)
+        run: python -m pip install --quiet "ccxt==4.5.90"
+
+      - name: Vigilia ADA — EL TITAN
+        env:
+          OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
+          OKX_SECRET_KEY: ${{ secrets.OKX_SECRET_KEY }}
+          OKX_PASSWORD: ${{ secrets.OKX_PASSWORD || secrets.OKX_PASSPHRASE }}
+          SHADOW: '0'
+          DRY_RUN: ${{ vars.DRY_RUN || '0' }}
+          ADA_TF: '15m'
+          ADA_CONTRACTS: '2'          # 2 ct = 20 ADA ~ $4 — dentro de la guardia $6
+          ADA_SEP_LOCK: '0.15'        # candado auditado (PF max del 15m)
+          ADA_SL_FLOOR: '2.0'         # SL fijo 2.0% auditado (5.2 x ATR14)
+          ADA_SL_CAP: '2.0'           # piso = techo -> SL fijo, ensanchar degrada
+          ADA_TP_MULT: '1.5'          # TP = 3.0%
+          ADA_MAX_NOTIONAL: '6'       # guardia de nocional $ (ley del capitan)
+        run: python main-ada.py
