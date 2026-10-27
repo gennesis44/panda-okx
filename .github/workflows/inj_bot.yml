@@ -1,0 +1,72 @@
+# =====================================================================
+# inj_bot.yml — NAVIO INJ · LA FLOTA CARBONO · BUQUE: EL INYECTOR
+# .github/workflows/inj_bot.yml
+#
+# 100% AUTONOMO: inj_bot.py no necesita ningun otro archivo del repo
+# (sin pandas — microscopio P0). Este workflow instala ccxt version
+# certificada y suelta el barco cada hora (vela 1h -> chequeo por vela).
+#
+# MOTOR (diseno del capitan, validado por microscopio numerico 90d,
+# velas reales OKX INJ, peaje 0.14% RT, SL-first):
+#   ventana (-2,-3,-4) | SEP_LOCK 0.17% | SL 2.0% / TP 3.0%
+#   86 trades | WR 50.0% | net +30.96%/90d | PF 1.34 | maxCons 10
+#   (sin candado el mismo marco cae a PF 1.03: el candado es vida)
+#   nocional $12 (guardia $15) | 2x aislado | SL/TP atomicos a bordo
+#
+# ESTADO: ARMADO — SHADOW: '0' -> municion real (tu moneda preferida)
+# FRENO:   volver a SHADOW: '1' -> sombra (bitacora de senales, sin municion)
+# FRENO FLOTA: variable del repo DRY_RUN=1 -> fuerza sombra en todo
+#
+# SECRETS (REQUERIDOS en modo ARMADO — sin ellos, fail-closed, no zarpa):
+#   OKX_API_KEY, OKX_SECRET_KEY, OKX_PASSWORD (u OKX_PASSPHRASE)
+# =====================================================================
+
+name: inj-bot
+
+on:
+  schedule:
+    - cron: '5 * * * *'       # vigilia horaria (vela 1h cierra a las :00)
+  workflow_dispatch:          # boton manual "Run workflow" para pruebas
+
+permissions:
+  contents: read
+
+concurrency:
+  group: inj-carbono          # una sola vigilia INJ a la vez, sin solapes
+  cancel-in-progress: false   # buque armado: la vigilia NUNCA se aborta
+
+jobs:
+  vigilia:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Abordar el repo
+        uses: actions/checkout@v4
+
+      - name: Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Arsenal (ccxt version certificada en pruebas)
+        run: python -m pip install --quiet "ccxt==4.5.90"
+
+      - name: Vigilia INJ — EL INYECTOR
+        env:
+          OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
+          OKX_SECRET_KEY: ${{ secrets.OKX_SECRET_KEY }}
+          OKX_PASSWORD: ${{ secrets.OKX_PASSWORD || secrets.OKX_PASSPHRASE }}
+          SHADOW: '0'
+          DRY_RUN: ${{ vars.DRY_RUN || '0' }}
+          INJ_TF: '1h'                # marco del capitan
+          INJ_WINDOW: '-2,-3,-4'      # ventana del cruce (capitan)
+          INJ_SEP_LOCK: '0.17'        # candado del capitan (pico de la curva)
+          INJ_SL_FLOOR: '2.0'         # SL fijo 2.0% auditado (1.23 x ATR14)
+          INJ_SL_CAP: '2.0'           # piso = techo -> SL fijo
+          INJ_TP_MULT: '1.5'          # TP = 3.0%
+          INJ_NOTIONAL: '12'          # nocional objetivo $ (capitan)
+          INJ_MAX_NOTIONAL: '15'      # guardia de nocional $ (capitan)
+          INJ_LEVERAGE: '2'           # apalancamiento (capitan)
+          INJ_MARGIN_MODE: 'isolated' # margen aislado (capitan)
+          COOLDOWN_MIN: '60'          # calma tras perdida
+        run: python inj_bot.py
