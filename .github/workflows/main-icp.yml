@@ -1,4 +1,4 @@
-name: main-icp.yml
+name:  run-name: icp
 
 on:
   schedule:
