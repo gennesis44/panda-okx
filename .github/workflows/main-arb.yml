@@ -1,0 +1,57 @@
+# =====================================================================
+# main-arb.yml — NAVIO ARB · LA FLOTA CARBONO · BUQUE: EL DESTRUCTOR
+# .github/workflows/main-arb.yml
+#
+# 100% AUTONOMO: main-arb.py no necesita ningun otro archivo del repo.
+# Este workflow solo instala la libreria ccxt (version certificada)
+# y suelta el barco al mar cada 30 minutos.
+#
+# ESTADO: MUNICION REAL (SHADOW: '0') — decreto del capitan 28-oct:
+#         "zarpa inmediatamente, contratos sumados no mas de 5 dlls".
+#         El tamano es AUTOMATICO: floor($5 / valor por contrato) y la
+#         guardia dura del .py detiene todo si no cabe bajo $5.
+#         RETIRADA A SOMBRA: cambiar SHADOW: '0' -> SHADOW: '1'.
+# FRENO FLOTA: variable del repo DRY_RUN=1 -> fuerza sombra en todo.
+#
+# SECRETS (REQUERIDOS en modo REAL — sin ellos, fail-closed, no zarpa):
+#   OKX_API_KEY, OKX_SECRET_KEY, OKX_PASSWORD (u OKX_PASSPHRASE)
+# =====================================================================
+
+name: main-arb
+
+on:
+  schedule:
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: arb-destructor
+  cancel-in-progress: false
+
+jobs:
+  vigilia:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Abordar el repo
+        uses: actions/checkout@v4
+
+      - name: Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Arsenal (ccxt version certificada en pruebas)
+        run: python -m pip install --quiet "ccxt==4.5.90"
+
+      - name: Vigilia ARB — El Destructor
+        env:
+          OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
+          OKX_SECRET_KEY: ${{ secrets.OKX_SECRET_KEY }}
+          OKX_PASSWORD: ${{ secrets.OKX_PASSWORD || secrets.OKX_PASSPHRASE }}
+          SHADOW: '0'
+          DRY_RUN: ${{ vars.DRY_RUN || '0' }}
+        run: python main-arb.py
