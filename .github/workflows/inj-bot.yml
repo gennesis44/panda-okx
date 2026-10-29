@@ -64,7 +64,7 @@ jobs:
           INJ_SL_FLOOR: '2.0'         # SL fijo 2.0% auditado (1.23 x ATR14)
           INJ_SL_CAP: '2.0'           # piso = techo -> SL fijo
           INJ_TP_MULT: '1.5'          # TP = 3.0%
-          INJ_NOTIONAL: '12'          # nocional objetivo $ (capitan)
+          INJ_NOTIONAL: '10'          # nocional objetivo $ (capitan)
           INJ_MAX_NOTIONAL: '15'      # guardia de nocional $ (capitan)
           INJ_LEVERAGE: '2'           # apalancamiento (capitan)
           INJ_MARGIN_MODE: 'isolated' # margen aislado (capitan)
