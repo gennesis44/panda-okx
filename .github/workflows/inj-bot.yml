@@ -1,17 +1,27 @@
 # =====================================================================
-# inj_bot.yml — NAVIO INJ · LA FLOTA CARBONO · BUQUE: EL INYECTOR
-# .github/workflows/inj_bot.yml
+# inj-bot.yml — NAVIO INJ · LA FLOTA CARBONO · BUQUE: EL INYECTOR
+# .github/workflows/inj-bot.yml
 #
-# 100% AUTONOMO: inj_bot.py no necesita ningun otro archivo del repo
-# (sin pandas — microscopio P0). Este workflow instala ccxt version
-# certificada y suelta el barco cada hora (vela 1h -> chequeo por vela).
+# 100% AUTONOMO: inj_bot.py v2.2-soldaduras no necesita ningun otro
+# archivo del repo (sin pandas — microscopio P0). Este workflow instala
+# ccxt version certificada y suelta el barco cada hora (vela 1h ->
+# chequeo por vela).
+#
+# CAMBIO v2.2 (05-11-2026) — soldaduras certificadas en el bot:
+#   P0 · cooldown DOBLE FUENTE (positions-history -> fills-history ->
+#        bloqueo fail-closed). El endpoint positions-history responde
+#        cuerpo pelado '0' en my.okx.com: v2.1 quedaba bloqueado para
+#        siempre con senal legal. Certificado en banco de pruebas.
+#   P1 · posMode se COMPRUEBA (net_mode), jamas se muta la cuenta.
+#   MINOR · colateral oculto en el log (repo publica). INJ_DEBUG=1
+#        para verlo en una ronda de diagnostico puntual.
 #
 # MOTOR (diseno del capitan, validado por microscopio numerico 90d,
 # velas reales OKX INJ, peaje 0.14% RT, SL-first):
 #   ventana (-2,-3,-4) | SEP_LOCK 0.17% | SL 2.0% / TP 3.0%
 #   86 trades | WR 50.0% | net +30.96%/90d | PF 1.34 | maxCons 10
 #   (sin candado el mismo marco cae a PF 1.03: el candado es vida)
-#   nocional $12 (guardia $15) | 2x aislado | SL/TP atomicos a bordo
+#   nocional $10 (guardia $15) | 2x aislado | SL/TP atomicos a bordo
 #
 # ESTADO: ARMADO — SHADOW: '0' -> municion real (tu moneda preferida)
 # FRENO:   volver a SHADOW: '1' -> sombra (bitacora de senales, sin municion)
@@ -69,4 +79,5 @@ jobs:
           INJ_LEVERAGE: '2'           # apalancamiento (capitan)
           INJ_MARGIN_MODE: 'isolated' # margen aislado (capitan)
           COOLDOWN_MIN: '60'          # calma tras perdida
+          INJ_DEBUG: '0'              # '1' solo en diagnostico puntual: imprime colateral
         run: python inj_bot.py
