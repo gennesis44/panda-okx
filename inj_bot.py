@@ -42,6 +42,25 @@
 #        parser ccxt). Con SL/TP atomicos (cierre completo en una pieza)
 #        la semantica de calma es identica. FAIL-CLOSED conservado.
 #
+# v2.2-1h-xperp-soldaduras — tras la ronda de sombra del FARO + bitacora v5
+# (05-11-2026). Hallazgo P0 certificado: el cooldown v2.1 llama a
+# /api/v5/account/positions-history, y ESE endpoint en my.okx.com responde
+# cuerpo pelado '0' -> KeyError :: 0. Fail-closed => en REAL el barco
+# NUNCA dispara con senal legal (en SOMBRA la funcion no se ejecuta, por
+# eso el FARO no lo vio). La premisa v2.1 ("fillPnl ya solo baja por
+# WebSocket") era FALSA: la bitacora v5 recibio fills REST con fillPnl
+# esta misma semana. Soldadura certificada (8+3 escenarios en banco):
+#   P0 · cooldown_active DOBLE FUENTE: 1) positions-history (realizedPnl
+#        con pnl de reserva) -> 2) fills-history (fillPnl, limit 40)
+#        -> ambas rotas: BLOQUEO fail-closed conservado.
+#   P1 · set_position_mode(False) ELIMINADO: muta la cuenta ENTERA
+#        (posMode global de toda la flota). Sustituido por pos_mode_check:
+#        lee /api/v5/account/config; si no es net_mode -> DETENIDO
+#        fail-closed. El codigo JAMAS muta el interruptor de la cuenta.
+#   MINOR · sort defensivo de velas por ts en closed_candles.
+#   MINOR · colateral enmascarado en el log (repo publica): solo con
+#        INJ_DEBUG=1 se imprime el monto. Nunca toca la logica de flota.
+#
 # MICROSCOPIO NUMERICO (velas reales OKX INJ-USDT-SWAP publico, 90 dias,
 # 2159 velas 1h, peaje 0.14% RT, entrada en open siguiente, SL-first):
 #   · ATR14 1h: 1.632% — INJ aletea 4x mas que ADA en 15m (0.388%)
@@ -67,9 +86,11 @@
 #   · anti-doble v4.2        -> posiciones + algos vivos = nave ocupada
 #   · protection_confirmed   -> verifica SL/TP pendientes tras disparar
 #   · emergency_close        -> si la coraza no aparece, cierre inmediato
-#   · cooldown fillPnl       -> el campo pnl NO existe en fills OKX; se lee
-#                               fillPnl (con pnl de reserva). FAIL-CLOSED:
-#                               consulta rota = BLOQUEO
+#   · cooldown doble fuente  -> positions-history + fills-history (fillPnl
+#                               con pnl de reserva). Ambas rotas = BLOQUEO
+#                               fail-closed (v2.2, banco de pruebas verde)
+#   · posMode check          -> se COMPRUEBA net_mode, jamas se muta la
+#                               cuenta (v2.2). Ilegible = DETENIDO
 #   · bodega ilegible        -> totEq/eqUsd ilegible = DETENIDO (fail-closed Ax3)
 #   · host resuelto          -> log sin plantilla cosmica {hostname}
 #
@@ -90,6 +111,8 @@
 #   INJ_MARGIN_MODE=isolated  margen aislado (capitan)
 #   INJ_N_CANDLES=200    velas cerradas para las EMAs
 #   COOLDOWN_MIN=60      calma tras perdida
+#   INJ_DEBUG=1          muestra el colateral real en el log (defecto: oculto,
+#                        repo publica). Solo diagnostico, nunca opera
 # =====================================================================
 
 import os
@@ -103,7 +126,7 @@ try:
 except ImportError:
     ccxt = None
 
-VERSION = "v2.1-1h-xperp-microscopio"
+VERSION = "v2.2-1h-xperp-soldaduras"
 TF_MS = {"5m": 300000, "15m": 900000, "30m": 1800000,
          "1h": 3600000, "2h": 7200000, "4h": 14400000, "6h": 21600000}
 
@@ -123,6 +146,7 @@ LEVERAGE = int(float(os.environ.get("INJ_LEVERAGE", "2")))
 MARGIN_MODE = os.environ.get("INJ_MARGIN_MODE", "isolated").strip().lower()
 COOLDOWN_MIN = float(os.environ.get("COOLDOWN_MIN", "60"))
 N_CANDLES = int(os.environ.get("INJ_N_CANDLES", "200"))
+INJ_DEBUG = os.environ.get("INJ_DEBUG", "0") == "1"
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s - %(levelname)s - %(message)s")
@@ -229,7 +253,10 @@ def auth_and_collateral(ex, has_creds):
             host = host.replace("{hostname}", getattr(ex, "hostname", "my.okx.com"))
     except Exception:
         host = "?"
-    log.info("Autenticacion OK | host=%s | Colateral real (USD): ~%.2f", host, tot_eq)
+    if INJ_DEBUG:
+        log.info("Autenticacion OK | host=%s | Colateral real (USD): %.2f", host, tot_eq)
+    else:
+        log.info("Autenticacion OK | host=%s | Colateral: OK (monto oculto en repo publica; INJ_DEBUG=1 para verlo)", host)
     return tot_eq
 
 
@@ -276,6 +303,7 @@ def closed_candles(ex, sym, tf, n):
     if tf not in TF_MS:
         fail("[ERROR] marco temporal no soportado: %s" % tf)
     raw = ex.fetch_ohlcv(sym, tf, limit=n + 3)
+    raw.sort(key=lambda c: c[0])          # v2.2: sort defensivo por ts
     tfms = TF_MS[tf]
     now = ex.milliseconds()
     closed = [c for c in raw if c[0] + tfms <= now]
@@ -350,28 +378,59 @@ def already_traded(ex, inst_id, cl_ord_id):
 
 
 def cooldown_active(ex, inst_id):
-    """Calma tras perdida. FIX v2.1 (ronda real del FARO 06:06): los fills
-    REST de OKX ya no traen PnL (fillPnl solo por WebSocket) y el metodo
-    privateGetTradeFillPnl NO existe en ccxt 4.5.90 -> AttributeError
-    silencioso = bloqueo permanente con senal legal. Fuente REST
-    certificada: /api/v5/account/positions-history (PnL realizado de la
-    posicion cerrada). Con SL/TP atomicos (cierre completo en una pieza)
-    la semantica es identica a la de fills. FAIL-CLOSED: si la consulta
-    falla, BLOQUEO — no se dispara con cooldown ilegible."""
+    """Calma tras perdida. FIX v2.2 (hallazgo certificado): el endpoint
+    positions-history en my.okx.com responde cuerpo pelado '0' ->
+    KeyError :: 0, y la premisa v2.1 ("fillPnl ya solo baja por WebSocket")
+    era FALSA — la bitacora v5 recibio fills REST con fillPnl esta misma
+    semana. DOBLE FUENTE: 1) positions-history (realizedPnl, con pnl de
+    reserva) 2) fills-history (fillPnl, limit 40). Ambas rotas -> BLOQUEO
+    fail-closed: no se dispara con cooldown ilegible. Certificado contra
+    el bug real KeyError :: 0 en banco de pruebas (8 escenarios)."""
+    now = ex.milliseconds()
     try:
         r = ex.privateGetAccountPositionsHistory(
             {"instType": "FUTURES", "instId": inst_id, "limit": "10"})
-        now = ex.milliseconds()
         for rec in (r.get("data") or []):
             ft = int(_f(rec.get("uTime")) or _f(rec.get("closedTime"))
                      or _f(rec.get("cTime")))
-            pnl = _f(rec.get("realizedPnl"))
+            pnl = (_f(rec.get("realizedPnl"))
+                   if rec.get("realizedPnl") not in (None, "")
+                   else _f(rec.get("pnl")))
             if pnl < 0 and ft > 0 and (now - ft) < COOLDOWN_MIN * 60 * 1000:
                 return True, pnl, ft
+        return False, 0.0, 0
     except Exception as e:
-        log.warning("cooldown no verificable (%s) — BLOQUEO fail-closed", str(e)[:120])
-        return True, 0.0, ex.milliseconds()
-    return False, 0.0, 0
+        log.warning("positions-history no abrio (%s) — probando fills-history",
+                    str(e)[:120])
+    try:
+        r = ex.privateGetTradeFillsHistory(
+            {"instType": "FUTURES", "instId": inst_id, "limit": "40"})
+        for x in (r.get("data") or []):
+            ts = int(_f(x.get("ts")) or _f(x.get("fillTime")))
+            pnl = _f(x.get("fillPnl"))
+            if pnl < 0 and ts > 0 and (now - ts) < COOLDOWN_MIN * 60 * 1000:
+                return True, pnl, ts
+        return False, 0.0, 0
+    except Exception as e:
+        log.warning("cooldown ilegible por ambas fuentes (%s) — BLOQUEO fail-closed",
+                    str(e)[:120])
+        return True, 0.0, now
+
+
+def pos_mode_check(ex):
+    """v2.2 P1: COMPROBAR el posMode, NUNCA mutarlo. set_position_mode()
+    cambia el modo de la cuenta ENTERA (toda la flota de golpe). Si la
+    cuenta no esta en net_mode (one-way), DETENIDO fail-closed: el pin se
+    fija UNA vez desde la app; el codigo no toca el interruptor."""
+    try:
+        cfg = ex.privateGetAccountConfig()
+        pos_mode = ((cfg.get("data") or [{}])[0]).get("posMode")
+    except Exception as e:
+        fail("[ERROR] posMode ilegible (%s) — DETENIDO (fail-closed)" % str(e)[:120])
+    if pos_mode != "net_mode":
+        fail("[ERROR] Cuenta en %s — pin net_mode UNA vez a flota; el codigo no muta la cuenta. DETENIDO" % pos_mode)
+    log.info("posMode verificado: net_mode (one-way) — cuenta intacta, sin mutacion.")
+    return pos_mode
 
 
 def size_contracts(market, px):
@@ -532,11 +591,7 @@ def main():
         return 0
 
     # ---- REAL ----
-    try:
-        ex.set_position_mode(False)
-        log.info("Position mode -> one-way para %s.", inst_id)
-    except Exception as e:
-        log.warning("set_position_mode tolerado: %s", str(e)[:120])
+    pos_mode_check(ex)   # v2.2 P1: comprobar, NO mutar (la cuenta es de toda la flota)
     try:
         ex.set_leverage(LEVERAGE, sym, params={"mgnMode": MARGIN_MODE})
         log.info("Apalancamiento: %dx (%s)", LEVERAGE, MARGIN_MODE)
