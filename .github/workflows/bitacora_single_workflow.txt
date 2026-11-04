@@ -1,0 +1,115 @@
+# CUADERNO DE CAPTURAS compacto · python embebido · UN SOLO ARCHIVO
+# Editar .github/workflows/bitacora.yml (lapiz) -> pegar -> Commit
+# -> Actions -> bitacora-capturas -> Run workflow -> leer log
+# -> al terminar, borrar este archivo. Solo lectura; nunca opera.
+
+name: bitacora-capturas
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  bitacora:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Instalar ccxt
+        run: pip install ccxt
+
+      - name: Cuaderno de capturas
+        env:
+          OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
+          OKX_SECRET_KEY: ${{ secrets.OKX_SECRET_KEY }}
+          OKX_PASSWORD: ${{ secrets.OKX_PASSWORD }}
+        run: |
+          cat > bitacora.py <<'PYEOF'
+          import os, sys
+          from datetime import datetime, timezone
+          import ccxt
+
+          LIMIT = 200
+          key = os.environ.get("OKX_API_KEY", "").strip()
+          sec = os.environ.get("OKX_SECRET_KEY", "").strip()
+          pwd = os.environ.get("OKX_PASSWORD", "").strip()
+          print("=" * 66)
+          print("CUADERNO DE CAPTURAS -", datetime.now(timezone.utc).strftime("%d-%m-%Y %H:%M"), "UTC")
+          print("=" * 66)
+          if not (key and sec and pwd):
+              print("Faltan secrets OKX en la repo"); sys.exit(1)
+
+          def abrir(demo):
+              ex = ccxt.okx({"apiKey": key, "secret": sec, "password": pwd,
+                             "enableRateLimit": True, "options": {"defaultType": "swap"}})
+              if demo:
+                  ex.headers["x-simulated-trading"] = "1"
+              return ex
+
+          hist, mundo = None, "REAL"
+          try:
+              hist = abrir(False).fetch_positions_history({"instType": "SWAP", "limit": LIMIT})
+          except Exception as e:
+              if "50119" in str(e) or "exist" in str(e).lower():
+                  print("La llave no existe en REAL -> probando DEMO...")
+                  try:
+                      hist = abrir(True).fetch_positions_history({"instType": "SWAP", "limit": LIMIT})
+                      mundo = "DEMO"
+                  except Exception as e2:
+                      print("[!] REAL:", e)
+                      print("[!] DEMO:", e2)
+                      print("    -> llave borrada/renovada: revisa OKX Perfil > API y secrets")
+                      sys.exit(1)
+              else:
+                  print("[!] OKX:", e); sys.exit(1)
+          print("MUNDO DE LA LLAVE:", mundo, "(cuenta SIMULADA)" if mundo == "DEMO" else "")
+
+          def utc(ms):
+              try: return datetime.fromtimestamp(int(ms) / 1000, tz=timezone.utc).strftime("%m-%d %H:%M")
+              except Exception: return "?"
+
+          rows = []
+          for h in hist:
+              g = lambda *ns, d=None: next((h[n] for n in ns if h.get(n) not in (None, "")), d)
+              side = str(g("direction", "posSide", "?")).lower()
+              rows.append({"cierre": utc(g("uTime", "closeTime")),
+                           "nave": str(g("instId", "symbol", "?")).split("-")[0],
+                           "dir": "LONG" if side.startswith("l") else "SHORT" if side.startswith("s") else "?",
+                           "pnl": float(g("realizedPnl", 0) or 0),
+                           "px": g("openAvgPx"), "px2": g("closeAvgPx")})
+
+          rows.sort(key=lambda r: r["cierre"])
+          if not rows:
+              print("Cuaderno limpio: sin posiciones cerradas SWAP"); sys.exit(0)
+
+          wins = [r for r in rows if r["pnl"] > 0]
+          loss = [r for r in rows if r["pnl"] < 0]
+          tot = sum(r["pnl"] for r in rows)
+          wr = 100.0 * len(wins) / (len(wins) + len(loss)) if (wins or loss) else 0.0
+          print()
+          print("POSICIONES CERRADAS (SWAP):", len(rows))
+          print("-" * 66)
+          print(f"{'CIERRE':<11} {'NAVE':<6} {'DIR':<6} {'ENTRADA':>10} {'SALIDA':>10} {'PNL':>9}")
+          for r in rows:
+              f = "+" if r["pnl"] > 0 else "-" if r["pnl"] < 0 else "="
+              print(f"{r['cierre']:<11} {r['nave']:<6} {r['dir']:<6} {r['px'] or '?':>10} {r['px2'] or '?':>10} {f}{r['pnl']:>+8.2f}")
+          print("-" * 66)
+          print(f"ganadas {len(wins)} | perdidas {len(loss)} | winrate {wr:.1f}%")
+          print(f"PnL total {tot:+.2f} | mejor {max(r['pnl'] for r in rows):+.2f} | peor {min(r['pnl'] for r in rows):+.2f}")
+          streak, sgn = 0, 0
+          for r in reversed(rows):
+              if r["pnl"] == 0:
+                  continue
+              s = 1 if r["pnl"] > 0 else -1
+              if sgn == 0:
+                  sgn, streak = s, 1
+              elif s == sgn:
+                  streak += 1
+              else:
+                  break
+          if streak:
+              print(f"racha actual: {streak} {'ganada(s)' if sgn > 0 else 'perdida(s)'}")
+          PYEOF
+          python bitacora.py
