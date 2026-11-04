@@ -1,4 +1,4 @@
-# CUADERNO DE CAPTURAS compacto · python embebido · UN SOLO ARCHIVO
+# CUADERNO DE CAPTURAS v2 · hosts my.okx.com / www.okx.com / DEMO
 # Editar .github/workflows/bitacora.yml (lapiz) -> pegar -> Commit
 # -> Actions -> bitacora-capturas -> Run workflow -> leer log
 # -> al terminar, borrar este archivo. Solo lectura; nunca opera.
@@ -41,30 +41,33 @@ jobs:
           if not (key and sec and pwd):
               print("Faltan secrets OKX en la repo"); sys.exit(1)
 
-          def abrir(demo):
+          def abrir(demo, host):
               ex = ccxt.okx({"apiKey": key, "secret": sec, "password": pwd,
+                             "hostname": host,
                              "enableRateLimit": True, "options": {"defaultType": "swap"}})
               if demo:
                   ex.headers["x-simulated-trading"] = "1"
               return ex
 
-          hist, mundo = None, "REAL"
-          try:
-              hist = abrir(False).fetch_positions_history({"instType": "SWAP", "limit": LIMIT})
-          except Exception as e:
-              if "50119" in str(e) or "exist" in str(e).lower():
-                  print("La llave no existe en REAL -> probando DEMO...")
-                  try:
-                      hist = abrir(True).fetch_positions_history({"instType": "SWAP", "limit": LIMIT})
-                      mundo = "DEMO"
-                  except Exception as e2:
-                      print("[!] REAL:", e)
-                      print("[!] DEMO:", e2)
-                      print("    -> llave borrada/renovada: revisa OKX Perfil > API y secrets")
-                      sys.exit(1)
-              else:
-                  print("[!] OKX:", e); sys.exit(1)
-          print("MUNDO DE LA LLAVE:", mundo, "(cuenta SIMULADA)" if mundo == "DEMO" else "")
+          INTENTOS = [("my.okx.com", False, "REAL en my.okx.com"),
+                      ("www.okx.com", False, "REAL en www.okx.com"),
+                      ("my.okx.com", True,  "DEMO en my.okx.com")]
+          hist, mundo, ultimo = None, None, None
+          for host, demo, tag in INTENTOS:
+              try:
+                  hist = abrir(demo, host).fetch_positions_history({"instType": "SWAP", "limit": LIMIT})
+                  mundo = tag
+                  break
+              except Exception as e:
+                  ultimo = e
+                  print("  [i] no abre:", tag, "->", str(e)[:90])
+
+          if hist is None:
+              print()
+              print("[!] Ningun mundo abrio la puerta. Ultimo error:", ultimo)
+              print("    -> revisa OKX Perfil > API y los 3 secrets de la repo")
+              sys.exit(1)
+          print("MUNDO DE LA LLAVE:", mundo, "(cuenta SIMULADA)" if "DEMO" in mundo else "")
 
           def utc(ms):
               try: return datetime.fromtimestamp(int(ms) / 1000, tz=timezone.utc).strftime("%m-%d %H:%M")
