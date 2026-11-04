@@ -1,7 +1,6 @@
-# CUADERNO DE CAPTURAS v2 · hosts my.okx.com / www.okx.com / DEMO
-# Editar .github/workflows/bitacora.yml (lapiz) -> pegar -> Commit
-# -> Actions -> bitacora-capturas -> Run workflow -> leer log
-# -> al terminar, borrar este archivo. Solo lectura; nunca opera.
+# CUADERNO DE CAPTURAS v3 · my.okx.com FUTURES->SWAP->sin tipo, reintentos, fills de respaldo
+# Editar .github/workflows/bitacora.yml (lapiz) -> pegar -> Commit -> Run workflow -> leer log
+# Al terminar: borrar este archivo. Solo lectura; nunca opera.
 
 name: bitacora-capturas
 
@@ -27,16 +26,16 @@ jobs:
           OKX_PASSWORD: ${{ secrets.OKX_PASSWORD }}
         run: |
           cat > bitacora.py <<'PYEOF'
-          import os, sys
+          import os, sys, time
           from datetime import datetime, timezone
           import ccxt
 
-          LIMIT = 200
+          LIMIT = "100"
           key = os.environ.get("OKX_API_KEY", "").strip()
           sec = os.environ.get("OKX_SECRET_KEY", "").strip()
           pwd = os.environ.get("OKX_PASSWORD", "").strip()
           print("=" * 66)
-          print("CUADERNO DE CAPTURAS -", datetime.now(timezone.utc).strftime("%d-%m-%Y %H:%M"), "UTC")
+          print("CUADERNO DE CAPTURAS v3 -", datetime.now(timezone.utc).strftime("%d-%m-%Y %H:%M"), "UTC")
           print("=" * 66)
           if not (key and sec and pwd):
               print("Faltan secrets OKX en la repo"); sys.exit(1)
@@ -49,24 +48,61 @@ jobs:
                   ex.headers["x-simulated-trading"] = "1"
               return ex
 
-          INTENTOS = [("my.okx.com", False, "REAL en my.okx.com"),
-                      ("www.okx.com", False, "REAL en www.okx.com"),
-                      ("my.okx.com", True,  "DEMO en my.okx.com")]
+          INTENTOS = [("my.okx.com", False, {"instType": "FUTURES", "limit": LIMIT}, "REAL my.okx.com FUTURES"),
+                      ("my.okx.com", False, {"instType": "SWAP", "limit": LIMIT}, "REAL my.okx.com SWAP"),
+                      ("my.okx.com", False, {"limit": LIMIT}, "REAL my.okx.com (sin tipo)"),
+                      ("www.okx.com", False, {"instType": "SWAP", "limit": LIMIT}, "REAL www.okx.com SWAP")]
           hist, mundo, ultimo = None, None, None
-          for host, demo, tag in INTENTOS:
-              try:
-                  hist = abrir(demo, host).fetch_positions_history({"instType": "SWAP", "limit": LIMIT})
-                  mundo = tag
+          for host, demo, params, tag in INTENTOS:
+              for t in (1, 2):
+                  try:
+                      hist = abrir(demo, host).fetch_positions_history(params)
+                      mundo = tag
+                      break
+                  except Exception as e:
+                      ultimo = e
+                      print(f"  [i] {tag} t{t}: {type(e).__name__} :: {str(e)[:150]}")
+                      time.sleep(1.5)
+              if hist is not None:
                   break
-              except Exception as e:
-                  ultimo = e
-                  print("  [i] no abre:", tag, "->", str(e)[:90])
 
           if hist is None:
+              print("  -> positions-history no abrio; probando operaciones crudas (fills)...")
+              for it in ("FUTURES", "SWAP"):
+                  for t in (1, 2):
+                      try:
+                          fills = abrir(False, "my.okx.com").private_get_trade_fills_history(
+                              {"instType": it, "limit": "100"}).get("data", [])
+                          break
+                      except Exception as e:
+                          fills = None
+                          print(f"  [i] fills {it} t{t}: {type(e).__name__} :: {str(e)[:150]}")
+                          time.sleep(1.5)
+                  if fills:
+                      break
+              if fills:
+                  def uts(ms):
+                      try: return datetime.fromtimestamp(int(ms) / 1000, tz=timezone.utc).strftime("%m-%d %H:%M:%S")
+                      except Exception: return "?"
+                  print()
+                  print("MODO CRUDO: ultimas operaciones (lo mas nuevo primero). Cada presa = 2+ lineas.")
+                  print("-" * 70)
+                  print(f"{'HORA UTC':<15} {'NAVE':<6} {'DIR':<5} {'PRECIO':>10} {'TAM':>8} {'PNL':>9} {'COMISION':>9}")
+                  tot = 0.0
+                  for f in fills:
+                      nav = str(f.get("instId", "?")).split("-")[0]
+                      pnl = float(f.get("fillPnl") or 0)
+                      fee = float(f.get("fee") or 0)
+                      tot += pnl
+                      print(f"{uts(f.get('fillTime')):<15} {nav:<6} {str(f.get('side', '?')):<5} "
+                            f"{str(f.get('fillPx', '?')):>10} {str(f.get('fillSz', '?')):>8} {pnl:>+9.2f} {fee:>+9.4f}")
+                  print("-" * 70)
+                  print(f"PnL bruto de los cierres visibles (fills): {tot:+.2f} (comisiones aparte)")
+                  sys.exit(0)
               print()
-              print("[!] Ningun mundo abrio la puerta. Ultimo error:", ultimo)
-              print("    -> revisa OKX Perfil > API y los 3 secrets de la repo")
+              print("[!] Ninguna puerta abrio. Ultimo error:", type(ultimo).__name__, "::", str(ultimo)[:200])
               sys.exit(1)
+
           print("MUNDO DE LA LLAVE:", mundo, "(cuenta SIMULADA)" if "DEMO" in mundo else "")
 
           def utc(ms):
@@ -85,14 +121,14 @@ jobs:
 
           rows.sort(key=lambda r: r["cierre"])
           if not rows:
-              print("Cuaderno limpio: sin posiciones cerradas SWAP"); sys.exit(0)
+              print("Cuaderno limpio: sin posiciones cerradas"); sys.exit(0)
 
           wins = [r for r in rows if r["pnl"] > 0]
           loss = [r for r in rows if r["pnl"] < 0]
           tot = sum(r["pnl"] for r in rows)
           wr = 100.0 * len(wins) / (len(wins) + len(loss)) if (wins or loss) else 0.0
           print()
-          print("POSICIONES CERRADAS (SWAP):", len(rows))
+          print("POSICIONES CERRADAS:", len(rows))
           print("-" * 66)
           print(f"{'CIERRE':<11} {'NAVE':<6} {'DIR':<6} {'ENTRADA':>10} {'SALIDA':>10} {'PNL':>9}")
           for r in rows:
