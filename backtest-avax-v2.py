@@ -22,44 +22,78 @@ def _usdt(m):
     return ('USDT' in str(m.get('id') or '').upper() or str(m.get('settle') or '').upper() == 'USDT'
             or str(m.get('quote') or '').upper() == 'USDT')
 
-def pick_data_symbol(markets):
-    """VETO USDT (MiCA/EEE): solo USD/USDC. Prioridad: swap USD (mas historia) > spot USDC > futuro XPERP.
-    Nunca hay fallback a USDT: si no hay instrumento valido, se aborta."""
+def data_candidates(markets):
+    """VETO USDT (MiCA/EEE): solo USD/USDC. Orden: swap USD (mas historia) > spot USDC/USD > futuros XPERP.
+    Nunca hay fallback a USDT."""
     cands = [m for m in markets if m.get('base') == 'AVAX' and m.get('active') is not False and not _usdt(m)]
     swaps = [m for m in cands if m.get('swap')]
     spots = [m for m in cands if m.get('spot') and str(m.get('quote') or '').upper() in ('USDC', 'USD')]
-    futs = sorted([m for m in cands if m.get('future')], key=lambda m: int((m.get('info') or {}).get('expTime') or 0), reverse=True)
-    for grp in (swaps, spots, futs):
-        if grp:
-            return grp[0]['symbol']
-    return None
+    futs = sorted([m for m in cands if m.get('future')],
+                  key=lambda m: int((m.get('info') or {}).get('expTime') or 0), reverse=True)
+    return [m['symbol'] for m in (swaps + spots + futs)]
+
+def pick_data_symbol(markets):
+    c = data_candidates(markets)
+    return c[0] if c else None
+
+def fetch_hist(ex, inst_id, years):
+    """Pagina hacia atras el endpoint publico history-candles de OKX (mas fiable que fetch_ohlcv con since)."""
+    method = getattr(ex, 'public_get_market_history_candles', None) or getattr(ex, 'publicGetMarketHistoryCandles')
+    stop = int((time.time() - years * 365 * 86400) * 1000)
+    rows, after, fails = [], None, 0
+    while True:
+        req = {'instId': inst_id, 'bar': '1H', 'limit': '100'}
+        if after:
+            req['after'] = str(after)
+        try:
+            data = (method(req) or {}).get('data') or []
+        except Exception as e:
+            fails += 1
+            print("  error API (" + str(fails) + "/5):", str(e)[:120], flush=True)
+            if fails >= 5:
+                break
+            time.sleep(2)
+            continue
+        if not data:
+            break
+        for r in data:
+            if str(r[-1]) == '1':          # solo velas CERRADAS (confirm=1)
+                rows.append([int(r[0]), float(r[1]), float(r[2]), float(r[3]), float(r[4]), float(r[5])])
+        oldest = int(data[-1][0])
+        if oldest <= stop or (after is not None and oldest >= after):
+            break
+        after = oldest
+    df = pd.DataFrame(rows, columns=['ts', 'open', 'high', 'low', 'close', 'volume'])
+    df = df.drop_duplicates('ts').sort_values('ts')
+    return df[df.ts >= stop].reset_index(drop=True)
 
 def load_okx(years=2.0):
     import ccxt
     ex = ccxt.okx({'enableRateLimit': True, 'urls': {'api': {'rest': HOST}}})
     ex.load_markets()
-    sym = pick_data_symbol(list(ex.markets.values()))
-    if sym is None:
+    cands = data_candidates(list(ex.markets.values()))
+    if not cands:
         sys.exit("No hay instrumento AVAX en USD/USDC. USDT vetado: no se descargan datos. Use --csv.")
-    if _usdt(ex.market(sym)):
-        sys.exit("VETO USDT: " + sym)
-    print("Fuente de velas (USD/USDC):", sym, flush=True)
-    since = int((time.time() - years * 365 * 86400) * 1000)
-    rows, step = [], 3600 * 1000
-    while since < time.time() * 1000:
-        try:
-            ch = ex.fetch_ohlcv(sym, '1h', since=since, limit=100)
-        except Exception as e:
-            print("reintento:", e, flush=True); time.sleep(2); continue
-        if not ch: break
-        rows += ch
-        nxt = ch[-1][0] + step
-        if nxt <= since: break
-        since = nxt
-    if len(rows) < 2000:
-        print("AVISO: solo", len(rows), "velas (instrumento joven o XPERP con poca historia); resultados poco fiables.", flush=True)
-    df = pd.DataFrame(rows, columns=['ts', 'open', 'high', 'low', 'close', 'volume']).drop_duplicates('ts').sort_values('ts')
-    return df.reset_index(drop=True)
+    print("Candidatos USD/USDC:", cands, flush=True)
+    best = None
+    for sym in cands[:4]:
+        m = ex.market(sym)
+        if _usdt(m):
+            sys.exit("VETO USDT: " + sym)
+        print("Probando", sym, "(" + str(m['id']) + ") ...", flush=True)
+        df = fetch_hist(ex, m['id'], years)
+        print("  velas cerradas:", len(df), flush=True)
+        if best is None or len(df) > len(best[1]):
+            best = (sym, df)
+        if len(df) >= 2000:
+            break
+    sym, df = best
+    if len(df) < 500:
+        sys.exit("Menos de 500 velas en todos los instrumentos USD/USDC probados. Aporte datos con --csv (ts,open,high,low,close).")
+    if len(df) < 2000:
+        print("AVISO: solo", len(df), "velas; resultados poco fiables.", flush=True)
+    print("Fuente de velas (USD/USDC):", sym, "|", len(df), "velas", flush=True)
+    return df
 
 def synthetic(n=17000, seed=7):
     rng = np.random.default_rng(seed)
