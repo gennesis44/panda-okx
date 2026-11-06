@@ -1,0 +1,64 @@
+# =====================================================================
+# flota-fanal.yml — LA FLOTA CARBONO · BUQUE: EL FANAL
+# .github/workflows/flota-fanal.yml
+#
+#  QUE ES: la vimiendo horaria de TODA la flota. flota_bot.py v1.0-fanal
+#  es SOLO-LECTOR (voto de paz certificado: no existe via de disparo en
+#  el codigo — el banco lo verifica). Cada pasada imprime por nave:
+#    · Radar EMA3/21 (precio, stance, separacion vs candado 0.17)
+#    · Estado de la nave (posicion abierta, uPnL, SL/TP vivos)
+#    · WIN RATE real de OKX: WR neto con peaje incluido, bruto->neto,
+#      expectancia $/trade y WR equilibrio 40% (R:R 1.5) + veredicto
+#    · Resumen de flota: WR combinado y peaje total a la vista
+#
+#  CADENCIA: cada hora a :20 — escalonada con EL INYECTOR (:05) y
+#  EL OCTAVO (:10). Un solo lector de flota a la vez (concurrency).
+#
+#  SECRETS: los mismos de la flota. Sin credenciales el fanal sigue en
+#  modo radar publico (win rate no disponible en esa pasada).
+#
+#  CRECER: nueva nave = anadir la base a FLOTA_SHIPS (p.ej. AVAX,INJ,HBAR)
+#  y opcionalmente FANAL_<BASE>_INST_ID / FANAL_<BASE>_RR.
+# =====================================================================
+
+name: flota-fanal
+
+on:
+  schedule:
+    - cron: '20 * * * *'       # vimiendo horaria (tras INJ :05 y AVAX :10)
+  workflow_dispatch:           # boton manual "Run workflow"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: flota-carbono         # un solo fanal a la vez
+  cancel-in-progress: false
+
+jobs:
+  vimienda:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Abordar el repo
+        uses: actions/checkout@v4
+
+      - name: Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Arsenal (ccxt version certificada en la flota)
+        run: python -m pip install --quiet "ccxt==4.5.90"
+
+      - name: FANAL — vimienda de flota (solo lectura)
+        env:
+          OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
+          OKX_SECRET_KEY: ${{ secrets.OKX_SECRET_KEY }}
+          OKX_PASSWORD: ${{ secrets.OKX_PASSWORD || secrets.OKX_PASSPHRASE }}
+          FLOTA_SHIPS: 'AVAX,INJ'   # nueva nave = nueva base aqui
+          FANAL_TF: '1h'
+          FANAL_N_CANDLES: '200'
+          FANAL_SEP_LOCK: '0.17'
+          FANAL_DEBUG: '0'
+        run: python flota_bot.py
