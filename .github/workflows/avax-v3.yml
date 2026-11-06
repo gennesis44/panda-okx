@@ -30,7 +30,13 @@ jobs:
           OKX_SECRET_KEY: ${{ secrets.OKX_SECRET_KEY }}
           OKX_PASSWORD: ${{ secrets.OKX_PASSWORD || secrets.OKX_PASSPHRASE }}
         shell: bash
-        run: python avax-validador-v3.py --years ${{ github.event.inputs.years }} --trades ${{ github.event.inputs.trades }} | tee avax_v3_resumen.txt
+        run: |
+          f=$(ls *avax*v3*.py 2>/dev/null | head -n1)
+          if [ -z "$f" ]; then
+            echo "ERROR: no hay ningun *avax*v3*.py en la raiz. Archivos presentes:"; ls -la; exit 1
+          fi
+          echo "Ejecutando: $f"
+          python "$f" --years ${{ github.event.inputs.years }} --trades ${{ github.event.inputs.trades }} | tee avax_v3_resumen.txt
       - uses: actions/upload-artifact@v4
         if: always()
         with:
