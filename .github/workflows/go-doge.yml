@@ -1,8 +1,8 @@
-name: DOGE Perro v4 (EMA 5/21)
+name: DOGE-GO (EMA 5/21)
 
 on:
   schedule:
-    - cron: "*/10 * * * *"   # cada 10 minutos
+    - cron: "*/10 * * * *"
   workflow_dispatch:
 
 jobs:
@@ -22,11 +22,11 @@ jobs:
       - name: Install dependencies
         run: pip install --quiet ccxt pandas
 
-      - name: Run DOGE bot
+      - name: Run doge-go.py
         env:
           OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
           OKX_SECRET_KEY: ${{ secrets.OKX_SECRET_KEY }}
           OKX_PASSWORD: ${{ secrets.OKX_PASSWORD }}
           TEST_MODE: "0"
           SINGLE_CYCLE: "1"
-        run: python main-doge.py
+        run: python doge-go.py
