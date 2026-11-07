@@ -1,0 +1,38 @@
+name: DOGE Data Extractor (go-doge)
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 */6 * * *"
+
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install --quiet ccxt pandas
+
+      - name: Run doge-go.py
+        env:
+          OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
+          OKX_SECRET_KEY: ${{ secrets.OKX_SECRET_KEY }}
+          OKX_PASSWORD: ${{ secrets.OKX_PASSWORD }}
+          DOGE_TF: "5m"
+        run: python doge-go.py
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: doge-last3-candles
+          path: doge-*.jsonl
+          retention-days: 7
