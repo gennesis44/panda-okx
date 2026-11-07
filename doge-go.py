@@ -1,205 +1,306 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# doge-go.py — Backtest DOGE multi-timeframe (30m + 1h)
-# Ahorro de energía: solo timeframes medios/altos
-# Estilo flota Carbon | USDT vetado | my.okx.com
+# main-doge.py — EL PERRO v4.0 · EMA 5/21 · 1H
+# Decreto: cambio a 5/21 + nocional máximo ~$5
+# Host: my.okx.com | USDT vetado | fail-closed
 
+import os
 import time
 import logging
 import ccxt
 import pandas as pd
-import numpy as np
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
-log = logging.getLogger("doge-go")
+log = logging.getLogger("doge")
 
-# ==================== CONFIG ====================
+def _f(x):
+    try:
+        return float(x)
+    except (TypeError, ValueError):
+        return 0.0
+
+# ==================== CONFIGURACIÓN PRODUCCIÓN ====================
 BASE_ASSET = "DOGE"
+TIMEFRAME = "1h"
+EMA_FAST = 5
+EMA_SLOW = 21
+SEP_LOCK = 0.0015          # 0.15%
+
+# Tamaño: máximo ~$5
+MAX_NOTIONAL_USD = 5.0
+AMOUNT = 7                 # 7 contratos ≈ $4.9 (ajustable)
+
+SL_LONG = 0.020
+TP_LONG = 0.040
+SL_SHORT = 0.030
+TP_SHORT = 0.040
+
+TD_MODE = "cross"
+LEVERAGE = 1
+COOLDOWN_MIN = 60
+TEST_MODE = os.getenv("TEST_MODE") == "1"
+SINGLE_CYCLE = os.getenv("SINGLE_CYCLE") == "1"
+SIGNAL_WINDOW = (-2, -3, -4)
+WARMUP = 40
+TF_MS = {"1h": 3_600_000}
+
 HOST = "https://my.okx.com"
-FEE_RT = 0.0014
-MAX_BARS = 2000                # suficiente para 30m y 1h
-
-# Timeframes a probar
-TIMEFRAMES = ["30m", "1h"]
-
-# Configuraciones de EMAs + candado
-CONFIGS = [
-    {"name": "3/21 + 0.15%", "fast": 3, "slow": 21, "sep": 0.0015, "sl_long": 0.020, "tp_long": 0.040, "sl_short": 0.030, "tp_short": 0.040},
-    {"name": "3/21 + 0.12%", "fast": 3, "slow": 21, "sep": 0.0012, "sl_long": 0.020, "tp_long": 0.040, "sl_short": 0.030, "tp_short": 0.040},
-    {"name": "3/15 + 0.15%", "fast": 3, "slow": 15, "sep": 0.0015, "sl_long": 0.018, "tp_long": 0.035, "sl_short": 0.025, "tp_short": 0.040},
-    {"name": "5/21 + 0.15%", "fast": 5, "slow": 21, "sep": 0.0015, "sl_long": 0.020, "tp_long": 0.040, "sl_short": 0.030, "tp_short": 0.040},
-    {"name": "3/21 SL apretado", "fast": 3, "slow": 21, "sep": 0.0015, "sl_long": 0.015, "tp_long": 0.030, "sl_short": 0.025, "tp_short": 0.035},
-]
 
 exchange = ccxt.okx({
+    "apiKey":    os.getenv("OKX_API_KEY", ""),
+    "secret":    os.getenv("OKX_SECRET_KEY", ""),
+    "password":  os.getenv("OKX_PASSWORD", ""),
     "enableRateLimit": True,
-    "options": {"defaultType": "swap"},
-    "urls": {"api": {"rest": HOST}},
+    "options":   {"defaultType": "swap"},
+    "urls":      {"api": {"rest": HOST}},
 })
 
-def ema(series, length):
-    return series.ewm(span=length, adjust=False).mean()
+# ==================== INSTRUMENTO (solo USD) ====================
+def _is_forbidden(symbol):
+    settle = str(exchange.market(symbol).get("settle") or "").upper()
+    return settle != "USD"
 
-def pick_symbol():
+def pick_future():
     exchange.load_markets()
-    candidates = []
+    candidatos = []
     for m in exchange.markets.values():
-        if m.get("base") == BASE_ASSET and m.get("active"):
-            settle = str(m.get("settle") or "").upper()
-            if settle == "USD":
-                exp = int((m.get("info") or {}).get("expTime") or 0)
-                candidates.append((exp, m["symbol"], bool(m.get("future"))))
-    if not candidates:
-        raise RuntimeError("No se encontró DOGE/USD")
-    futures = [c for c in candidates if c[2]]
-    if futures:
-        futures.sort(reverse=True)
-        return futures[0][1]
-    return candidates[0][1]
+        if (m.get("base") == BASE_ASSET and m.get("future") and m.get("active")
+                and not _is_forbidden(m["symbol"])):
+            exp = int((m.get("info") or {}).get("expTime") or 0)
+            candidatos.append((exp, m["symbol"]))
+    if not candidatos:
+        return None
+    candidatos.sort(reverse=True)
+    return candidatos[0][1]
 
-def fetch_ohlcv(symbol, timeframe, max_bars=2000):
-    log.info(f"Descargando {timeframe}...")
-    all_candles = []
-    limit = 300
-    tf_minutes = {"30m": 30, "1h": 60}.get(timeframe, 30)
+def pick_swap_usd():
+    exchange.load_markets()
+    for m in exchange.markets.values():
+        if (m.get("base") == BASE_ASSET and m.get("active")
+                and (m.get("swap") or (m.get("info") or {}).get("instType") == "SWAP")
+                and not _is_forbidden(m["symbol"])):
+            return m["symbol"]
+    return None
 
+def resolve_symbol():
+    exchange.load_markets()
+    try:
+        for p in exchange.fetch_positions():
+            if abs(float(p.get("contracts") or 0)) > 0 and (p.get("symbol") or "").startswith(BASE_ASSET + "/"):
+                if _is_forbidden(p["symbol"]):
+                    raise RuntimeError("Posición en instrumento no-USD prohibido")
+                log.info(f"Instrumento (posición abierta): {p['symbol']}")
+                return p["symbol"]
+    except Exception as e:
+        log.warning(f"Error leyendo posiciones: {e}")
+
+    sym = pick_future()
+    if sym:
+        log.info(f"Instrumento: {sym} (XPERP)")
+        return sym
+    sym = pick_swap_usd()
+    if sym:
+        log.warning(f"Instrumento: {sym} (SWAP-USD fallback)")
+        return sym
+    raise RuntimeError("No hay DOGE/USD disponible")
+
+def _contract_meta(symbol, price=None):
+    market = exchange.market(symbol)
+    info = market.get("info") or {}
+    ctval = float(market.get("contractSize") or info.get("ctVal") or 1)
+    ccy = str(info.get("ctValCcy") or BASE_ASSET).upper()
+    if price is None:
+        price = _f(exchange.fetch_ticker(symbol).get("last"))
+    usd = ctval if ccy in ("USD", "USDC") else ctval * price
+    return ctval, ccy, usd
+
+# ==================== INDICADORES ====================
+def ema(s, length):
+    return s.ewm(span=length, adjust=False).mean()
+
+def fetch_data(symbol, timeframe, limit=100):
     ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
-    all_candles = ohlcv
-    time.sleep(0.3)
+    return pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
 
-    while len(all_candles) < max_bars:
-        oldest_ts = all_candles[0][0]
-        since = oldest_ts - (limit * tf_minutes * 60 * 1000)
-        try:
-            ohlcv = exchange.fetch_ohlcv(symbol, timeframe, since=since, limit=limit)
-        except Exception as e:
-            log.warning(f"Error fetch {timeframe}: {e}")
-            break
-        if not ohlcv:
-            break
-        new_candles = [c for c in ohlcv if c[0] < oldest_ts]
-        if not new_candles:
-            break
-        all_candles = new_candles + all_candles
-        time.sleep(0.3)
-        if len(ohlcv) < 100:
-            break
+# ==================== POSICIÓN ====================
+def get_open_position(symbol):
+    try:
+        for pos in exchange.fetch_positions([symbol]):
+            if pos.get("symbol") == symbol and abs(float(pos.get("contracts") or 0)) > 0:
+                return pos
+        # Plan B: algos vivos
+        inst = exchange.market(symbol)["id"]
+        for ot in ("oco", "conditional"):
+            resp = exchange.private_get_trade_orders_algo_pending({"instId": inst, "ordType": ot})
+            if (resp or {}).get("data"):
+                return {"symbol": symbol, "contracts": 1, "side": "desconocido"}
+        return None
+    except Exception as e:
+        log.error(f"Posiciones ilegibles: {e} — BLOQUEO")
+        return {"symbol": symbol, "contracts": 1, "side": "ilegible"}
 
-    df = pd.DataFrame(all_candles, columns=["timestamp", "open", "high", "low", "close", "volume"])
-    df = df.drop_duplicates("timestamp").sort_values("timestamp").reset_index(drop=True)
-    df = df.tail(max_bars).reset_index(drop=True)
-    log.info(f"  → {len(df)} velas {timeframe}")
-    return df
+# ==================== ORDEN ====================
+def _cl_order_id(candle_ts):
+    return f"DOGE{int(candle_ts)}"
 
-def run_backtest(df, config):
-    df = df.copy()
-    df["ema_fast"] = ema(df["close"], config["fast"])
-    df["ema_slow"] = ema(df["close"], config["slow"])
-    df["sep"] = (df["ema_fast"] - df["ema_slow"]).abs() / df["ema_slow"]
+def candle_already_traded(symbol, candle_ts):
+    cl = _cl_order_id(candle_ts)
+    try:
+        inst = exchange.market(symbol)["id"]
+        resp = exchange.private_get_trade_order({"instId": inst, "clOrdId": cl})
+        data = resp.get("data") or []
+        if data and str(data[0].get("sCode", "0")) == "0":
+            return True
+        return False
+    except Exception:
+        return True  # fail-closed
 
-    trades = []
-    position = None
-    entry_price = sl_price = tp_price = 0.0
+def execute_order(side, symbol, ref_price, amount, candle_ts):
+    ctval, ccy, usd = _contract_meta(symbol, ref_price)
+    nocional = amount * usd
+    log.info(f"Nocional: {amount} ct × {ctval} {ccy} ≈ ${nocional:.2f}")
 
-    start_i = max(config["slow"] + 10, 30)
+    if nocional > MAX_NOTIONAL_USD:
+        raise RuntimeError(f"GUARDIA: nocional ${nocional:.2f} > máximo ${MAX_NOTIONAL_USD}")
 
-    for i in range(start_i, len(df) - 1):
-        prev_fast = df["ema_fast"].iloc[i-1]
-        prev_slow = df["ema_slow"].iloc[i-1]
-        curr_fast = df["ema_fast"].iloc[i]
-        curr_slow = df["ema_slow"].iloc[i]
-        sep = df["sep"].iloc[i]
+    if side == "LONG":
+        oside = "buy"
+        sl_raw = ref_price * (1 - SL_LONG)
+        tp_raw = ref_price * (1 + TP_LONG)
+    else:
+        oside = "sell"
+        sl_raw = ref_price * (1 + SL_SHORT)
+        tp_raw = ref_price * (1 - TP_SHORT)
 
-        cross_up = prev_fast <= prev_slow and curr_fast > curr_slow and sep >= config["sep"]
-        cross_down = prev_fast >= prev_slow and curr_fast < curr_slow and sep >= config["sep"]
+    sl = exchange.price_to_precision(symbol, sl_raw)
+    tp = exchange.price_to_precision(symbol, tp_raw)
+    sz = exchange.amount_to_precision(symbol, amount)
 
-        row = df.iloc[i]
-
-        if position:
-            exit_price = None
-            if position == "LONG":
-                if row["low"] <= sl_price:
-                    exit_price = sl_price
-                elif row["high"] >= tp_price:
-                    exit_price = tp_price
-            else:
-                if row["high"] >= sl_price:
-                    exit_price = sl_price
-                elif row["low"] <= tp_price:
-                    exit_price = tp_price
-
-            if exit_price is not None:
-                pnl = (exit_price / entry_price - 1) if position == "LONG" else (entry_price / exit_price - 1)
-                trades.append(pnl - FEE_RT)
-                position = None
-
-        if position is None and (cross_up or cross_down):
-            position = "LONG" if cross_up else "SHORT"
-            entry_price = df["open"].iloc[i+1]
-            if position == "LONG":
-                sl_price = entry_price * (1 - config["sl_long"])
-                tp_price = entry_price * (1 + config["tp_long"])
-            else:
-                sl_price = entry_price * (1 + config["sl_short"])
-                tp_price = entry_price * (1 - config["tp_short"])
-
-    if not trades:
-        return {"trades": 0}
-
-    pnls = np.array(trades)
-    wins = pnls[pnls > 0]
-    losses = pnls[pnls <= 0]
-
-    winrate = len(wins) / len(pnls) * 100
-    total_return = pnls.sum() * 100
-    pf = abs(wins.sum() / losses.sum()) if len(losses) > 0 and losses.sum() != 0 else float("inf")
-    equity = np.cumsum(pnls)
-    max_dd = (np.maximum.accumulate(equity) - equity).max() * 100 if len(equity) > 0 else 0
-    expectancy = (winrate/100 * wins.mean() + (1 - winrate/100) * losses.mean()) * 100 if len(pnls) else 0
-
-    return {
-        "trades": len(trades),
-        "winrate": winrate,
-        "total_return": total_return,
-        "pf": pf,
-        "max_dd": max_dd,
-        "expectancy": expectancy
+    req = {
+        "instId": exchange.market(symbol)["id"],
+        "tdMode": TD_MODE,
+        "side": oside,
+        "ordType": "optimal_limit_ioc",
+        "sz": sz,
+        "clOrdId": _cl_order_id(candle_ts),
+        "attachAlgoOrds": [{
+            "tpTriggerPx": tp, "tpOrdPx": "-1",
+            "slTriggerPx": sl, "slOrdPx": "-1",
+        }],
     }
+    resp = exchange.private_post_trade_order(req)
+    data = resp.get("data") or []
+    d0 = data[0] if data else {}
+    if str(d0.get("sCode", "1")) != "0":
+        raise Exception(f"OKX rechazó: {d0.get('sMsg')}")
+    log.info(f"DOGE {side} ejecutada | SL {sl} | TP {tp}")
+    return True
+
+# ==================== COOLDOWN ====================
+def cooldown_active(symbol):
+    try:
+        inst = exchange.market(symbol)["id"]
+        hist = exchange.privateGetTradeFillsHistory({
+            "instType": "SWAP" if "SWAP" in inst else "FUTURES",
+            "instId": inst,
+            "limit": "5"
+        })
+        for fill in (hist.get("data") or []):
+            if str(fill.get("reduceOnly", "0")) == "true":
+                ts_ms = int(fill.get("ts") or 0)
+                age_min = (time.time() * 1000 - ts_ms) / 60000
+                pnl = _f(fill.get("fillPnl"))
+                if pnl < 0 and age_min < COOLDOWN_MIN:
+                    return True
+        return False
+    except Exception:
+        return True  # fail-closed
+
+# ==================== SEÑAL EMA 5/21 ====================
+def evaluate_signal(symbol):
+    df = fetch_data(symbol, TIMEFRAME, limit=100)
+    if len(df) < WARMUP + 5:
+        return None, None, None
+
+    # Descartar vela en formación
+    now_ms = int(time.time() * 1000)
+    if int(df["timestamp"].iloc[-1]) + TF_MS[TIMEFRAME] > now_ms:
+        df = df.iloc[:-1].reset_index(drop=True)
+
+    e_fast = ema(df["close"], EMA_FAST)
+    e_slow = ema(df["close"], EMA_SLOW)
+    price = _f(exchange.fetch_ticker(symbol).get("last")) or df["close"].iloc[-1]
+
+    for i_curr in SIGNAL_WINDOW:
+        i_prev = i_curr - 1
+        idx = len(df) + i_curr
+        if abs(i_prev) > len(df) - 1 or idx < WARMUP:
+            continue
+
+        sep = abs(e_fast.iloc[idx] - e_slow.iloc[idx]) / e_slow.iloc[idx]
+        if sep < SEP_LOCK:
+            continue
+
+        up = e_fast.iloc[i_prev] <= e_slow.iloc[i_prev] and e_fast.iloc[idx] > e_slow.iloc[idx]
+        down = e_fast.iloc[i_prev] >= e_slow.iloc[i_prev] and e_fast.iloc[idx] < e_slow.iloc[idx]
+
+        candle_ts = int(df["timestamp"].iloc[i_curr])
+        if up:
+            log.info(f"Cruce ALCISTA EMA5/21 (sep {sep*100:.2f}%)")
+            return "LONG", price, candle_ts
+        if down:
+            log.info(f"Cruce BAJISTA EMA5/21 (sep {sep*100:.2f}%)")
+            return "SHORT", price, candle_ts
+
+    return None, None, None
+
+# ==================== CICLO ====================
+def run_cycle():
+    symbol = resolve_symbol()
+
+    try:
+        exchange.set_position_mode(False, symbol)
+    except Exception:
+        pass
+
+    try:
+        exchange.set_leverage(LEVERAGE, symbol, params={"mgnMode": TD_MODE})
+    except Exception as e:
+        log.error(f"No se pudo fijar leverage: {e}")
+        return
+
+    if get_open_position(symbol):
+        log.info("Posición abierta. Esperando SL/TP.")
+        return
+
+    if cooldown_active(symbol):
+        log.info("Cooldown activo.")
+        return
+
+    signal, price, candle_ts = evaluate_signal(symbol)
+    if not signal:
+        return
+
+    if candle_already_traded(symbol, candle_ts):
+        return
+
+    log.info(f"Señal {signal} | Abriendo {AMOUNT} contratos...")
+    try:
+        execute_order(signal, symbol, price, AMOUNT, candle_ts)
+    except Exception as e:
+        log.error(f"Entrada rechazada: {e}")
 
 def main():
-    log.info("=== DOGE Backtest 30m + 1h (ahorro de energía) ===")
-    symbol = pick_symbol()
-    log.info(f"Instrumento: {symbol}")
-
-    all_results = []
-
-    for tf in TIMEFRAMES:
-        df = fetch_ohlcv(symbol, tf, max_bars=MAX_BARS)
-        for config in CONFIGS:
-            res = run_backtest(df, config)
-            res["tf"] = tf
-            res["name"] = config["name"]
-            all_results.append(res)
-            log.info(f"  {tf} | {config['name']} → {res['trades']} trades")
-
-    # Mostrar resultados agrupados por timeframe
-    print("\n" + "="*110)
-    print(f"{'TF':<6} {'CONFIGURACIÓN':<25} {'Trades':>7} {'WR%':>7} {'Retorno%':>10} {'PF':>7} {'MaxDD%':>8} {'Expect%':>8}")
-    print("="*110)
-
-    for tf in TIMEFRAMES:
-        print(f"\n--- {tf.upper()} ---")
-        for r in all_results:
-            if r["tf"] != tf:
-                continue
-            if r["trades"] == 0:
-                print(f"{r['tf']:<6} {r['name']:<25} {0:>7}")
-            else:
-                print(f"{r['tf']:<6} {r['name']:<25} {r['trades']:>7} {r['winrate']:>6.1f}% "
-                      f"{r['total_return']:>9.2f}% {r['pf']:>6.2f} {r['max_dd']:>7.2f}% {r['expectancy']:>7.3f}%")
-
-    print("="*110)
-    print("Fee RT = 0.14% | Solo velas cerradas | Entrada en apertura siguiente vela")
+    log.info(f"DOGE v4.0 | EMA {EMA_FAST}/{EMA_SLOW} | 1H | Max ${MAX_NOTIONAL_USD} | Candado {SEP_LOCK*100:.2f}%")
+    if SINGLE_CYCLE or TEST_MODE:
+        run_cycle()
+    else:
+        while True:
+            try:
+                run_cycle()
+            except Exception as e:
+                log.error(f"Error ciclo: {e}")
+            time.sleep(600)  # cada 10 minutos
 
 if __name__ == "__main__":
     main()
