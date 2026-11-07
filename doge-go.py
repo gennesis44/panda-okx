@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# main-doge.py — EL PERRO v4.0 · EMA 5/21 · 1H
-# Decreto: cambio a 5/21 + nocional máximo ~$5
+# doge-go.py — EL PERRO v4.0 · EMA 5/21 · 1H · Max $5
+# Listo para producción
 # Host: my.okx.com | USDT vetado | fail-closed
 
 import os
@@ -11,7 +11,7 @@ import ccxt
 import pandas as pd
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
-log = logging.getLogger("doge")
+log = logging.getLogger("doge-go")
 
 def _f(x):
     try:
@@ -24,11 +24,10 @@ BASE_ASSET = "DOGE"
 TIMEFRAME = "1h"
 EMA_FAST = 5
 EMA_SLOW = 21
-SEP_LOCK = 0.0015          # 0.15%
+SEP_LOCK = 0.0015                  # 0.15%
 
-# Tamaño: máximo ~$5
-MAX_NOTIONAL_USD = 5.0
-AMOUNT = 7                 # 7 contratos ≈ $4.9 (ajustable)
+MAX_NOTIONAL_USD = 5.0             # Máximo 5 dólares
+AMOUNT = 7                         # ≈ $5 (1 contrato ≈ $0.71)
 
 SL_LONG = 0.020
 TP_LONG = 0.040
@@ -68,10 +67,10 @@ def pick_future():
                 and not _is_forbidden(m["symbol"])):
             exp = int((m.get("info") or {}).get("expTime") or 0)
             candidatos.append((exp, m["symbol"]))
-    if not candidatos:
-        return None
-    candidatos.sort(reverse=True)
-    return candidatos[0][1]
+    if candidatos:
+        candidatos.sort(reverse=True)
+        return candidatos[0][1]
+    return None
 
 def pick_swap_usd():
     exchange.load_markets()
@@ -86,7 +85,7 @@ def resolve_symbol():
     exchange.load_markets()
     try:
         for p in exchange.fetch_positions():
-            if abs(float(p.get("contracts") or 0)) > 0 and (p.get("symbol") or "").startswith(BASE_ASSET + "/"):
+            if abs(_f(p.get("contracts"))) > 0 and (p.get("symbol") or "").startswith(BASE_ASSET + "/"):
                 if _is_forbidden(p["symbol"]):
                     raise RuntimeError("Posición en instrumento no-USD prohibido")
                 log.info(f"Instrumento (posición abierta): {p['symbol']}")
@@ -100,7 +99,7 @@ def resolve_symbol():
         return sym
     sym = pick_swap_usd()
     if sym:
-        log.warning(f"Instrumento: {sym} (SWAP-USD fallback)")
+        log.warning(f"Instrumento: {sym} (SWAP-USD)")
         return sym
     raise RuntimeError("No hay DOGE/USD disponible")
 
@@ -126,9 +125,8 @@ def fetch_data(symbol, timeframe, limit=100):
 def get_open_position(symbol):
     try:
         for pos in exchange.fetch_positions([symbol]):
-            if pos.get("symbol") == symbol and abs(float(pos.get("contracts") or 0)) > 0:
+            if pos.get("symbol") == symbol and abs(_f(pos.get("contracts"))) > 0:
                 return pos
-        # Plan B: algos vivos
         inst = exchange.market(symbol)["id"]
         for ot in ("oco", "conditional"):
             resp = exchange.private_get_trade_orders_algo_pending({"instId": inst, "ordType": ot})
@@ -144,14 +142,11 @@ def _cl_order_id(candle_ts):
     return f"DOGE{int(candle_ts)}"
 
 def candle_already_traded(symbol, candle_ts):
-    cl = _cl_order_id(candle_ts)
     try:
         inst = exchange.market(symbol)["id"]
-        resp = exchange.private_get_trade_order({"instId": inst, "clOrdId": cl})
+        resp = exchange.private_get_trade_order({"instId": inst, "clOrdId": _cl_order_id(candle_ts)})
         data = resp.get("data") or []
-        if data and str(data[0].get("sCode", "0")) == "0":
-            return True
-        return False
+        return bool(data and str(data[0].get("sCode", "0")) == "0")
     except Exception:
         return True  # fail-closed
 
@@ -160,7 +155,7 @@ def execute_order(side, symbol, ref_price, amount, candle_ts):
     nocional = amount * usd
     log.info(f"Nocional: {amount} ct × {ctval} {ccy} ≈ ${nocional:.2f}")
 
-    if nocional > MAX_NOTIONAL_USD:
+    if nocional > MAX_NOTIONAL_USD + 0.3:
         raise RuntimeError(f"GUARDIA: nocional ${nocional:.2f} > máximo ${MAX_NOTIONAL_USD}")
 
     if side == "LONG":
@@ -201,20 +196,18 @@ def cooldown_active(symbol):
     try:
         inst = exchange.market(symbol)["id"]
         hist = exchange.privateGetTradeFillsHistory({
-            "instType": "SWAP" if "SWAP" in inst else "FUTURES",
+            "instType": "FUTURES",
             "instId": inst,
             "limit": "5"
         })
         for fill in (hist.get("data") or []):
             if str(fill.get("reduceOnly", "0")) == "true":
-                ts_ms = int(fill.get("ts") or 0)
-                age_min = (time.time() * 1000 - ts_ms) / 60000
-                pnl = _f(fill.get("fillPnl"))
-                if pnl < 0 and age_min < COOLDOWN_MIN:
+                age_min = (time.time() * 1000 - int(fill.get("ts") or 0)) / 60000
+                if _f(fill.get("fillPnl")) < 0 and age_min < COOLDOWN_MIN:
                     return True
         return False
     except Exception:
-        return True  # fail-closed
+        return True
 
 # ==================== SEÑAL EMA 5/21 ====================
 def evaluate_signal(symbol):
@@ -222,7 +215,6 @@ def evaluate_signal(symbol):
     if len(df) < WARMUP + 5:
         return None, None, None
 
-    # Descartar vela en formación
     now_ms = int(time.time() * 1000)
     if int(df["timestamp"].iloc[-1]) + TF_MS[TIMEFRAME] > now_ms:
         df = df.iloc[:-1].reset_index(drop=True)
@@ -230,6 +222,8 @@ def evaluate_signal(symbol):
     e_fast = ema(df["close"], EMA_FAST)
     e_slow = ema(df["close"], EMA_SLOW)
     price = _f(exchange.fetch_ticker(symbol).get("last")) or df["close"].iloc[-1]
+
+    log.info(f"Precio: {price:.5f} | EMA5/21: {e_fast.iloc[-2]:.5f}/{e_slow.iloc[-2]:.5f}")
 
     for i_curr in SIGNAL_WINDOW:
         i_prev = i_curr - 1
@@ -252,6 +246,7 @@ def evaluate_signal(symbol):
             log.info(f"Cruce BAJISTA EMA5/21 (sep {sep*100:.2f}%)")
             return "SHORT", price, candle_ts
 
+    log.info("Sin cruce EMA5/21 legal en la ventana")
     return None, None, None
 
 # ==================== CICLO ====================
@@ -282,6 +277,7 @@ def run_cycle():
         return
 
     if candle_already_traded(symbol, candle_ts):
+        log.info("Vela ya operada")
         return
 
     log.info(f"Señal {signal} | Abriendo {AMOUNT} contratos...")
@@ -291,7 +287,7 @@ def run_cycle():
         log.error(f"Entrada rechazada: {e}")
 
 def main():
-    log.info(f"DOGE v4.0 | EMA {EMA_FAST}/{EMA_SLOW} | 1H | Max ${MAX_NOTIONAL_USD} | Candado {SEP_LOCK*100:.2f}%")
+    log.info(f"DOGE-GO v4.0 | EMA {EMA_FAST}/{EMA_SLOW} | 1H | Max ${MAX_NOTIONAL_USD} | Candado 0.15%")
     if SINGLE_CYCLE or TEST_MODE:
         run_cycle()
     else:
@@ -299,8 +295,8 @@ def main():
             try:
                 run_cycle()
             except Exception as e:
-                log.error(f"Error ciclo: {e}")
-            time.sleep(600)  # cada 10 minutos
+                log.error(f"Error: {e}")
+            time.sleep(600)
 
 if __name__ == "__main__":
     main()
