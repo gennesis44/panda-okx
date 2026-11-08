@@ -1,8 +1,14 @@
 name: sui-aprendiz (PROD)
 
-# EL APRENDIZ — sui_bot.py v2.0 — TEST / PREVUELA / LIVE
+# EL APRENDIZ — sui_bot.py v2.0 — TEST / PREVUELA / LIVE   [yml v2.0.1]
+# v2.0.1: fallback de secretos al estandar de la flota (OKX_SECRET_KEY /
+#         OKX_PASSWORD) — mismo patron || que ya usa inj-bot/go-avax/flota.
+#         Si algun dia creas los OKX_API_SECRET/OKX_API_PASSPHRASE, ganan
+#         ellos (orden de preferencia: nombre nuevo -> nombre de flota).
 # IGNICION (Settings > Secrets and variables > Actions):
-#   1) Secretos: OKX_API_KEY, OKX_API_SECRET, OKX_API_PASSPHRASE  (clave de trading, jamas imprimirla)
+#   1) Secretos: usa los QUE YA TIENE la flota (OKX_API_KEY, OKX_SECRET_KEY,
+#      OKX_PASSWORD). Los nombres OKX_API_SECRET/OKX_API_PASSPHRASE son
+#      opcionales y tienen prioridad si existen. Jamas imprimir la clave.
 #   2) Variable de repo SUI_MODE:
 #        TEST     papel (sin secretos)
 #        PREVUELA autentica y arma la orden, NO la envia (prueba de llaves)  <-- DEFAULT
@@ -43,8 +49,8 @@ jobs:
           SUI_LEV: ${{ vars.SUI_LEV || '1' }}
           SUI_TD_MODE: ${{ vars.SUI_TD_MODE || 'isolated' }}
           OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
-          OKX_API_SECRET: ${{ secrets.OKX_API_SECRET }}
-          OKX_API_PASSPHRASE: ${{ secrets.OKX_API_PASSPHRASE }}
+          OKX_API_SECRET: ${{ secrets.OKX_API_SECRET || secrets.OKX_SECRET_KEY }}
+          OKX_API_PASSPHRASE: ${{ secrets.OKX_API_PASSPHRASE || secrets.OKX_PASSWORD || secrets.OKX_PASSPHRASE }}
         run: python sui_bot.py
 
       - name: Anotar el libro en el repo
