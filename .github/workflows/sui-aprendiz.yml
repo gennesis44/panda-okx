@@ -1,23 +1,29 @@
-name: sui-aprendiz (TEST)
+name: sui-aprendiz (PROD)
 
-# EL APRENDIZ — sui_bot.py en MODO TEST (sin ordenes, sin secretos).
-# Cron al minuto 1 de cada hora: la vela 1H de la hora anterior acaba de cerrar.
-# Puerta a LIVE: >= 20-30 partes cerrados + revision del FANAL. Hasta entonces, aqui no hay API key.
+# EL APRENDIZ — sui_bot.py v2.0 — TEST / PREVUELA / LIVE
+# IGNICION (Settings > Secrets and variables > Actions):
+#   1) Secretos: OKX_API_KEY, OKX_API_SECRET, OKX_API_PASSPHRASE  (clave de trading, jamas imprimirla)
+#   2) Variable de repo SUI_MODE:
+#        TEST     papel (sin secretos)
+#        PREVUELA autentica y arma la orden, NO la envia (prueba de llaves)  <-- DEFAULT
+#        LIVE     PRODUCCION: ordenes reales 1 ct / 1x / 1 parte, SL/TP vendidos al exchange
+#   Opcionales: SUI_SIZE_CT (cap 5), SUI_LEV (cap 20), SUI_TD_MODE (isolated|cross)
+# KILL-SWITCH: crea el archivo estado_sui/STOP en el repo y ninguna entrada sale.
 
 on:
   schedule:
     - cron: '1 * * * *'
-  workflow_dispatch: {}   # boton manual para pruebas
+  workflow_dispatch: {}   # boton manual (preVuela recomendada antes de LIVE)
 
 permissions:
-  contents: write         # para anotar el libro (estado_sui/) en el repo
+  contents: write         # anota el libro (estado_sui/) en el repo
 
 concurrency:
   group: sui-aprendiz
   cancel-in-progress: false
 
 jobs:
-  test:
+  nave:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -29,9 +35,16 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Zarpar (modo TEST — solo endpoints publicos)
+      - name: Zarpar
         env:
           TZ: UTC
+          SUI_MODE: ${{ vars.SUI_MODE || 'PREVUELA' }}
+          SUI_SIZE_CT: ${{ vars.SUI_SIZE_CT || '1' }}
+          SUI_LEV: ${{ vars.SUI_LEV || '1' }}
+          SUI_TD_MODE: ${{ vars.SUI_TD_MODE || 'isolated' }}
+          OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
+          OKX_API_SECRET: ${{ secrets.OKX_API_SECRET }}
+          OKX_API_PASSPHRASE: ${{ secrets.OKX_API_PASSPHRASE }}
         run: python sui_bot.py
 
       - name: Anotar el libro en el repo
@@ -40,9 +53,9 @@ jobs:
           git config user.email "actions@users.noreply.github.com"
           git add estado_sui/ 2>/dev/null || true
           if git diff --staged --quiet; then
-            echo "Libro sin cambios (sin senal / skip)"
+            echo "Libro sin cambios"
           else
-            git commit -m "sui[TEST]: libro de partes $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            git commit -m "sui: libro de partes $(date -u +%Y-%m-%dT%H:%M:%SZ)"
             git pull --rebase --autostash || true
             git push
           fi
