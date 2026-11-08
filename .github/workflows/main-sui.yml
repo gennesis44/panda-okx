@@ -1,32 +1,67 @@
-name: main-sui
+name: sui-aprendiz (PROD)
+
+# EL APRENDIZ — sui_bot.py v2.0 — TEST / PREVUELA / LIVE   [yml v2.0.1]
+# v2.0.1: fallback de secretos al estandar de la flota (OKX_SECRET_KEY /
+#         OKX_PASSWORD) — mismo patron || que ya usa inj-bot/go-avax/flota.
+#         Si algun dia creas los OKX_API_SECRET/OKX_API_PASSPHRASE, ganan
+#         ellos (orden de preferencia: nombre nuevo -> nombre de flota).
+# IGNICION (Settings > Secrets and variables > Actions):
+#   1) Secretos: usa los QUE YA TIENE la flota (OKX_API_KEY, OKX_SECRET_KEY,
+#      OKX_PASSWORD). Los nombres OKX_API_SECRET/OKX_API_PASSPHRASE son
+#      opcionales y tienen prioridad si existen. Jamas imprimir la clave.
+#   2) Variable de repo SUI_MODE:
+#        TEST     papel (sin secretos)
+#        PREVUELA autentica y arma la orden, NO la envia (prueba de llaves)  <-- DEFAULT
+#        LIVE     PRODUCCION: ordenes reales 1 ct / 1x / 1 parte, SL/TP vendidos al exchange
+#   Opcionales: SUI_SIZE_CT (cap 5), SUI_LEV (cap 20), SUI_TD_MODE (isolated|cross)
+# KILL-SWITCH: crea el archivo estado_sui/STOP en el repo y ninguna entrada sale.
 
 on:
   schedule:
-    - cron: '*/20 * * * *'
-  workflow_dispatch:
+    - cron: '1 * * * *'
+  workflow_dispatch: {}   # boton manual (preVuela recomendada antes de LIVE)
 
 permissions:
-  contents: read
+  contents: write         # anota el libro (estado_sui/) en el repo
 
 concurrency:
-  group: sui-carbono
+  group: sui-aprendiz
   cancel-in-progress: false
 
 jobs:
-  vigilia:
+  nave:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Amarrar el repo
+        uses: actions/checkout@v4
+
+      - name: Izar Python
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
-      - run: python -m pip install --quiet "ccxt==4.5.90" pandas
-      - name: Vigilia SUI
+          python-version: '3.12'
+
+      - name: Zarpar
         env:
+          TZ: UTC
+          SUI_MODE: ${{ vars.SUI_MODE || 'PREVUELA' }}
+          SUI_SIZE_CT: ${{ vars.SUI_SIZE_CT || '1' }}
+          SUI_LEV: ${{ vars.SUI_LEV || '1' }}
+          SUI_TD_MODE: ${{ vars.SUI_TD_MODE || 'isolated' }}
           OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
-          OKX_SECRET_KEY: ${{ secrets.OKX_SECRET_KEY }}
-          OKX_PASSWORD: ${{ secrets.OKX_PASSWORD || secrets.OKX_PASSPHRASE }}
-          SINGLE_CYCLE: '1'
-          TEST_MODE: '0'
-        run: python main-sui.py
+          OKX_API_SECRET: ${{ secrets.OKX_API_SECRET || secrets.OKX_SECRET_KEY }}
+          OKX_API_PASSPHRASE: ${{ secrets.OKX_API_PASSPHRASE || secrets.OKX_PASSWORD || secrets.OKX_PASSPHRASE }}
+        run: python sui_bot.py
+
+      - name: Anotar el libro en el repo
+        run: |
+          git config user.name "sui-aprendiz[bot]"
+          git config user.email "actions@users.noreply.github.com"
+          git add estado_sui/ 2>/dev/null || true
+          if git diff --staged --quiet; then
+            echo "Libro sin cambios"
+          else
+            git commit -m "sui: libro de partes $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            git pull --rebase --autostash || true
+            git push
+          fi
