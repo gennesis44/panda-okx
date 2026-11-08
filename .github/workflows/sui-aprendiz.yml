@@ -1,0 +1,48 @@
+name: sui-aprendiz (TEST)
+
+# EL APRENDIZ — sui_bot.py en MODO TEST (sin ordenes, sin secretos).
+# Cron al minuto 1 de cada hora: la vela 1H de la hora anterior acaba de cerrar.
+# Puerta a LIVE: >= 20-30 partes cerrados + revision del FANAL. Hasta entonces, aqui no hay API key.
+
+on:
+  schedule:
+    - cron: '1 * * * *'
+  workflow_dispatch: {}   # boton manual para pruebas
+
+permissions:
+  contents: write         # para anotar el libro (estado_sui/) en el repo
+
+concurrency:
+  group: sui-aprendiz
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Amarrar el repo
+        uses: actions/checkout@v4
+
+      - name: Izar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Zarpar (modo TEST — solo endpoints publicos)
+        env:
+          TZ: UTC
+        run: python sui_bot.py
+
+      - name: Anotar el libro en el repo
+        run: |
+          git config user.name "sui-aprendiz[bot]"
+          git config user.email "actions@users.noreply.github.com"
+          git add estado_sui/ 2>/dev/null || true
+          if git diff --staged --quiet; then
+            echo "Libro sin cambios (sin senal / skip)"
+          else
+            git commit -m "sui[TEST]: libro de partes $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            git pull --rebase --autostash || true
+            git push
+          fi
