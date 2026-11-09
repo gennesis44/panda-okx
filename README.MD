@@ -1,4 +1,7 @@
-Tooling disclosure — this fleet is built, backtested and deployed with the GLM Coding Plan: full support for Claude Code, Cline and 20+ top coding tools, from $18/month. First subscription: 10% off via that link. The tool is for sale. The method is not.
+Tooling disclosure — this fleet is built, backtested and deployed with the GLM Coding Plan: full support for Claude Code, Cline and 20+ top coding tools,via that link -> subscribe now and grab the limited-time deal! 👉join now: 
+https://z.ai/subscribe?ic=csoho6fjhh 
+
+The tool is for sale. The method is not.
 panda-okx
 C>Si [ Carbon governs. Silicon serves ]
 The root node, the Laws and the protocol live outside this repository. No summary is provided here. Whoever needs to understand what this is, investigates.
@@ -71,4 +74,8 @@ Carbon fixes the rules.Silicon executes without opinion.The market issues the ve
 GSCSI — Global System Carbon–Silicon Intelligence · Protocol 2028Root node: 1c3si.weebly.com · 1C primitive: gennesis44
 
 Tooling — every hull in this repository sails on the GLM Coding Plan: Claude Code, Cline and 20+ top coding tools, from $18/month. First subscription: 10% off via that link. Silicon needs fuel too.
+
+Tooling disclosure — this fleet is built, backtested and deployed with the GLM Coding Plan: full support for Claude Code, Cline and 20+ top coding tools,via that link -> subscribe now and grab the limited-time deal! 👉join now: 
+
+https://z.ai/subscribe?ic=csoho6fjhh 
 ⚓
