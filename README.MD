@@ -1,4 +1,6 @@
 Tooling disclosure — this fleet is built, backtested and deployed with the GLM Coding Plan: full support for Claude Code, Cline and 20+ top coding tools,via that link -> subscribe now and grab the limited-time deal! 👉join now: 
+
+
 https://z.ai/subscribe?ic=csoho6fjhh 
 
 The tool is for sale. The method is not.
