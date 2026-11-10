@@ -1,118 +1,33 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # =====================================================================
-# inj_bot.py — NAVIO INJ · LA FLOTA CARBONO · BUQUE: EL INYECTOR
-# 100% AUTONOMO: solo stdlib + ccxt (pip). NO importa ningun otro archivo
-# del repo — navega solo en un repo recien creado. Sin pandas, sin sandbox.
-# Casco: blindaje certificado xpl v4.2 · Motor: EMA 3/21 · Marco: 1h
-# Instrumento: INJ-USD XPERP (futuro fechado USD, vencimiento mas lejano)
+# inj_bot.py — NAVIO INJ · EL INYECTOR · v3.0-prod
+# Autonomo: stdlib + ccxt. Host: my.okx.com (X-Perp). Colateral USD.
+# VETO USDT: solo INJ/USD futuro fechado, quote USD, settle USD.
+# Ciclo unico (el cron del workflow es el corazon). Modo PRODUCCION:
+# SHADOW=0 por defecto. SHADOW=1 o DRY_RUN=1 -> sombra (nunca sandbox).
 #
-# v2.0-1h-xperp — MICROSCOPIO DE BARRIDO sobre el inj_bot.py del capitan
-# (2026-10-27, "mi moneda preferida"). Hallazgos y soldadura aplicada:
-#
-#  P0 · SYMBOL hardcodeado INJ/USD:USD-310711 -> clavo fijo: si OKX rota o
-#       re-lista el vencimiento, el bot muere apuntando a un mercado muerto
-#       sin dejar rastro. Verificado hoy contra my.okx.com:
-#       INJ-USD_UM_XPERP-310711 | live | ctVal 0.1 INJ | tickSz 0.001 | settle USD.
-#       FIX: pick_future reanclaje automatico al vencimiento mas lejano.
-#  P0 · pandas como dependencia -> gordo y fragil en CI (version drift);
-#       ley de flota: 100% autonomo (stdlib + ccxt). FIX: velas nativas ccxt.
-#  P0 · DRY_RUN -> sandbox (host demo) -> el freno no puede cambiar de
-#       planeta: host demo + llaves reales = ordenes a un mundo sin fondos.
-#       FIX: DRY_RUN fuerza SOMBRA sobre el host real; jamas toca el sandbox.
-#  P1 · run_forever + sleep -> quemador de minutos de Actions y bucle eterno.
-#       FIX: ciclo unico SINGLE_RUN; el cron del workflow es el corazon.
-#  P1 · blindaje v4.2 incompleto -> soldado a tope: attachAlgoOrds (SL/TP
-#       dentro de la entrada), clOrdId sello de vela (OKX 51016),
-#       candle_already_traded (fail-closed), anti-doble (posicion + algos
-#       vivos), protection_confirmed + emergency_close, bodega ilegible =
-#       DETENIDO (fail-closed Ax3), cooldown fillPnl fail-closed
-#       (conservado del original del capitan: ya leia fillPnl bien).
-#  OK · DISENO DEL CAPITAN RESPETADO y validado por el microscopio numerico:
-#       marco 1h | candado sep 0.17% | ventana (-2,-3,-4) | nocional $12
-#       (guardia $15) | 2x aislado | SL 2.0% / TP 3.0%.
-#
-# v2.1-1h-xperp — soldadura tras la 1a ronda REAL del FARO (06:06 UTC):
-#   P0 · cooldown_active llamaba a ex.privateGetTradeFillPnl — ESE METODO
-#        NO existe en ccxt 4.5.90 (los fillPnl de OKX REST ya solo bajan
-#        por WebSocket). AttributeError silencioso -> fail-closed ->
-#        BLOQUEO PERMANENTE: con señal legal, el barco nunca dispara.
-#        FIX: fuente REST certificada /api/v5/account/positions-history
-#        (PnL realizado de la posicion cerrada, campo realizedPnl del
-#        parser ccxt). Con SL/TP atomicos (cierre completo en una pieza)
-#        la semantica de calma es identica. FAIL-CLOSED conservado.
-#
-# v2.2-1h-xperp-soldaduras — tras la ronda de sombra del FARO + bitacora v5
-# (05-11-2026). Hallazgo P0 certificado: el cooldown v2.1 llama a
-# /api/v5/account/positions-history, y ESE endpoint en my.okx.com responde
-# cuerpo pelado '0' -> KeyError :: 0. Fail-closed => en REAL el barco
-# NUNCA dispara con senal legal (en SOMBRA la funcion no se ejecuta, por
-# eso el FARO no lo vio). La premisa v2.1 ("fillPnl ya solo baja por
-# WebSocket") era FALSA: la bitacora v5 recibio fills REST con fillPnl
-# esta misma semana. Soldadura certificada (8+3 escenarios en banco):
-#   P0 · cooldown_active DOBLE FUENTE: 1) positions-history (realizedPnl
-#        con pnl de reserva) -> 2) fills-history (fillPnl, limit 40)
-#        -> ambas rotas: BLOQUEO fail-closed conservado.
-#   P1 · set_position_mode(False) ELIMINADO: muta la cuenta ENTERA
-#        (posMode global de toda la flota). Sustituido por pos_mode_check:
-#        lee /api/v5/account/config; si no es net_mode -> DETENIDO
-#        fail-closed. El codigo JAMAS muta el interruptor de la cuenta.
-#   MINOR · sort defensivo de velas por ts en closed_candles.
-#   MINOR · colateral enmascarado en el log (repo publica): solo con
-#        INJ_DEBUG=1 se imprime el monto. Nunca toca la logica de flota.
-#
-# MICROSCOPIO NUMERICO (velas reales OKX INJ-USDT-SWAP publico, 90 dias,
-# 2159 velas 1h, peaje 0.14% RT, entrada en open siguiente, SL-first):
-#   · ATR14 1h: 1.632% — INJ aletea 4x mas que ADA en 15m (0.388%)
-#   · 156 cruces EMA3/21 (1.7/dia) — sep en cruce: P50 0.196% / P75 0.378%
-#   · SIN candado (SL 2.0/TP 3.0): 156 trades, +6.16%, PF 1.03 — el peaje
-#     tritura; el candado es vida, aqui tambien
-#   · CON CANDADO DEL CAPITAN 0.17: 86 trades | WR 50.0% | net +30.96%/90d
-#     | PF 1.34 | maxCons 10 — la curva del candado hace pico en 0.15-0.17
-#   · referencia auditor (NO adoptada): lock 0.40/SL 1.0/TP 1.5 -> PF 1.49
-#     pero solo 36 trades y SL 0.6x ATR14 = cuchilla sobre mar de 1.6% ATR
-#     (sobreajuste). Conservador: lock 0.20/SL 4.0/TP 6.0 +35.51% PF 1.23.
-#   · maxCons 10 x riesgo/trade (~$0.24 con nocional $12) ~ -$2.4 de racha:
-#     dentro de la guardia de flota
-#
-# BLINDAJE A BORDO (herencia xpl v4.2 + perro Ax, fixes de flota P0 soldados):
-#   · pick_future            -> reanclaje automatico al vencimiento mas lejano
-#   · veto USDT TRIPLE       -> quote USD + settle USD + futuro (no swap), fail-closed
-#   · optimal_limit_ioc      -> entrada anti-deslizamiento
-#   · attachAlgoOrds         -> SL/TP viajan DENTRO de la orden de entrada
-#   · clOrdId sello de vela  -> idempotencia (OKX rechaza duplicado 51016)
-#   · candle_already_traded  -> consulta historial antes de disparar
-#                               (fail-closed: sin verificacion, no zarpa)
-#   · anti-doble v4.2        -> posiciones + algos vivos = nave ocupada
-#   · protection_confirmed   -> verifica SL/TP pendientes tras disparar
-#   · emergency_close        -> si la coraza no aparece, cierre inmediato
-#   · cooldown doble fuente  -> positions-history + fills-history (fillPnl
-#                               con pnl de reserva). Ambas rotas = BLOQUEO
-#                               fail-closed (v2.2, banco de pruebas verde)
-#   · posMode check          -> se COMPRUEBA net_mode, jamas se muta la
-#                               cuenta (v2.2). Ilegible = DETENIDO
-#   · bodega ilegible        -> totEq/eqUsd ilegible = DETENIDO (fail-closed Ax3)
-#   · host resuelto          -> log sin plantilla cosmica {hostname}
-#
-# VARIABLES DE ENTORNO (todas opcionales):
-#   SHADOW=1             sombra (defecto). 0 = municion real
-#   DRY_RUN=1            freno de flota -> fuerza sombra (nunca sandbox)
-#   INJ_TF=1h            marco temporal (diseno del capitan)
-#   INJ_WINDOW=-2,-3,-4  ventana de vela del cruce (diseno del capitan:
-#                        el cruce debe sobrevivir 1 vela de confirmacion;
-#                        el orden define prioridad, gana el mas reciente)
-#   INJ_SEP_LOCK=0.17    candado de separacion % (diseno del capitan, auditado)
-#   INJ_SL_FLOOR=2.0     piso SL % (auditado 1h: 1.23 x ATR14)
-#   INJ_SL_CAP=2.0       techo SL % (piso=techo -> SL fijo 2.0%)
-#   INJ_TP_MULT=1.5      TP = x * SL -> 3.0%
-#   INJ_NOTIONAL=12      nocional objetivo $ por operacion (capitan)
-#   INJ_MAX_NOTIONAL=15  guardia de nocional $ (capitan)
-#   INJ_LEVERAGE=2       apalancamiento (capitan) con margen aislado
-#   INJ_MARGIN_MODE=isolated  margen aislado (capitan)
-#   INJ_N_CANDLES=200    velas cerradas para las EMAs
-#   COOLDOWN_MIN=60      calma tras perdida
-#   INJ_DEBUG=1          muestra el colateral real en el log (defecto: oculto,
-#                        repo publica). Solo diagnostico, nunca opera
+# CAMBIOS v3.0 sobre v2.2 (revision de produccion):
+#  P0 · Senal sin persistencia: el cruce de la ventana (-2,-3,-4) podia
+#       haberse REVERTIDO antes de entrar (entrabas contra la postura
+#       actual). Ahora la postura debe mantenerse en todas las velas
+#       posteriores al cruce (confirmacion real).
+#  P0 · SL/TP y tamano se calculaban con el cierre de la vela vieja, no
+#       con el precio vivo. Ahora ticker en vivo + guardia de deriva
+#       (INJ_MAX_DRIFT %) -> si el precio ya se fue, no se persigue.
+#  P0 · IOC sin fill => sin algos => el bot disparaba emergency_close
+#       reduceOnly sin posicion (falsa alarma "intervencion manual").
+#       Ahora: primero se verifica posicion; sin posicion = sin fill, ok.
+#       Con posicion y sin algos (reintentos) -> cierre con tamano REAL.
+#  P1 · set_leverage tolerado: con isolated, un fallo dejaba el apalan-
+#       camiento por defecto de la cuenta. Ahora fail-closed, y se aplica
+#       DESPUES de todas las compuertas (cooldown / ya navegada).
+#  P1 · chequeo de margen "nocional*3" arbitrario -> margen real =
+#       nocional/apalancamiento con colchon x2.
+#  P1 · Veto USDT reforzado: id/simbolo con "USDT" = DETENIDO; hostname
+#       verificado = my.okx.com.
+#  NEW · EMA rapida/lenta parametrizables (INJ_EMA_FAST / INJ_EMA_SLOW)
+#       para usar el ganador de sweep_ema.py. Defecto 3/21.
 # =====================================================================
 
 import os
@@ -126,15 +41,18 @@ try:
 except ImportError:
     ccxt = None
 
-VERSION = "v2.2-1h-xperp-soldaduras"
+VERSION = "v3.0-prod"
+HOST = "my.okx.com"
 TF_MS = {"5m": 300000, "15m": 900000, "30m": 1800000,
          "1h": 3600000, "2h": 7200000, "4h": 14400000, "6h": 21600000}
 
 # ---------------- CONFIG ----------------
-SHADOW = os.environ.get("SHADOW", "1") == "1"
+SHADOW = os.environ.get("SHADOW", "0") == "1"
 DRY_RUN = os.environ.get("DRY_RUN", "0") == "1"
 INJ_TF = os.environ.get("INJ_TF", "1h")
 INJ_WINDOW = tuple(int(x) for x in os.environ.get("INJ_WINDOW", "-2,-3,-4").split(",") if x.strip())
+EMA_FAST = int(os.environ.get("INJ_EMA_FAST", "3"))
+EMA_SLOW = int(os.environ.get("INJ_EMA_SLOW", "21"))
 SEP_LOCK = float(os.environ.get("INJ_SEP_LOCK", "0.17"))
 SL_MULT = float(os.environ.get("INJ_SL_MULT", "1.2"))
 SL_FLOOR = float(os.environ.get("INJ_SL_FLOOR", "2.0"))
@@ -146,6 +64,7 @@ LEVERAGE = int(float(os.environ.get("INJ_LEVERAGE", "2")))
 MARGIN_MODE = os.environ.get("INJ_MARGIN_MODE", "isolated").strip().lower()
 COOLDOWN_MIN = float(os.environ.get("COOLDOWN_MIN", "60"))
 N_CANDLES = int(os.environ.get("INJ_N_CANDLES", "200"))
+MAX_DRIFT = float(os.environ.get("INJ_MAX_DRIFT", "0.8"))   # % max vs cierre de senal
 INJ_DEBUG = os.environ.get("INJ_DEBUG", "0") == "1"
 
 logging.basicConfig(level=logging.INFO,
@@ -167,7 +86,6 @@ def fail(msg):
 
 # ---------------- EXCHANGE ----------------
 def build_exchange():
-    """ccxt OKX apuntando a la plataforma X-Perp (my.okx.com, colateral USD)."""
     if ccxt is None:
         fail("[ERROR] Falta ccxt: pip install ccxt")
     api_key = os.environ.get("OKX_API_KEY", "")
@@ -177,56 +95,54 @@ def build_exchange():
         "apiKey": api_key or None,
         "secret": secret or None,
         "password": passwd or None,
-        "hostname": "my.okx.com",
+        "hostname": HOST,
         "enableRateLimit": True,
         "options": {"defaultType": "futures"},
     })
-    ex.hostname = "my.okx.com"          # refuerzo del anclaje X-Perp
+    ex.hostname = HOST
+    if getattr(ex, "hostname", None) != HOST:
+        fail("[ERROR] hostname != %s — DETENIDO" % HOST)
     return ex, bool(api_key and secret and passwd)
 
 
 def pick_future(ex):
-    """Reanclaje: vencimiento mas lejano de INJ/USD settle USD (Ley Carbono).
-    Veto USDT TRIPLE: quote USD, settle USD y futuro fechado (no perp swap).
-    Sustituye al SYMBOL clavado del bot original (hallazgo P0 del microscopio)."""
+    """Vencimiento mas lejano de INJ/USD settle USD. Veto USDT triple + id."""
     ex.load_markets()
     cands = []
     for m in ex.markets.values():
-        if m.get("base") != "INJ":
+        if m.get("base") != "INJ" or m.get("quote") != "USD":
             continue
-        if m.get("quote") != "USD":
-            continue                      # veto USDT (1): quote != USD
         if m.get("settle") != "USD":
-            continue                      # veto USDT (2): settle != USD
+            continue
         if m.get("swap") or not m.get("future"):
-            continue                      # veto (3): solo futuro fechado
+            continue
+        if "USDT" in str(m.get("id")).upper() or "USDT" in str(m.get("symbol")).upper():
+            continue
         cands.append(m)
     if not cands:
-        fail("[ERROR] Sin futuros INJ/USD settle USD en OKX. DETENIDO (Ley Carbono).")
+        fail("[ERROR] Sin futuros INJ/USD settle USD en OKX. DETENIDO (veto USDT).")
     best = max(cands, key=lambda m: int(m.get("expiry") or 0))
-    if best.get("settle") != "USD" or best.get("quote") != "USD":
-        fail("[ERROR] Veto Ley Carbono: quote/settle != USD. DETENIDO.")
+    if best.get("settle") != "USD" or best.get("quote") != "USD" \
+            or "USDT" in str(best.get("id")).upper():
+        fail("[ERROR] Veto USDT: instrumento no valido. DETENIDO.")
     return best
 
 
 def auth_and_collateral(ex, has_creds):
     if not has_creds:
-        log.info("Sombra publica: sin credenciales — solo lectura de mercado")
+        log.info("Sin credenciales — solo lectura de mercado")
         return None
     try:
         bal = ex.fetch_balance()
     except Exception as e:
         fail("[ERROR] Autenticacion/lectura de cuenta fallo: %s — DETENIDO" % str(e)[:200])
-
     tot_eq = None
-    # 1) totEq del crudo OKX (equidad total en USD), si existe y es > 0
     try:
         d0 = bal.get("info", {}).get("data", [{}])[0]
         if d0.get("totEq"):
             tot_eq = _f(d0["totEq"])
     except Exception:
         pass
-    # 2) METODO DEL PERRO: suma de eqUsd por divisa en details
     if not tot_eq:
         try:
             details = bal.get("info", {}).get("data", [{}])[0].get("details") or []
@@ -235,28 +151,19 @@ def auth_and_collateral(ex, has_creds):
                 tot_eq = suma
         except Exception:
             pass
-    # 3) Ultimo recurso: bolsillos unificados reales (USD/USDC/USDT)
     if not tot_eq:
         try:
-            suma = sum(_f((bal.get(c) or {}).get("total"))
-                       for c in ("USD", "USDC", "USDT"))
+            suma = sum(_f((bal.get(c) or {}).get("total")) for c in ("USD", "USDC", "USDT"))
             if suma > 0:
                 tot_eq = suma
         except Exception:
             pass
-    # 4) Decreto Ax3: bodega ilegible NO navega (fail-closed, nunca fail-open).
-    if tot_eq is None:
-        fail("[ERROR] Bodega ilegible (totEq/eqUsd/bolsillos vacios) — DETENIDO (fail-closed)")
-    try:
-        host = str(ex.urls.get("api", {}).get("rest", "?"))   # ccxt 4.x: 'rest'
-        if "{hostname}" in host:                              # fix host cosmico
-            host = host.replace("{hostname}", getattr(ex, "hostname", "my.okx.com"))
-    except Exception:
-        host = "?"
+    if not tot_eq:
+        fail("[ERROR] Bodega ilegible o vacia — DETENIDO (fail-closed)")
     if INJ_DEBUG:
-        log.info("Autenticacion OK | host=%s | Colateral real (USD): %.2f", host, tot_eq)
+        log.info("Autenticacion OK | host=%s | Colateral (USD): %.2f", HOST, tot_eq)
     else:
-        log.info("Autenticacion OK | host=%s | Colateral: OK (monto oculto en repo publica; INJ_DEBUG=1 para verlo)", host)
+        log.info("Autenticacion OK | host=%s | Colateral: OK (oculto; INJ_DEBUG=1)", HOST)
     return tot_eq
 
 
@@ -269,19 +176,18 @@ def open_position_contracts(ex, sym):
     for p in poss:
         c = p.get("contracts")
         if c and abs(float(c)) > 0:
-            return float(c)
+            return abs(float(c))
     return 0.0
 
 
 def algo_pending(ex, inst_id):
-    """SL/TP vivos (oco + conditional). Fail-closed: si no se puede mirar, DETENIDO."""
     out = []
     for ot in ("oco", "conditional"):
         try:
             r = ex.privateGetTradeOrdersAlgoPending({"ordType": ot, "instId": inst_id})
             out.extend(r.get("data") or [])
         except Exception as e:
-            fail("[ERROR] consulta algo pending (%s) fallo: %s — DETENIDO (fail-closed)"
+            fail("[ERROR] algo pending (%s) fallo: %s — DETENIDO (fail-closed)"
                  % (ot, str(e)[:200]))
     return out
 
@@ -297,45 +203,41 @@ def ema(vals, span):
 
 
 def closed_candles(ex, sym, tf, n):
-    """Velas CERRADAS (la vela en formacion se descarta siempre).
-    Nota OKX: ccxt acepta '1h' y lo traduce a bar '1H' — el mapa TF_MS
-    gobierna el descarte de vela viva."""
     if tf not in TF_MS:
         fail("[ERROR] marco temporal no soportado: %s" % tf)
     raw = ex.fetch_ohlcv(sym, tf, limit=n + 3)
-    raw.sort(key=lambda c: c[0])          # v2.2: sort defensivo por ts
-    tfms = TF_MS[tf]
+    raw.sort(key=lambda c: c[0])
     now = ex.milliseconds()
-    closed = [c for c in raw if c[0] + tfms <= now]
-    if len(closed) < 40:
-        fail("[ERROR] velas cerradas insuficientes (%d) — DETENIDO (fail-closed)" % len(closed))
+    closed = [c for c in raw if c[0] + TF_MS[tf] <= now]
+    if len(closed) < max(40, EMA_SLOW * 2):
+        fail("[ERROR] velas cerradas insuficientes (%d) — DETENIDO" % len(closed))
     return closed[-n:]
 
 
-def compute_signal(candles):
-    """Cruce EMA3/21 dentro de la ventana del capitan (-2,-3,-4): el cruce
-    debe sobrevivir 1 vela de confirmacion; gana el mas reciente legal."""
+def compute_signal(candles, fast=None, slow=None, window=None):
+    """Cruce rapida/lenta dentro de la ventana. v3.0: la postura debe
+    PERSISTIR hasta la ultima vela cerrada (si el cruce se revirtio, no hay senal)."""
+    fast = fast or EMA_FAST
+    slow = slow or EMA_SLOW
+    window = window or INJ_WINDOW
     c = [float(x[4]) for x in candles]
     n = len(c)
-    e3 = ema(c, 3)
-    e21 = ema(c, 21)
-    stance = [1 if e3[i] > e21[i] else -1 for i in range(n)]
+    ef, es = ema(c, fast), ema(c, slow)
+    stance = [1 if ef[i] > es[i] else -1 for i in range(n)]
     cross_idx, direction, window_off = None, 0, None
-    for off in INJ_WINDOW:                     # p.ej. -2,-3,-4 (mas reciente primero)
+    for off in window:
         i = n + off
         if i < 1 or i >= n:
             continue
-        if stance[i] != stance[i - 1]:
+        if stance[i] != stance[i - 1] and all(stance[j] == stance[i] for j in range(i, n)):
             cross_idx, direction, window_off = i, stance[i], off
             break
-    sig = {
-        "px": c[-1], "e3": e3[-1], "e21": e21[-1], "stance": stance[-1],
-        "cross_idx": cross_idx, "dir": direction, "window_off": window_off,
-        "sep": None, "e21_cross": None, "bar_ts": None,
-    }
+    sig = {"px": c[-1], "e3": ef[-1], "e21": es[-1], "stance": stance[-1],
+           "cross_idx": cross_idx, "dir": direction, "window_off": window_off,
+           "sep": None, "e21_cross": None, "bar_ts": None}
     if cross_idx is not None:
-        sig["sep"] = abs(e3[cross_idx] - e21[cross_idx]) / e21[cross_idx] * 100.0
-        sig["e21_cross"] = e21[cross_idx]
+        sig["sep"] = abs(ef[cross_idx] - es[cross_idx]) / es[cross_idx] * 100.0
+        sig["e21_cross"] = es[cross_idx]
         sig["bar_ts"] = int(candles[cross_idx][0])
     return sig
 
@@ -349,11 +251,8 @@ def px_decimals(market):
     return d
 
 
-def sl_tp(px, e21_cross, long_dir):
-    """SL = SL_MULT x dist EMA21 con piso/techo %; TP = TP_MULT x SL.
-    Microscopio 1h: piso = techo = 2.0% -> SL fijo 2.0% (1.23 x ATR14 1.632%),
-    TP 3.0%. Con el candado del capitan 0.17: PF 1.34 / 90d."""
-    dist = abs(px - e21_cross) * SL_MULT
+def sl_tp(px, e_slow_cross, long_dir):
+    dist = abs(px - e_slow_cross) * SL_MULT
     dist_pct = dist / px * 100.0
     if dist_pct < SL_FLOOR:
         dist = px * SL_FLOOR / 100.0
@@ -364,183 +263,173 @@ def sl_tp(px, e21_cross, long_dir):
     return px + dist, px - dist * TP_MULT, dist / px * 100.0
 
 
+def live_price(ex, sym):
+    try:
+        t = ex.fetch_ticker(sym)
+        px = _f(t.get("last")) or _f(t.get("close"))
+    except Exception as e:
+        fail("[ERROR] ticker ilegible: %s — DETENIDO (fail-closed)" % str(e)[:200])
+    if px <= 0:
+        fail("[ERROR] precio vivo invalido — DETENIDO (fail-closed)")
+    return px
+
+
 # ---------------- SEGURIDAD PRE-DISPARO ----------------
 def already_traded(ex, inst_id, cl_ord_id):
     try:
-        r = ex.privateGetTradeOrdersHistory({"instId": inst_id, "limit": "20"})
+        r = ex.privateGetTradeOrdersHistory({"instType": "FUTURES", "instId": inst_id, "limit": "100"})
     except Exception as e:
-        fail("[ERROR] historial de ordenes inaccesible: %s — DETENIDO (fail-closed)"
-             % str(e)[:200])
-    for o in (r.get("data") or []):
-        if o.get("clOrdId") == cl_ord_id:
-            return True
-    return False
+        fail("[ERROR] historial de ordenes inaccesible: %s — DETENIDO" % str(e)[:200])
+    return any(o.get("clOrdId") == cl_ord_id for o in (r.get("data") or []))
 
 
 def cooldown_active(ex, inst_id):
-    """Calma tras perdida. FIX v2.2 (hallazgo certificado): el endpoint
-    positions-history en my.okx.com responde cuerpo pelado '0' ->
-    KeyError :: 0, y la premisa v2.1 ("fillPnl ya solo baja por WebSocket")
-    era FALSA — la bitacora v5 recibio fills REST con fillPnl esta misma
-    semana. DOBLE FUENTE: 1) positions-history (realizedPnl, con pnl de
-    reserva) 2) fills-history (fillPnl, limit 40). Ambas rotas -> BLOQUEO
-    fail-closed: no se dispara con cooldown ilegible. Certificado contra
-    el bug real KeyError :: 0 en banco de pruebas (8 escenarios)."""
+    """Doble fuente: positions-history -> fills-history. Ambas rotas = BLOQUEO."""
     now = ex.milliseconds()
+    lim = COOLDOWN_MIN * 60 * 1000
     try:
         r = ex.privateGetAccountPositionsHistory(
             {"instType": "FUTURES", "instId": inst_id, "limit": "10"})
         for rec in (r.get("data") or []):
-            ft = int(_f(rec.get("uTime")) or _f(rec.get("closedTime"))
-                     or _f(rec.get("cTime")))
-            pnl = (_f(rec.get("realizedPnl"))
-                   if rec.get("realizedPnl") not in (None, "")
+            ft = int(_f(rec.get("uTime")) or _f(rec.get("closedTime")) or _f(rec.get("cTime")))
+            pnl = (_f(rec.get("realizedPnl")) if rec.get("realizedPnl") not in (None, "")
                    else _f(rec.get("pnl")))
-            if pnl < 0 and ft > 0 and (now - ft) < COOLDOWN_MIN * 60 * 1000:
+            if pnl < 0 and ft > 0 and (now - ft) < lim:
                 return True, pnl, ft
         return False, 0.0, 0
     except Exception as e:
-        log.warning("positions-history no abrio (%s) — probando fills-history",
-                    str(e)[:120])
+        log.warning("positions-history no abrio (%s) — probando fills-history", str(e)[:120])
     try:
         r = ex.privateGetTradeFillsHistory(
             {"instType": "FUTURES", "instId": inst_id, "limit": "40"})
         for x in (r.get("data") or []):
             ts = int(_f(x.get("ts")) or _f(x.get("fillTime")))
             pnl = _f(x.get("fillPnl"))
-            if pnl < 0 and ts > 0 and (now - ts) < COOLDOWN_MIN * 60 * 1000:
+            if pnl < 0 and ts > 0 and (now - ts) < lim:
                 return True, pnl, ts
         return False, 0.0, 0
     except Exception as e:
-        log.warning("cooldown ilegible por ambas fuentes (%s) — BLOQUEO fail-closed",
-                    str(e)[:120])
+        log.warning("cooldown ilegible por ambas fuentes (%s) — BLOQUEO", str(e)[:120])
         return True, 0.0, now
 
 
 def pos_mode_check(ex):
-    """v2.2 P1: COMPROBAR el posMode, NUNCA mutarlo. set_position_mode()
-    cambia el modo de la cuenta ENTERA (toda la flota de golpe). Si la
-    cuenta no esta en net_mode (one-way), DETENIDO fail-closed: el pin se
-    fija UNA vez desde la app; el codigo no toca el interruptor."""
     try:
         cfg = ex.privateGetAccountConfig()
         pos_mode = ((cfg.get("data") or [{}])[0]).get("posMode")
     except Exception as e:
-        fail("[ERROR] posMode ilegible (%s) — DETENIDO (fail-closed)" % str(e)[:120])
+        fail("[ERROR] posMode ilegible (%s) — DETENIDO" % str(e)[:120])
     if pos_mode != "net_mode":
-        fail("[ERROR] Cuenta en %s — pin net_mode UNA vez a flota; el codigo no muta la cuenta. DETENIDO" % pos_mode)
-    log.info("posMode verificado: net_mode (one-way) — cuenta intacta, sin mutacion.")
+        fail("[ERROR] Cuenta en %s — se requiere net_mode (se fija UNA vez en la app). DETENIDO" % pos_mode)
     return pos_mode
 
 
 def size_contracts(market, px):
-    """Tamano por nocional objetivo $ (diseno del capitan): 1 contrato XPERP
-    INJ = ctVal 0.1 INJ -> valor $ = 0.1 x px. Se redondea POR DEBAJO y la
-    guardia INJ_MAX_NOTIONAL manda (fail-closed)."""
     csize = float(market.get("contractSize") or 0.0)
-    if csize <= 0:
-        fail("[ERROR] ctVal ilegible del mercado — DETENIDO (fail-closed)")
+    if csize <= 0 or px <= 0:
+        fail("[ERROR] ctVal/precio ilegible — DETENIDO")
     val_ct = csize * px
-    if val_ct <= 0:
-        fail("[ERROR] valor por contrato ilegible — DETENIDO (fail-closed)")
-    n = int(INJ_NOTIONAL / val_ct)
-    if n < 1:
-        n = 1
+    n = max(1, int(INJ_NOTIONAL / val_ct))
     min_sz = (((market.get("limits") or {}).get("amount") or {}).get("min")) or 1
-    if n < float(min_sz):
-        n = int(float(min_sz))
+    n = max(n, int(float(min_sz)))
     notional = n * val_ct
     if notional > MAX_NOTIONAL:
-        fail("[ERROR] tamano %d ct ~ $%.2f > guardia $%.2f — DETENIDO"
-             % (n, notional, MAX_NOTIONAL))
+        fail("[ERROR] tamano %d ct ~ $%.2f > guardia $%.2f — DETENIDO" % (n, notional, MAX_NOTIONAL))
     return n, notional
 
 
 # ---------------- DISPARO ----------------
 def emergency_close(ex, inst_id, entry_side, contracts):
-    body = {
-        "instId": inst_id, "tdMode": MARGIN_MODE, "posSide": "net",
-        "side": "sell" if entry_side == "buy" else "buy",
-        "ordType": "market", "sz": str(int(contracts)),
-        "reduceOnly": True, "clOrdId": ("INJE%d" % ex.milliseconds())[:32],
-    }
+    body = {"instId": inst_id, "tdMode": MARGIN_MODE, "posSide": "net",
+            "side": "sell" if entry_side == "buy" else "buy",
+            "ordType": "market", "sz": str(int(contracts)),
+            "reduceOnly": True, "clOrdId": ("INJE%d" % ex.milliseconds())[:32]}
     try:
         r = ex.privatePostTradeOrder(body)
         log.info("Cierre de emergencia enviado | code=%s", r.get("code"))
     except Exception as e:
-        fail("[ERROR] cierre de emergencia fallo: %s — INTERVENCION MANUAL URGENTE"
-             % str(e)[:200])
+        fail("[ERROR] cierre de emergencia fallo: %s — INTERVENCION MANUAL URGENTE" % str(e)[:200])
 
 
-def fire(ex, market, inst_id, sig, contracts, tot_eq):
-    px = sig["px"]
+def fire(ex, market, sym, inst_id, sig, tot_eq):
     long_dir = sig["dir"] > 0
     side = "buy" if long_dir else "sell"
+
+    px = live_price(ex, sym)
+    drift = abs(px - sig["px"]) / sig["px"] * 100.0
+    if drift > MAX_DRIFT:
+        log.info("Precio vivo %.4f se alejo %.2f%% del cierre de senal (> %.2f%%) — no se persigue.",
+                 px, drift, MAX_DRIFT)
+        return 0
+
+    contracts, notional = size_contracts(market, px)
     sl, tp, dist_pct = sl_tp(px, sig["e21_cross"], long_dir)
     d = px_decimals(market)
-    sl_s = ("%." + str(d) + "f") % sl
-    tp_s = ("%." + str(d) + "f") % tp
+    sl_s, tp_s = ("%." + str(d) + "f") % sl, ("%." + str(d) + "f") % tp
     bar_ms = sig["bar_ts"]
     cl = ("INJ%d" % bar_ms)[:32]
 
-    csize = float(market.get("contractSize") or 1.0)
-    notional = contracts * csize * px
-    if notional > MAX_NOTIONAL:
-        fail("[ERROR] nocional ~$%.2f > guardia $%.2f — DETENIDO"
-             % (notional, MAX_NOTIONAL))
-    if tot_eq is not None and notional * 3.0 > tot_eq:
-        fail("[ERROR] margen ~$%.2f (%dx) vs colateral ~$%.2f -> NO CABE. DETENIDO"
-             % (notional / max(1, LEVERAGE), LEVERAGE, tot_eq))
+    margin = notional / max(1, LEVERAGE)
+    if tot_eq is not None and margin * 2.0 > tot_eq:
+        fail("[ERROR] margen ~$%.2f (%dx) x2 vs colateral NO CABE. DETENIDO" % (margin, LEVERAGE))
 
-    log.info("Disparo %s | %d ct | nocional ~$%.2f (%dx %s) | SL %s (dist %.2f%%) | "
-             "TP %s | clOrdId %s",
+    try:
+        ex.set_leverage(LEVERAGE, sym, params={"mgnMode": MARGIN_MODE})
+        log.info("Apalancamiento: %dx (%s)", LEVERAGE, MARGIN_MODE)
+    except Exception as e:
+        fail("[ERROR] set_leverage fallo: %s — DETENIDO (fail-closed)" % str(e)[:160])
+
+    log.info("Disparo %s | %d ct | nocional ~$%.2f (%dx %s) | px %.4f | SL %s (%.2f%%) | TP %s | %s",
              "LONG" if long_dir else "SHORT", contracts, notional, LEVERAGE,
-             MARGIN_MODE, sl_s, dist_pct, tp_s, cl)
-    body = {
-        "instId": inst_id, "tdMode": MARGIN_MODE, "posSide": "net",
-        "side": side, "ordType": "optimal_limit_ioc",
-        "sz": str(int(contracts)), "clOrdId": cl,
-        "attachAlgoOrds": [{
-            "attachAlgoClOrdId": ("INJA%d" % bar_ms)[:32],
-            "slTriggerPx": sl_s, "slOrdPx": "-1",
-            "tpTriggerPx": tp_s, "tpOrdPx": "-1",
-        }],
-    }
+             MARGIN_MODE, px, sl_s, dist_pct, tp_s, cl)
+    body = {"instId": inst_id, "tdMode": MARGIN_MODE, "posSide": "net", "side": side,
+            "ordType": "optimal_limit_ioc", "sz": str(int(contracts)), "clOrdId": cl,
+            "attachAlgoOrds": [{"attachAlgoClOrdId": ("INJA%d" % bar_ms)[:32],
+                                "slTriggerPx": sl_s, "slOrdPx": "-1",
+                                "tpTriggerPx": tp_s, "tpOrdPx": "-1"}]}
     try:
         r = ex.privatePostTradeOrder(body)
     except Exception as e:
         fail("[ERROR] envio de orden fallo: %s — DETENIDO" % str(e)[:200])
     if str(r.get("code")) != "0":
-        fail("[ERROR] OKX rechazo la orden: code=%s msg=%s — DETENIDO"
-             % (r.get("code"), r.get("msg")))
+        fail("[ERROR] OKX rechazo: code=%s msg=%s — DETENIDO" % (r.get("code"), r.get("msg")))
     od = (r.get("data") or [{}])[0]
     if str(od.get("sCode")) != "0":
-        fail("[ERROR] OKX rechazo (sCode=%s sMsg=%s) — DETENIDO"
-             % (od.get("sCode"), od.get("sMsg")))
+        fail("[ERROR] OKX rechazo (sCode=%s sMsg=%s) — DETENIDO" % (od.get("sCode"), od.get("sMsg")))
     log.info("Orden aceptada | ordId=%s", od.get("ordId"))
 
     time.sleep(2)
-    algos = [a for a in algo_pending(ex, inst_id) if a.get("instId") == inst_id]
+    pos = open_position_contracts(ex, sym)
+    if pos <= 0:
+        log.info("IOC sin fill (sin posicion) — nada que proteger. La vela queda sellada por clOrdId.")
+        return 0
+    algos = []
+    for _ in range(3):
+        algos = [a for a in algo_pending(ex, inst_id) if a.get("instId") == inst_id]
+        if algos:
+            break
+        time.sleep(2)
     if not algos:
-        log.error("ALARMA: SL/TP no aparecen pendientes en OKX")
-        emergency_close(ex, inst_id, side, contracts)
-        fail("Nave sin coraza — cerrada por seguridad. Plan B al puente.")
+        log.error("ALARMA: posicion %.0f ct SIN SL/TP pendientes", pos)
+        emergency_close(ex, inst_id, side, pos)
+        fail("Nave sin coraza — cerrada por seguridad.")
     a0 = algos[0]
-    log.info("Nave blindada: SL/TP confirmados en OKX (SL trig %s | TP trig %s)",
-             a0.get("slTriggerPx"), a0.get("tpTriggerPx"))
+    log.info("Nave blindada: %.0f ct | SL trig %s | TP trig %s",
+             pos, a0.get("slTriggerPx"), a0.get("tpTriggerPx"))
+    return 0
 
 
 # ---------------- MAIN ----------------
 def main():
     shadow = SHADOW or DRY_RUN
-    if DRY_RUN and not SHADOW:
-        log.info("Freno de flota DRY_RUN=1 -> forzando SOMBRA (nunca sandbox)")
-    log.info("Modo ciclo unico | NAVIO INJ EL INYECTOR EMA3/21 %s %s + BLINDAJE xpl-v4.2 (XPERP USD) | %s",
-             INJ_TF, VERSION, "SOMBRA" if shadow else "REAL")
+    log.info("Ciclo unico | EL INYECTOR EMA%d/%d %s %s (XPERP USD, veto USDT) | %s",
+             EMA_FAST, EMA_SLOW, INJ_TF, VERSION, "SOMBRA" if shadow else "REAL")
     if INJ_TF not in TF_MS:
         fail("[ERROR] INJ_TF invalido: %s" % INJ_TF)
     if not INJ_WINDOW or any(o > -1 for o in INJ_WINDOW):
-        fail("[ERROR] INJ_WINDOW invalido: %s (se esperaba p.ej. -2,-3,-4)" % (INJ_WINDOW,))
+        fail("[ERROR] INJ_WINDOW invalido: %s" % (INJ_WINDOW,))
+    if not (1 <= EMA_FAST < EMA_SLOW):
+        fail("[ERROR] EMA invalidas: %d/%d" % (EMA_FAST, EMA_SLOW))
     if MARGIN_MODE not in ("isolated", "cross"):
         fail("[ERROR] INJ_MARGIN_MODE invalido: %s" % MARGIN_MODE)
 
@@ -548,69 +437,52 @@ def main():
     if not shadow and not has_creds:
         fail("[ERROR] modo REAL sin credenciales OKX — DETENIDO")
     market = pick_future(ex)
-    inst_id = market["id"]
-    sym = market["symbol"]
-    log.info("Instrumento: %s (XPERP — vencimiento mas lejano | settle %s | ctVal %s %s)",
-             inst_id, market.get("settle"), market.get("contractSize"),
-             market.get("base"))
+    inst_id, sym = market["id"], market["symbol"]
+    log.info("Instrumento: %s | settle %s | ctVal %s %s",
+             inst_id, market.get("settle"), market.get("contractSize"), market.get("base"))
     tot_eq = auth_and_collateral(ex, has_creds)
 
     if has_creds:
         pos_c = open_position_contracts(ex, sym)
         algos = algo_pending(ex, inst_id)
         if pos_c or algos:
-            log.info("Nave ocupada: %.0f ct en posicion | %d algos vivos — no se abre nada. Vigilando.",
-                     pos_c, len(algos))
+            log.info("Nave ocupada: %.0f ct | %d algos vivos — vigilando.", pos_c, len(algos))
             return 0
 
     candles = closed_candles(ex, sym, INJ_TF, N_CANDLES)
     sig = compute_signal(candles)
-    log.info("Precio: %.4f | EMA3/21: %.4f/%.4f | %s (estado)",
-             sig["px"], sig["e3"], sig["e21"],
-             "EMA3 > EMA21" if sig["stance"] > 0 else "EMA3 < EMA21")
+    log.info("Precio: %.4f | EMA%d/%d: %.4f/%.4f | %s", sig["px"], EMA_FAST, EMA_SLOW,
+             sig["e3"], sig["e21"], "rapida > lenta" if sig["stance"] > 0 else "rapida < lenta")
 
     if sig["cross_idx"] is None:
-        log.info("Sin cruce EMA3/21 legal en la ventana %s. Vigilando.", list(INJ_WINDOW))
+        log.info("Sin cruce legal y persistente en la ventana %s. Vigilando.", list(INJ_WINDOW))
         return 0
-
     if sig["sep"] < SEP_LOCK:
-        log.info("Cruce con separacion %.3f%% < candado %.2f%% — descartado. Vigilando.",
-                 sig["sep"], SEP_LOCK)
+        log.info("Separacion %.3f%% < candado %.2f%% — descartado.", sig["sep"], SEP_LOCK)
         return 0
 
     dir_txt = "LONG" if sig["dir"] > 0 else "SHORT"
-    sl, tp, dist_pct = sl_tp(sig["px"], sig["e21_cross"], sig["dir"] > 0)
     bar_h = datetime.fromtimestamp(sig["bar_ts"] / 1000, tz=timezone.utc).strftime("%d-%m %H:%M")
-    age = -sig["window_off"]
-    contracts, est_notional = size_contracts(market, sig["px"])
 
     if shadow:
-        log.info("[SOMBRA] Senal %s legal | cruce hace %d vela(s) (%s UTC) | sep %.2f%% | "
-                 "SL ~%.4f (dist %.2f%%) | TP ~%.4f | %d ct ~ $%.2f — sin municion, solo bitacora",
-                 dir_txt, age, bar_h, sig["sep"], sl, dist_pct, tp, contracts, est_notional)
+        contracts, est = size_contracts(market, sig["px"])
+        sl, tp, dist_pct = sl_tp(sig["px"], sig["e21_cross"], sig["dir"] > 0)
+        log.info("[SOMBRA] %s legal | cruce hace %d vela(s) (%s UTC) | sep %.2f%% | SL ~%.4f TP ~%.4f | %d ct ~$%.2f",
+                 dir_txt, -sig["window_off"], bar_h, sig["sep"], sl, tp, contracts, est)
         return 0
 
-    # ---- REAL ----
-    pos_mode_check(ex)   # v2.2 P1: comprobar, NO mutar (la cuenta es de toda la flota)
-    try:
-        ex.set_leverage(LEVERAGE, sym, params={"mgnMode": MARGIN_MODE})
-        log.info("Apalancamiento: %dx (%s)", LEVERAGE, MARGIN_MODE)
-    except Exception as e:
-        log.warning("set_leverage tolerado: %s", str(e)[:120])
-
+    pos_mode_check(ex)
     active, pnl, ft = cooldown_active(ex, inst_id)
     if active:
-        mins = int((ex.milliseconds() - ft) / 60000)
-        log.info("Cooldown: perdida %.2f hace %d min — calma a bordo. Vigilando.", pnl, mins)
+        log.info("Cooldown: perdida %.2f hace %d min — calma a bordo.",
+                 pnl, int((ex.milliseconds() - ft) / 60000))
+        return 0
+    if already_traded(ex, inst_id, ("INJ%d" % sig["bar_ts"])[:32]):
+        log.info("Vela %s ya navegada — descartado.", bar_h)
         return 0
 
-    cl = ("INJ%d" % sig["bar_ts"])[:32]
-    if already_traded(ex, inst_id, cl):
-        log.info("Vela %s ya navegada (candle_already_traded) — descartado.", bar_h)
-        return 0
-
-    fire(ex, market, inst_id, sig, contracts, tot_eq)
-    return 0
+    log.info("Senal %s | cruce %s UTC | sep %.2f%%", dir_txt, bar_h, sig["sep"])
+    return fire(ex, market, sym, inst_id, sig, tot_eq)
 
 
 if __name__ == "__main__":
