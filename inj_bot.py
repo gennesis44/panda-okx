@@ -50,7 +50,7 @@ TF_MS = {"5m": 300000, "15m": 900000, "30m": 1800000,
 SHADOW = os.environ.get("SHADOW", "0") == "1"
 DRY_RUN = os.environ.get("DRY_RUN", "0") == "1"
 INJ_TF = os.environ.get("INJ_TF", "1h")
-INJ_WINDOW = tuple(int(x) for x in os.environ.get("INJ_WINDOW", "-2,-3,-4").split(",") if x.strip())
+INJ_WINDOW = tuple(int(x) for x in os.environ.get("INJ_WINDOW", "-2").split(",") if x.strip())
 EMA_FAST = int(os.environ.get("INJ_EMA_FAST", "3"))
 EMA_SLOW = int(os.environ.get("INJ_EMA_SLOW", "21"))
 SEP_LOCK = float(os.environ.get("INJ_SEP_LOCK", "0.17"))
@@ -59,8 +59,9 @@ SL_FLOOR = float(os.environ.get("INJ_SL_FLOOR", "2.0"))
 SL_CAP = float(os.environ.get("INJ_SL_CAP", "2.0"))
 TP_MULT = float(os.environ.get("INJ_TP_MULT", "1.5"))
 INJ_NOTIONAL = float(os.environ.get("INJ_NOTIONAL", "12.0"))
+SIZE_MODE = os.environ.get("INJ_SIZE_MODE", "min").strip().lower()   # min = contrato minimo | notional
 MAX_NOTIONAL = float(os.environ.get("INJ_MAX_NOTIONAL", "15.0"))
-LEVERAGE = int(float(os.environ.get("INJ_LEVERAGE", "2")))
+LEVERAGE = int(float(os.environ.get("INJ_LEVERAGE", "1")))
 MARGIN_MODE = os.environ.get("INJ_MARGIN_MODE", "isolated").strip().lower()
 COOLDOWN_MIN = float(os.environ.get("COOLDOWN_MIN", "60"))
 N_CANDLES = int(os.environ.get("INJ_N_CANDLES", "200"))
@@ -329,9 +330,12 @@ def size_contracts(market, px):
     if csize <= 0 or px <= 0:
         fail("[ERROR] ctVal/precio ilegible — DETENIDO")
     val_ct = csize * px
-    n = max(1, int(INJ_NOTIONAL / val_ct))
     min_sz = (((market.get("limits") or {}).get("amount") or {}).get("min")) or 1
-    n = max(n, int(float(min_sz)))
+    if SIZE_MODE == "min":
+        n = max(1, int(float(min_sz)))          # contrato MINIMO del mercado
+    else:
+        n = max(1, int(INJ_NOTIONAL / val_ct))
+        n = max(n, int(float(min_sz)))
     notional = n * val_ct
     if notional > MAX_NOTIONAL:
         fail("[ERROR] tamano %d ct ~ $%.2f > guardia $%.2f — DETENIDO" % (n, notional, MAX_NOTIONAL))
