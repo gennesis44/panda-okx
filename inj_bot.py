@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # =====================================================================
-# inj_bot.py — NAVIO INJ · EL INYECTOR · v3.0-prod
+# inj_bot.py — NAVIO INJ · EL INYECTOR · v3.1-prod
 # Autonomo: stdlib + ccxt. Host: my.okx.com (X-Perp). Colateral USD.
 # VETO USDT: solo INJ/USD futuro fechado, quote USD, settle USD.
 # Ciclo unico (el cron del workflow es el corazon). Modo PRODUCCION:
 # SHADOW=0 por defecto. SHADOW=1 o DRY_RUN=1 -> sombra (nunca sandbox).
 #
+# v3.1-prod: ventana 0,-1,-2 (vela EN FORMACION + 2 cerradas, precio vivo),
+#   apalancamiento 1x, contrato minimo, SL/TP por ATR14 (volatilidad) +
+#   estructura (distancia a EMA lenta), R:R 1.5. Peaje 0.14% RT cubierto.
 # CAMBIOS v3.0 sobre v2.2 (revision de produccion):
 #  P0 · Senal sin persistencia: el cruce de la ventana (-2,-3,-4) podia
 #       haberse REVERTIDO antes de entrar (entrabas contra la postura
@@ -41,7 +44,7 @@ try:
 except ImportError:
     ccxt = None
 
-VERSION = "v3.0-prod"
+VERSION = "v3.1-prod"
 HOST = "my.okx.com"
 TF_MS = {"5m": 300000, "15m": 900000, "30m": 1800000,
          "1h": 3600000, "2h": 7200000, "4h": 14400000, "6h": 21600000}
@@ -50,13 +53,13 @@ TF_MS = {"5m": 300000, "15m": 900000, "30m": 1800000,
 SHADOW = os.environ.get("SHADOW", "0") == "1"
 DRY_RUN = os.environ.get("DRY_RUN", "0") == "1"
 INJ_TF = os.environ.get("INJ_TF", "1h")
-INJ_WINDOW = tuple(int(x) for x in os.environ.get("INJ_WINDOW", "-2").split(",") if x.strip())
+INJ_WINDOW = tuple(int(x) for x in os.environ.get("INJ_WINDOW", "0,-1,-2").split(",") if x.strip())
 EMA_FAST = int(os.environ.get("INJ_EMA_FAST", "3"))
 EMA_SLOW = int(os.environ.get("INJ_EMA_SLOW", "21"))
 SEP_LOCK = float(os.environ.get("INJ_SEP_LOCK", "0.17"))
 SL_MULT = float(os.environ.get("INJ_SL_MULT", "1.2"))
-SL_FLOOR = float(os.environ.get("INJ_SL_FLOOR", "2.0"))
-SL_CAP = float(os.environ.get("INJ_SL_CAP", "2.0"))
+SL_FLOOR = float(os.environ.get("INJ_SL_FLOOR", "1.5"))
+SL_CAP = float(os.environ.get("INJ_SL_CAP", "3.0"))
 TP_MULT = float(os.environ.get("INJ_TP_MULT", "1.5"))
 INJ_NOTIONAL = float(os.environ.get("INJ_NOTIONAL", "12.0"))
 SIZE_MODE = os.environ.get("INJ_SIZE_MODE", "min").strip().lower()   # min = contrato minimo | notional
@@ -65,7 +68,9 @@ LEVERAGE = int(float(os.environ.get("INJ_LEVERAGE", "1")))
 MARGIN_MODE = os.environ.get("INJ_MARGIN_MODE", "isolated").strip().lower()
 COOLDOWN_MIN = float(os.environ.get("COOLDOWN_MIN", "60"))
 N_CANDLES = int(os.environ.get("INJ_N_CANDLES", "200"))
-MAX_DRIFT = float(os.environ.get("INJ_MAX_DRIFT", "0.8"))   # % max vs cierre de senal
+MAX_DRIFT = float(os.environ.get("INJ_MAX_DRIFT", "1.0"))   # % max vs cierre de senal
+ATR_N = int(os.environ.get("INJ_ATR_N", "14"))
+ATR_MULT = float(os.environ.get("INJ_ATR_MULT", "1.3"))   # SL = 1.3 x ATR14 (1h)
 INJ_DEBUG = os.environ.get("INJ_DEBUG", "0") == "1"
 
 logging.basicConfig(level=logging.INFO,
@@ -203,43 +208,69 @@ def ema(vals, span):
     return out
 
 
-def closed_candles(ex, sym, tf, n):
+
+def read_series(ex, sym, tf, n):
+    """Devuelve (cerradas, serie_completa, px_vivo). La serie completa agrega la
+    vela EN FORMACION con cierre provisional = precio vivo (offset 0 de la ventana)."""
     if tf not in TF_MS:
         fail("[ERROR] marco temporal no soportado: %s" % tf)
     raw = ex.fetch_ohlcv(sym, tf, limit=n + 3)
     raw.sort(key=lambda c: c[0])
     now = ex.milliseconds()
-    closed = [c for c in raw if c[0] + TF_MS[tf] <= now]
+    tfms = TF_MS[tf]
+    closed = [c for c in raw if c[0] + tfms <= now]
     if len(closed) < max(40, EMA_SLOW * 2):
         fail("[ERROR] velas cerradas insuficientes (%d) — DETENIDO" % len(closed))
-    return closed[-n:]
+    closed = closed[-n:]
+    px = live_price(ex, sym)
+    live = [c for c in raw if c[0] + tfms > now]
+    if live:
+        f = list(live[-1]); f[4] = px; f[2] = max(f[2], px); f[3] = min(f[3], px)
+    else:
+        f = [closed[-1][0] + tfms, px, px, px, px, 0]
+    return closed, closed + [f], px
 
 
-def compute_signal(candles, fast=None, slow=None, window=None):
-    """Cruce rapida/lenta dentro de la ventana. v3.0: la postura debe
-    PERSISTIR hasta la ultima vela cerrada (si el cruce se revirtio, no hay senal)."""
+
+def atr_pct(closed, n=None):
+    """ATR(n) simple de velas CERRADAS, en % del ultimo cierre."""
+    n = n or ATR_N
+    trs = []
+    for i in range(1, len(closed)):
+        h, l, pc = float(closed[i][2]), float(closed[i][3]), float(closed[i - 1][4])
+        trs.append(max(h - l, abs(h - pc), abs(l - pc)))
+    last = trs[-n:]
+    return (sum(last) / len(last)) / float(closed[-1][4]) * 100.0
+
+
+def compute_signal(full, n_closed, fast=None, slow=None, window=None):
+    """Cruce rapida/lenta en la ventana. Offset 0 = vela EN FORMACION (precio vivo),
+    -1 = ultima cerrada, -2 = penultima. Gana el mas reciente. La postura debe
+    PERSISTIR hasta la vela en formacion (si se revirtio, no hay senal)."""
     fast = fast or EMA_FAST
     slow = slow or EMA_SLOW
-    window = window or INJ_WINDOW
-    c = [float(x[4]) for x in candles]
-    n = len(c)
+    window = window if window is not None else INJ_WINDOW
+    c = [float(x[4]) for x in full]
+    m = len(c)
+    n = n_closed                       # indice de la vela en formacion = n
     ef, es = ema(c, fast), ema(c, slow)
-    stance = [1 if ef[i] > es[i] else -1 for i in range(n)]
+    stance = [1 if ef[i] > es[i] else -1 for i in range(m)]
     cross_idx, direction, window_off = None, 0, None
     for off in window:
         i = n + off
-        if i < 1 or i >= n:
+        if i < 1 or i > n:
             continue
-        if stance[i] != stance[i - 1] and all(stance[j] == stance[i] for j in range(i, n)):
+        if stance[i] != stance[i - 1] and all(stance[j] == stance[i] for j in range(i, m)):
             cross_idx, direction, window_off = i, stance[i], off
             break
-    sig = {"px": c[-1], "e3": ef[-1], "e21": es[-1], "stance": stance[-1],
+    sig = {"px": c[-1], "ref_px": c[n - 1], "e3": ef[-1], "e21": es[-1], "stance": stance[-1],
            "cross_idx": cross_idx, "dir": direction, "window_off": window_off,
-           "sep": None, "e21_cross": None, "bar_ts": None}
+           "sep": None, "e21_cross": None, "bar_ts": None,
+           "atr_pct": atr_pct(full[:n])}
     if cross_idx is not None:
         sig["sep"] = abs(ef[cross_idx] - es[cross_idx]) / es[cross_idx] * 100.0
         sig["e21_cross"] = es[cross_idx]
-        sig["bar_ts"] = int(candles[cross_idx][0])
+        sig["bar_ts"] = int(full[cross_idx][0])
     return sig
 
 
@@ -252,16 +283,19 @@ def px_decimals(market):
     return d
 
 
-def sl_tp(px, e_slow_cross, long_dir):
-    dist = abs(px - e_slow_cross) * SL_MULT
-    dist_pct = dist / px * 100.0
-    if dist_pct < SL_FLOOR:
-        dist = px * SL_FLOOR / 100.0
-    elif dist_pct > SL_CAP:
-        dist = px * SL_CAP / 100.0
+
+def sl_tp(px, e_slow_cross, long_dir, atr):
+    """SL% = max(ATR_MULT x ATR14%, SL_MULT x distancia a EMA lenta del cruce),
+    acotado a [SL_FLOOR, SL_CAP]. TP = TP_MULT x SL (R:R 1.5).
+    Logica: el stop debe quedar fuera del ruido horario (ATR) y mas alla de la
+    estructura (EMA lenta); el techo evita stops absurdos."""
+    d_atr = ATR_MULT * atr
+    d_str = abs(px - e_slow_cross) / px * 100.0 * SL_MULT
+    sl_pct = min(max(SL_FLOOR, d_atr, d_str), SL_CAP)
+    dist = px * sl_pct / 100.0
     if long_dir:
-        return px - dist, px + dist * TP_MULT, dist / px * 100.0
-    return px + dist, px - dist * TP_MULT, dist / px * 100.0
+        return px - dist, px + dist * TP_MULT, sl_pct
+    return px + dist, px - dist * TP_MULT, sl_pct
 
 
 def live_price(ex, sym):
@@ -360,14 +394,17 @@ def fire(ex, market, sym, inst_id, sig, tot_eq):
     side = "buy" if long_dir else "sell"
 
     px = live_price(ex, sym)
-    drift = abs(px - sig["px"]) / sig["px"] * 100.0
+    drift = abs(px - sig["ref_px"]) / sig["ref_px"] * 100.0
     if drift > MAX_DRIFT:
-        log.info("Precio vivo %.4f se alejo %.2f%% del cierre de senal (> %.2f%%) — no se persigue.",
+        log.info("Precio vivo %.4f a %.2f%% del ultimo cierre (> %.2f%%) — no se persigue.",
                  px, drift, MAX_DRIFT)
+        return 0
+    if (sig["dir"] > 0) != (sig["stance"] > 0):
+        log.info("La postura se revirtio al disparar — descartado.")
         return 0
 
     contracts, notional = size_contracts(market, px)
-    sl, tp, dist_pct = sl_tp(px, sig["e21_cross"], long_dir)
+    sl, tp, dist_pct = sl_tp(px, sig["e21_cross"], long_dir, sig["atr_pct"])
     d = px_decimals(market)
     sl_s, tp_s = ("%." + str(d) + "f") % sl, ("%." + str(d) + "f") % tp
     bar_ms = sig["bar_ts"]
@@ -383,9 +420,9 @@ def fire(ex, market, sym, inst_id, sig, tot_eq):
     except Exception as e:
         fail("[ERROR] set_leverage fallo: %s — DETENIDO (fail-closed)" % str(e)[:160])
 
-    log.info("Disparo %s | %d ct | nocional ~$%.2f (%dx %s) | px %.4f | SL %s (%.2f%%) | TP %s | %s",
+    log.info("Disparo %s | %d ct | nocional ~$%.2f (%dx %s) | px %.4f | SL %s (%.2f%%, ATR %.2f%%) | TP %s | %s",
              "LONG" if long_dir else "SHORT", contracts, notional, LEVERAGE,
-             MARGIN_MODE, px, sl_s, dist_pct, tp_s, cl)
+             MARGIN_MODE, px, sl_s, dist_pct, sig["atr_pct"], tp_s, cl)
     body = {"instId": inst_id, "tdMode": MARGIN_MODE, "posSide": "net", "side": side,
             "ordType": "optimal_limit_ioc", "sz": str(int(contracts)), "clOrdId": cl,
             "attachAlgoOrds": [{"attachAlgoClOrdId": ("INJA%d" % bar_ms)[:32],
@@ -430,7 +467,7 @@ def main():
              EMA_FAST, EMA_SLOW, INJ_TF, VERSION, "SOMBRA" if shadow else "REAL")
     if INJ_TF not in TF_MS:
         fail("[ERROR] INJ_TF invalido: %s" % INJ_TF)
-    if not INJ_WINDOW or any(o > -1 for o in INJ_WINDOW):
+    if not INJ_WINDOW or any(o > 0 for o in INJ_WINDOW):
         fail("[ERROR] INJ_WINDOW invalido: %s" % (INJ_WINDOW,))
     if not (1 <= EMA_FAST < EMA_SLOW):
         fail("[ERROR] EMA invalidas: %d/%d" % (EMA_FAST, EMA_SLOW))
@@ -453,9 +490,9 @@ def main():
             log.info("Nave ocupada: %.0f ct | %d algos vivos — vigilando.", pos_c, len(algos))
             return 0
 
-    candles = closed_candles(ex, sym, INJ_TF, N_CANDLES)
-    sig = compute_signal(candles)
-    log.info("Precio: %.4f | EMA%d/%d: %.4f/%.4f | %s", sig["px"], EMA_FAST, EMA_SLOW,
+    closed, full, _px = read_series(ex, sym, INJ_TF, N_CANDLES)
+    sig = compute_signal(full, len(closed))
+    log.info("Precio vivo: %.4f | ATR14 1h: %.2f%% | EMA%d/%d: %.4f/%.4f | %s", sig["px"], sig["atr_pct"], EMA_FAST, EMA_SLOW,
              sig["e3"], sig["e21"], "rapida > lenta" if sig["stance"] > 0 else "rapida < lenta")
 
     if sig["cross_idx"] is None:
@@ -470,9 +507,9 @@ def main():
 
     if shadow:
         contracts, est = size_contracts(market, sig["px"])
-        sl, tp, dist_pct = sl_tp(sig["px"], sig["e21_cross"], sig["dir"] > 0)
-        log.info("[SOMBRA] %s legal | cruce hace %d vela(s) (%s UTC) | sep %.2f%% | SL ~%.4f TP ~%.4f | %d ct ~$%.2f",
-                 dir_txt, -sig["window_off"], bar_h, sig["sep"], sl, tp, contracts, est)
+        sl, tp, dist_pct = sl_tp(sig["px"], sig["e21_cross"], sig["dir"] > 0, sig["atr_pct"])
+        log.info("[SOMBRA] %s legal | cruce %s (%s UTC) | sep %.2f%% | SL ~%.4f TP ~%.4f | %d ct ~$%.2f",
+                 dir_txt, "EN FORMACION" if sig["window_off"] == 0 else "hace %d cerrada(s)" % -sig["window_off"], bar_h, sig["sep"], sl, tp, contracts, est)
         return 0
 
     pos_mode_check(ex)
