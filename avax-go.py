@@ -2,91 +2,7 @@
 # -*- coding: utf-8 -*-
 # =====================================================================
 # avax-go.py — NAVIO AVAX · LA FLOTA CARBONO · BUQUE: EL OCTAVO
-# REBAUTIZO 07-11-2026: pabellon avax-go.py — casco IDENTICO al certificado
-# 35/35 (avax_bot.py v2.2-1h-xperp-soldaduras-avax). Cero cambios de logica.
-# 100% AUTONOMO: solo stdlib + ccxt (pip). NO importa ningun otro archivo
-# del repo — navega solo en un repo recien creado. Sin pandas, sin sandbox.
-# Casco: chasis Catamaran del capitan (Ax2) reblindado a v2.2 · Motor: EMA 3/21
-# Marco: 1h · Instrumento: AVAX-USD XPERP (futuro fechado USD, venc. mas lejano)
-#
-# v2.2-1h-xperp-soldaduras-avax — DOCTORADO EN TRADING Y FORENSE sobre el
-# main-avax.py del capitan (Ax2 "EL OCTAVO", chasis Catamaran SUI 1:1).
-# El informe certificado hallazgos P0 que aqui quedan soldados, y el
-# capitan pidio una cosa mas: SABER EL WIN RATE. Telemetria de flota nueva.
-#
-#  P0 · COOLDOWN FAIL-OPEN (hallazgo forense #1): el cooldown del Ax2 leia
-#       fill.get('pnl') — ESE CAMPO NO EXISTE en fills-history de OKX (el
-#       campo real es fillPnl). pnl = 0.0 siempre -> 'pnl < 0' jamas se
-#       cumple -> tras una perdida el barco VOLVIA A DISPARAR en la misma
-#       hora. Con SL 4%/TP 5.5% y 1h, un mercado que aletea puede encadenar
-#       perdidas sin calma: ES EL PEAJE OCULTO. FIX v2.2 (heredado del
-#       INYECTOR certificado): DOBLE FUENTE — 1) positions-history
-#       (realizedPnl, con pnl de reserva) -> 2) fills-history (fillPnl,
-#       limit 40) -> ambas rotas: BLOQUEO fail-closed. Certificado contra
-#       el cuerpo pelado '0' (KeyError :: 0) de my.okx.com.
-#  P0 · set_position_mode(False, symbol) (Ax4 panda) ELIMINADO: muta el
-#       posMode de la cuenta ENTERA (toda la flota de golpe). Sustituido
-#       por pos_mode_check: lee /api/v5/account/config; si no es net_mode
-#       -> DETENIDO fail-closed. El codigo JAMAS toca el interruptor.
-#  P0 · pandas ELIMINADO (gordo y fragil en CI): velas nativas ccxt +
-#       EMAs stdlib. Ley de flota: 100% autonomo (stdlib + ccxt).
-#  P1 · SL 4.0% / TP 5.5% del Ax2 estaban validados para EMA8/34 (backtest
-#       27-sep del capitan: WR 37.0%, PF 1.57) y su propia nota decia
-#       REVALIDAR para 3/21. FIX: calibracion de flota 1h con candado:
-#       SL fijo 2.0% / TP 3.0% (R:R 1.5 -> WR equilibrio 40.0%), el mismo
-#       motor auditado que el INYECTOR (86 trades, WR 50.0%, PF 1.34/90d
-#       con candado 0.17). La telemetria WIN RATE mide el WR REAL de
-#       AVAX contra ese 40%: si el WR real no lo cubre, se calibra de nuevo.
-#  P1 · TARGET_NOTIONAL 7.5 < minimo tradable: 1 ct = 10 AVAX (~$86.7 al
-#       fichaje) -> ticket minimo 0.1 ct (~$8.67). FIX: tallado honesto
-#       Ax3.3 (ctVal/lotSz/minSz SIEMPRE de la API), objetivo $10 -> 0.1 ct,
-#       y guardia $15 fail-closed (Ax3.2: unidad sorpresa = barco parado).
-#  MINOR · sort defensivo de velas por ts; colateral enmascarado en log
-#       (repo publica; AVAX_DEBUG=1 para diagnostico puntual).
-#
-#  TELEMETRIA WIN RATE (nueva, peticion del capitan): cada vigilia imprime
-#  la bitacora WIN RATE de AVAX con datos REALES de OKX:
-#    · neto por cierre = realizedPnl + fee + fundingFee + liqPenalty
-#      (el peaje DENTRO del resultado — sin contabilidad de humo)
-#    · WR %, net acumulado, peaje acumulado, avg win/loss, expectancia
-#      $/trade y WR de equilibrio teorico (R:R 1.5 -> 40.0%)
-#    · doble fuente: positions-history -> fills-history (aprox por fill).
-#      Ambas rotas -> aviso y sigue: la telemetria es BITACORA, jamas
-#      puerta de disparo (la puerta es cooldown_active, fail-closed aparte).
-#
-# BLINDAJE A BORDO (herencia Ax2/Ax3 del capitan + soldaduras de flota):
-#   · pick_future            -> reanclaje automatico al vencimiento mas lejano
-#   · veto USDT TRIPLE       -> quote USD + settle USD + futuro fechado (MiCA/EEE)
-#   · optimal_limit_ioc      -> entrada anti-deslizamiento
-#   · attachAlgoOrds         -> SL/TP viajan DENTRO de la orden de entrada
-#   · clOrdId sello de vela  -> idempotencia (OKX rechaza duplicado 51016)
-#   · candle_already_traded  -> consulta historial antes de disparar (fail-closed)
-#   · anti-doble             -> posiciones + algos vivos = nave ocupada
-#   · protection_confirmed   -> verifica SL/TP pendientes tras disparar
-#   · emergency_close        -> si la coraza no aparece, cierre inmediato
-#   · cooldown doble fuente  -> positions-history + fills-history. Ambas
-#                               rotas = BLOQUEO fail-closed (banco verde)
-#   · posMode check          -> se COMPRUEBA net_mode, jamas se muta la cuenta
-#   · bodega ilegible        -> totEq/eqUsd ilegible = DETENIDO (fail-closed Ax3)
-#
-# VARIABLES DE ENTORNO (todas opcionales):
-#   SHADOW=1             sombra (defecto). 0 = municion real
-#   DRY_RUN=1            freno de flota -> fuerza sombra (nunca sandbox)
-#   AVAX_TF=1h           marco temporal (diseno del capitan)
-#   AVAX_WINDOW=-2,-3,-4 ventana de vela del cruce (capitan: el cruce debe
-#                        sobrevivir 1 vela de confirmacion; gana el mas reciente)
-#   AVAX_SEP_LOCK=0.17   candado de separacion % (capitan, el cruce NO basta)
-#   AVAX_SL_FLOOR=2.0    piso SL % (calibracion de flota 1h)
-#   AVAX_SL_CAP=2.0      techo SL % (piso=techo -> SL fijo 2.0%)
-#   AVAX_TP_MULT=1.5     TP = x * SL -> 3.0% (R:R 1.5)
-#   AVAX_NOTIONAL=10     nocional objetivo $ (ticket real: 0.1 ct minimo)
-#   AVAX_MAX_NOTIONAL=15 guardia de nocional $ (Ax3.2)
-#   AVAX_LEVERAGE=2      apalancamiento con margen aislado
-#   AVAX_MARGIN_MODE=isolated  margen aislado (Ax3)
-#   AVAX_N_CANDLES=200   velas cerradas para las EMAs
-#   COOLDOWN_MIN=60      calma tras perdida
-#   AVAX_DEBUG=1         muestra el colateral real en el log (defecto: oculto,
-#                        repo publica). Solo diagnostico, nunca opera
+# VERSIÓN PRODUCCIÓN 24/7 (Bucle continuo + Reintentos resilientes)
 # =====================================================================
 
 import math
@@ -95,13 +11,14 @@ import sys
 import time
 import logging
 from datetime import datetime, timezone
+from functools import wraps
 
 try:
     import ccxt
 except ImportError:
     ccxt = None
 
-VERSION = "v2.2-1h-xperp-soldaduras-avax"
+VERSION = "v2.2-1h-xperp-prod-avax"
 TF_MS = {"5m": 300000, "15m": 900000, "30m": 1800000,
          "1h": 3600000, "2h": 7200000, "4h": 14400000, "6h": 21600000}
 BASE_ASSET = "AVAX"
@@ -118,7 +35,7 @@ SL_CAP = float(os.environ.get("AVAX_SL_CAP", "2.0"))
 TP_MULT = float(os.environ.get("AVAX_TP_MULT", "1.5"))
 AVAX_NOTIONAL = float(os.environ.get("AVAX_NOTIONAL", "10.0"))
 MAX_NOTIONAL = float(os.environ.get("AVAX_MAX_NOTIONAL", "15.0"))
-LEVERAGE = int(float(os.environ.get("AVAX_LEVERAGE", "2")))
+LEVERAGE = int(float(os.environ.get("AVAX_LEVERAGE", "1")))
 MARGIN_MODE = os.environ.get("AVAX_MARGIN_MODE", "isolated").strip().lower()
 COOLDOWN_MIN = float(os.environ.get("COOLDOWN_MIN", "60"))
 N_CANDLES = int(os.environ.get("AVAX_N_CANDLES", "200"))
@@ -139,6 +56,25 @@ def _f(x):
 def fail(msg):
     log.error(msg)
     sys.exit(1)
+
+
+def retry_api(retries=3, delay=2):
+    """Decorador de producción para reintentar llamadas a la API ante caídas de red."""
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            last_err = None
+            for attempt in range(1, retries + 1):
+                try:
+                    return func(*args, **kwargs)
+                except Exception as e:
+                    last_err = e
+                    log.warning("Intento %d/%d fallido en %s: %s. Reintentando en %ds...",
+                                attempt, retries, func.__name__, str(e)[:120], delay * attempt)
+                    time.sleep(delay * attempt)
+            raise last_err
+        return wrapper
+    return decorator
 
 
 def _fmt_contracts(c):
@@ -165,25 +101,23 @@ def build_exchange():
         "enableRateLimit": True,
         "options": {"defaultType": "futures"},
     })
-    ex.hostname = "my.okx.com"          # refuerzo del anclaje X-Perp
+    ex.hostname = "my.okx.com"
     return ex, bool(api_key and secret and passwd)
 
 
+@retry_api(retries=3, delay=3)
 def pick_future(ex):
-    """Reanclaje: vencimiento mas lejano de AVAX/USD settle USD (Ley Carbono).
-    Veto USDT TRIPLE: quote USD, settle USD y futuro fechado (no perp swap).
-    MiCA/EEE: USDT PROHIBIDO a bordo."""
     ex.load_markets()
     cands = []
     for m in ex.markets.values():
         if m.get("base") != BASE_ASSET:
             continue
         if m.get("quote") != "USD":
-            continue                      # veto USDT (1): quote != USD
+            continue
         if m.get("settle") != "USD":
-            continue                      # veto USDT (2): settle != USD
+            continue
         if m.get("swap") or not m.get("future"):
-            continue                      # veto (3): solo futuro fechado
+            continue
         cands.append(m)
     if not cands:
         fail("[ERROR] Sin futuros AVAX/USD settle USD en OKX. DETENIDO (Ley Carbono).")
@@ -193,24 +127,19 @@ def pick_future(ex):
     return best
 
 
+@retry_api(retries=3, delay=2)
 def auth_and_collateral(ex, has_creds):
     if not has_creds:
         log.info("Sombra publica: sin credenciales — solo lectura de mercado")
         return None
-    try:
-        bal = ex.fetch_balance()
-    except Exception as e:
-        fail("[ERROR] Autenticacion/lectura de cuenta fallo: %s — DETENIDO" % str(e)[:200])
-
+    bal = ex.fetch_balance()
     tot_eq = None
-    # 1) totEq del crudo OKX (equidad total en USD), si existe y es > 0
     try:
         d0 = bal.get("info", {}).get("data", [{}])[0]
         if d0.get("totEq"):
             tot_eq = _f(d0["totEq"])
     except Exception:
         pass
-    # 2) METODO DEL PERRO: suma de eqUsd por divisa en details
     if not tot_eq:
         try:
             details = bal.get("info", {}).get("data", [{}])[0].get("details") or []
@@ -219,7 +148,6 @@ def auth_and_collateral(ex, has_creds):
                 tot_eq = suma
         except Exception:
             pass
-    # 3) Ultimo recurso: bolsillos unificados reales (USD/USDC/USDT)
     if not tot_eq:
         try:
             suma = sum(_f((bal.get(c) or {}).get("total"))
@@ -228,12 +156,11 @@ def auth_and_collateral(ex, has_creds):
                 tot_eq = suma
         except Exception:
             pass
-    # 4) Decreto Ax3: bodega ilegible NO navega (fail-closed, nunca fail-open).
     if tot_eq is None:
         fail("[ERROR] Bodega ilegible (totEq/eqUsd/bolsillos vacios) — DETENIDO (fail-closed)")
     try:
-        host = str(ex.urls.get("api", {}).get("rest", "?"))   # ccxt 4.x: 'rest'
-        if "{hostname}" in host:                              # fix host cosmico
+        host = str(ex.urls.get("api", {}).get("rest", "?"))
+        if "{hostname}" in host:
             host = host.replace("{hostname}", getattr(ex, "hostname", "my.okx.com"))
     except Exception:
         host = "?"
@@ -245,11 +172,9 @@ def auth_and_collateral(ex, has_creds):
 
 
 # ---------------- POSICION / ALGOS ----------------
+@retry_api(retries=3, delay=2)
 def open_position_contracts(ex, sym):
-    try:
-        poss = ex.fetch_positions([sym])
-    except Exception as e:
-        fail("[ERROR] fetch_positions fallo: %s — DETENIDO (fail-closed)" % str(e)[:200])
+    poss = ex.fetch_positions([sym])
     for p in poss:
         c = p.get("contracts")
         if c and abs(float(c)) > 0:
@@ -257,16 +182,12 @@ def open_position_contracts(ex, sym):
     return 0.0
 
 
+@retry_api(retries=3, delay=2)
 def algo_pending(ex, inst_id):
-    """SL/TP vivos (oco + conditional). Fail-closed: si no se puede mirar, DETENIDO."""
     out = []
     for ot in ("oco", "conditional"):
-        try:
-            r = ex.privateGetTradeOrdersAlgoPending({"ordType": ot, "instId": inst_id})
-            out.extend(r.get("data") or [])
-        except Exception as e:
-            fail("[ERROR] consulta algo pending (%s) fallo: %s — DETENIDO (fail-closed)"
-                 % (ot, str(e)[:200]))
+        r = ex.privateGetTradeOrdersAlgoPending({"ordType": ot, "instId": inst_id})
+        out.extend(r.get("data") or [])
     return out
 
 
@@ -280,14 +201,12 @@ def ema(vals, span):
     return out
 
 
+@retry_api(retries=3, delay=2)
 def closed_candles(ex, sym, tf, n):
-    """Velas CERRADAS (la vela en formacion se descarta siempre).
-    Nota OKX: ccxt acepta '1h' y lo traduce a bar '1H' — el mapa TF_MS
-    gobierna el descarte de vela viva."""
     if tf not in TF_MS:
         fail("[ERROR] marco temporal no soportado: %s" % tf)
     raw = ex.fetch_ohlcv(sym, tf, limit=n + 3)
-    raw.sort(key=lambda c: c[0])          # v2.2: sort defensivo por ts
+    raw.sort(key=lambda c: c[0])
     tfms = TF_MS[tf]
     now = ex.milliseconds()
     closed = [c for c in raw if c[0] + tfms <= now]
@@ -297,15 +216,13 @@ def closed_candles(ex, sym, tf, n):
 
 
 def compute_signal(candles):
-    """Cruce EMA3/21 dentro de la ventana del capitan (-2,-3,-4): el cruce
-    debe sobrevivir 1 vela de confirmacion; gana el mas reciente legal."""
     c = [float(x[4]) for x in candles]
     n = len(c)
     e3 = ema(c, 3)
     e21 = ema(c, 21)
     stance = [1 if e3[i] > e21[i] else -1 for i in range(n)]
     cross_idx, direction, window_off = None, 0, None
-    for off in AVAX_WINDOW:                    # p.ej. -2,-3,-4 (mas reciente primero)
+    for off in AVAX_WINDOW:
         i = n + off
         if i < 1 or i >= n:
             continue
@@ -334,11 +251,6 @@ def px_decimals(market):
 
 
 def sl_tp(px, e21_cross, long_dir):
-    """SL = SL_MULT x dist EMA21 con piso/techo %; TP = TP_MULT x SL.
-    Doctorado AVAX: el 4.0/5.5 del Ax2 era de la ley EMA8/34 (nota del
-    propio capitan: REVALIDAR para 3/21). Calibracion de flota 1h con
-    candado: piso = techo = 2.0% -> SL fijo 2.0%, TP 3.0% (R:R 1.5).
-    El WIN RATE real que imprime este bot mide si AVAX cubre su 40.0%."""
     dist = abs(px - e21_cross) * SL_MULT
     dist_pct = dist / px * 100.0
     if dist_pct < SL_FLOOR:
@@ -351,27 +263,17 @@ def sl_tp(px, e21_cross, long_dir):
 
 
 # ---------------- SEGURIDAD PRE-DISPARO ----------------
+@retry_api(retries=3, delay=2)
 def already_traded(ex, inst_id, cl_ord_id):
-    try:
-        r = ex.privateGetTradeOrdersHistory({"instId": inst_id, "limit": "20"})
-    except Exception as e:
-        fail("[ERROR] historial de ordenes inaccesible: %s — DETENIDO (fail-closed)"
-             % str(e)[:200])
+    r = ex.privateGetTradeOrdersHistory({"instType": "FUTURES", "instId": inst_id, "limit": "20"})
     for o in (r.get("data") or []):
         if o.get("clOrdId") == cl_ord_id:
             return True
     return False
 
 
+@retry_api(retries=3, delay=2)
 def cooldown_active(ex, inst_id):
-    """Calma tras perdida. FIX P0 del doctorado (hallazgo forense #1): el
-    Ax2 leia fill.get('pnl') — campo INEXISTENTE en fills-history -> cooldown
-    FAIL-OPEN (tras perder, disparaba de nuevo). DOBLE FUENTE certificada
-    (heredada del INYECTOR v2.2): 1) positions-history (realizedPnl, con pnl
-    de reserva; en my.okx.com puede responder cuerpo pelado '0' -> KeyError
-    :: 0) -> 2) fills-history (fillPnl, limit 40) -> ambas rotas: BLOQUEO
-    fail-closed. Con SL/TP atomicos el cierre es una pieza: la semantica de
-    calma es identica."""
     now = ex.milliseconds()
     try:
         r = ex.privateGetAccountPositionsHistory(
@@ -403,16 +305,10 @@ def cooldown_active(ex, inst_id):
         return True, 0.0, now
 
 
+@retry_api(retries=3, delay=2)
 def pos_mode_check(ex):
-    """P0 doctorado: COMPROBAR el posMode, NUNCA mutarlo. El set_position_mode
-    del Ax4 (panda) cambia el modo de la cuenta ENTERA (toda la flota de
-    golpe). Si la cuenta no esta en net_mode (one-way), DETENIDO fail-closed:
-    el pin se fija UNA vez desde la app; el codigo no toca el interruptor."""
-    try:
-        cfg = ex.privateGetAccountConfig()
-        pos_mode = ((cfg.get("data") or [{}])[0]).get("posMode")
-    except Exception as e:
-        fail("[ERROR] posMode ilegible (%s) — DETENIDO (fail-closed)" % str(e)[:120])
+    cfg = ex.privateGetAccountConfig()
+    pos_mode = ((cfg.get("data") or [{}])[0]).get("posMode")
     if pos_mode != "net_mode":
         fail("[ERROR] Cuenta en %s — pin net_mode UNA vez a flota; el codigo no muta la cuenta. DETENIDO" % pos_mode)
     log.info("posMode verificado: net_mode (one-way) — cuenta intacta, sin mutacion.")
@@ -420,11 +316,6 @@ def pos_mode_check(ex):
 
 
 def size_contracts(market, px):
-    """Tallado honesto AVAX (Ax3.3): ctVal/lotSz/minSz SIEMPRE de la API.
-    1 ct = 10 AVAX -> valor $ = 10 x px XPERP (~$86.7 al fichaje 05-11-2026).
-    Objetivo $10 redondeado POR DEBAJO al paso lotSz (0.1 ct); si no llega,
-    el MINIMO tradable (minSz) si cabe bajo la guardia $15 (Ax3.2). Si ni el
-    minimo cabe: DETENIDO — unidad sorpresa = barco parado."""
     info = market.get("info") or {}
     csize = _f(market.get("contractSize") or info.get("ctVal"))
     if csize <= 0:
@@ -439,7 +330,7 @@ def size_contracts(market, px):
     steps = int(math.floor((AVAX_NOTIONAL / val_ct) / lot + 1e-9))
     n = steps * lot
     if n < min_sz:
-        n = min_sz                        # minimo tradable si cabe bajo guardia
+        n = min_sz
     n = round(n, 10)
     notional = n * val_ct
     if notional > MAX_NOTIONAL:
@@ -448,16 +339,10 @@ def size_contracts(market, px):
     return n, notional
 
 
-# ---------------- TELEMETRIA WIN RATE (peticion del capitan) ----------------
+# ---------------- TELEMETRIA WIN RATE ----------------
+@retry_api(retries=2, delay=2)
 def win_rate_report(ex, inst_id):
-    """Bitacora WIN RATE con datos REALES de OKX, peaje incluido.
-    Neto por cierre = realizedPnl + fee + fundingFee + liqPenalty (el peaje
-    DENTRO del resultado). Fuente 1: positions-history (una fila por cierre).
-    Si el cuerpo pelado '0' la tumba (KeyError :: 0): fuente 2 fills-history
-    (cada fill con fillPnl != 0; aproximacion por fill, se etiqueta). Ambas
-    rotas -> aviso y sigue: la telemetria es BITACORA, jamas puerta de
-    disparo (la puerta es cooldown_active, fail-closed aparte)."""
-    rows = []                       # (ts, net, peaje)
+    rows = []
     src = "positions-history"
     try:
         r = ex.privateGetAccountPositionsHistory(
@@ -481,7 +366,7 @@ def win_rate_report(ex, inst_id):
             for x in (r.get("data") or []):
                 fp = _f(x.get("fillPnl"))
                 if fp == 0:
-                    continue                       # fills de entrada: sin PnL
+                    continue
                 ts = int(_f(x.get("ts")) or _f(x.get("fillTime")))
                 peaje = _f(x.get("fee"))
                 if ts > 0:
@@ -494,7 +379,7 @@ def win_rate_report(ex, inst_id):
     if not rows:
         log.info("Win rate: sin cierres registrados todavia — la bitacora empezara al primer cierre.")
         return None
-    rows.sort(key=lambda t: t[0])       # antiguo -> nuevo
+    rows.sort(key=lambda t: t[0])
     wins = [x for x in rows if x[1] > 0]
     losses = [x for x in rows if x[1] < 0]
     flats = [x for x in rows if x[1] == 0]
@@ -516,15 +401,12 @@ def win_rate_report(ex, inst_id):
              len(wins), len(losses), len(flats), wr, net_sum, peaje_sum)
     log.info("---- avg win %+.4f | avg loss %+.4f | expectancia %+.4f USD/trade | R:R %.2f -> WR equilibrio %.1f%%",
              avg_w, avg_l, expectancy, TP_MULT, be_wr)
-    if n >= 10 and expectancy <= 0:
-        log.info("---- Veredicto: expectancia <= 0 en %d cierres — el peaje gana: calibrar SL/TP/candado antes de crecer.", n)
-    elif net_sum > 0:
-        log.info("---- Veredicto: cuenta positiva neta — el motor paga el peaje y sobra.")
     return {"n": n, "wins": len(wins), "losses": len(losses), "flats": len(flats),
             "wr": wr, "net": net_sum, "peaje": peaje_sum}
 
 
 # ---------------- DISPARO ----------------
+@retry_api(retries=3, delay=1)
 def emergency_close(ex, inst_id, entry_side, contracts):
     body = {
         "instId": inst_id, "tdMode": MARGIN_MODE, "posSide": "net",
@@ -532,14 +414,11 @@ def emergency_close(ex, inst_id, entry_side, contracts):
         "ordType": "market", "sz": _fmt_contracts(contracts),
         "reduceOnly": True, "clOrdId": ("AVXE%d" % ex.milliseconds())[:32],
     }
-    try:
-        r = ex.privatePostTradeOrder(body)
-        log.info("Cierre de emergencia enviado | code=%s", r.get("code"))
-    except Exception as e:
-        fail("[ERROR] cierre de emergencia fallo: %s — INTERVENCION MANUAL URGENTE"
-             % str(e)[:200])
+    r = ex.privatePostTradeOrder(body)
+    log.info("Cierre de emergencia enviado | code=%s", r.get("code"))
 
 
+@retry_api(retries=3, delay=1)
 def fire(ex, market, inst_id, sig, contracts, tot_eq):
     px = sig["px"]
     long_dir = sig["dir"] > 0
@@ -574,10 +453,7 @@ def fire(ex, market, inst_id, sig, contracts, tot_eq):
             "tpTriggerPx": tp_s, "tpOrdPx": "-1",
         }],
     }
-    try:
-        r = ex.privatePostTradeOrder(body)
-    except Exception as e:
-        fail("[ERROR] envio de orden fallo: %s — DETENIDO" % str(e)[:200])
+    r = ex.privatePostTradeOrder(body)
     if str(r.get("code")) != "0":
         fail("[ERROR] OKX rechazo la orden: code=%s msg=%s — DETENIDO"
              % (r.get("code"), r.get("msg")))
@@ -598,12 +474,11 @@ def fire(ex, market, inst_id, sig, contracts, tot_eq):
              a0.get("slTriggerPx"), a0.get("tpTriggerPx"))
 
 
-# ---------------- MAIN ----------------
-def main():
+def run_cycle():
     shadow = SHADOW or DRY_RUN
     if DRY_RUN and not SHADOW:
         log.info("Freno de flota DRY_RUN=1 -> forzando SOMBRA (nunca sandbox)")
-    log.info("Modo ciclo unico | NAVIO AVAX EL OCTAVO EMA3/21 %s %s + BLINDAJE xpl-v4.2 (XPERP USD) | %s",
+    log.info("Ejecutando ciclo | NAVIO AVAX EL OCTAVO EMA3/21 %s %s + BLINDAJE xpl-v4.2 (XPERP USD) | %s",
              AVAX_TF, VERSION, "SOMBRA" if shadow else "REAL")
     if AVAX_TF not in TF_MS:
         fail("[ERROR] AVAX_TF invalido: %s" % AVAX_TF)
@@ -624,7 +499,7 @@ def main():
     tot_eq = auth_and_collateral(ex, has_creds)
 
     if has_creds:
-        win_rate_report(ex, inst_id)   # telemetria de flota: bitacora, NO puerta
+        win_rate_report(ex, inst_id)
 
     if has_creds:
         pos_c = open_position_contracts(ex, sym)
@@ -632,7 +507,7 @@ def main():
         if pos_c or algos:
             log.info("Nave ocupada: %s ct en posicion | %d algos vivos — no se abre nada. Vigilando.",
                      _fmt_contracts(pos_c), len(algos))
-            return 0
+            return
 
     candles = closed_candles(ex, sym, AVAX_TF, N_CANDLES)
     sig = compute_signal(candles)
@@ -642,12 +517,12 @@ def main():
 
     if sig["cross_idx"] is None:
         log.info("Sin cruce EMA3/21 legal en la ventana %s. Vigilando.", list(AVAX_WINDOW))
-        return 0
+        return
 
     if sig["sep"] < SEP_LOCK:
         log.info("Cruce con separacion %.3f%% < candado %.2f%% — descartado. Vigilando.",
                  sig["sep"], SEP_LOCK)
-        return 0
+        return
 
     dir_txt = "LONG" if sig["dir"] > 0 else "SHORT"
     sl, tp, dist_pct = sl_tp(sig["px"], sig["e21_cross"], sig["dir"] > 0)
@@ -660,10 +535,10 @@ def main():
                  "SL ~%.4f (dist %.2f%%) | TP ~%.4f | %s ct ~ $%.2f — sin municion, solo bitacora",
                  dir_txt, age, bar_h, sig["sep"], sl, dist_pct, tp,
                  _fmt_contracts(contracts), est_notional)
-        return 0
+        return
 
     # ---- REAL ----
-    pos_mode_check(ex)   # P0 doctorado: comprobar, NO mutar (la cuenta es de toda la flota)
+    pos_mode_check(ex)
     try:
         ex.set_leverage(LEVERAGE, sym, params={"mgnMode": MARGIN_MODE})
         log.info("Apalancamiento: %dx (%s)", LEVERAGE, MARGIN_MODE)
@@ -674,15 +549,31 @@ def main():
     if active:
         mins = int((ex.milliseconds() - ft) / 60000)
         log.info("Cooldown: perdida %.2f hace %d min — calma a bordo. Vigilando.", pnl, mins)
-        return 0
+        return
 
     cl = ("AVAX%d" % sig["bar_ts"])[:32]
     if already_traded(ex, inst_id, cl):
         log.info("Vela %s ya navegada (candle_already_traded) — descartado.", bar_h)
-        return 0
+        return
 
     fire(ex, market, inst_id, sig, contracts, tot_eq)
-    return 0
+
+
+def main():
+    log.info("Iniciando NAVIO AVAX en modo PRODUCCIÓN CONTINUA (Bucle 24/7)...")
+    tf_ms = TF_MS.get(AVAX_TF, 3600000)
+    while True:
+        try:
+            start_t = time.time()
+            run_cycle()
+        except Exception as e:
+            log.error("[CRITICAL ERROR EN CICLO] %s — El bucle sobrevive y reintentara en el proximo ciclo.", str(e))
+        
+        # Sincronización inteligente de espera hasta el siguiente compás de vela
+        elapsed = (time.time() - start_t) * 1000
+        sleep_ms = max(10000, tf_ms - (elapsed % tf_ms))
+        log.info("Ciclo finalizado. Durmiendo %.1f minutos hasta la siguiente vigilia...", sleep_ms / 60000.0)
+        time.sleep(sleep_ms / 1000.0)
 
 
 if __name__ == "__main__":
