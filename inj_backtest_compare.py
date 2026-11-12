@@ -77,13 +77,14 @@ def sl_tp_pct(px, e_cross, atr):
     return sl, sl * TP_MULT
 
 
-def fetch_15m(symbol, days, cache):
+def fetch_15m(symbol, days, cache, host):
     if cache and os.path.exists(cache):
         data = json.load(open(cache))
         print("cache: %d velas de %s" % (len(data), cache))
         return data
     import ccxt
-    ex = ccxt.okx({"enableRateLimit": True})
+    ex = ccxt.okx({"enableRateLimit": True, "hostname": host})
+    ex.hostname = host
     now = ex.milliseconds()
     since = (now - days * 86400000) // Q * Q
     out, seen = [], set()
@@ -199,10 +200,11 @@ def main():
     ap.add_argument("--fee", type=float, default=0.14, help="peaje ida y vuelta, %%")
     ap.add_argument("--slip", type=float, default=0.05, help="deslizamiento extra en SL, %%")
     ap.add_argument("--cache", default="inj_15m_cache.json")
+    ap.add_argument("--host", default="www.okx.com", help="p.ej. my.okx.com")
     ap.add_argument("--out", default="", help="guardar operaciones en JSONL")
     a = ap.parse_args()
 
-    c15 = fetch_15m(a.symbol, a.days, a.cache)
+    c15 = fetch_15m(a.symbol, a.days, a.cache, a.host)
     if len(c15) < 2000:
         sys.exit("pocas velas (%d)" % len(c15))
     f = lambda ts: datetime.fromtimestamp(ts / 1000, tz=timezone.utc).strftime("%Y-%m-%d")
