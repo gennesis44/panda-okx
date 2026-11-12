@@ -1,0 +1,46 @@
+# =====================================================================
+# inj-backtest.yml — EL INYECTOR · comparador LIVE vs CLOSED
+# .github/workflows/inj-backtest.yml
+#
+# Solo manual (boton "Run workflow"). No usa secrets ni toca la cuenta:
+# lee velas publicas de OKX, simula ambos modos de entrada y imprime el
+# informe en el log. Las operaciones simuladas quedan como artefacto.
+# Requiere inj_backtest_compare.py en la raiz del repo.
+# =====================================================================
+
+name: inj-backtest
+
+on:
+  workflow_dispatch:
+    inputs:
+      days:
+        description: 'Dias de historial (15m)'
+        default: '120'
+
+permissions:
+  contents: read
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Arsenal (ccxt certificada)
+        run: python -m pip install --quiet "ccxt==4.5.90"
+
+      - name: Comparar LIVE vs CLOSED
+        run: python inj_backtest_compare.py --days "${{ inputs.days || '120' }}" --host my.okx.com --out inj-backtest-trades.jsonl
+
+      - name: Guardar operaciones simuladas
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: inj-backtest-trades
+          path: inj-backtest-trades.jsonl
+          if-no-files-found: ignore
