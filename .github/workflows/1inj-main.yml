@@ -1,4 +1,4 @@
-name: El Aprendiz - INJ EMA 4/21 (20m)
+name: El Aprendiz - INJ Producción LIVE (<10 USD)
 
 on:
   schedule:
@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  run-bot:
+  run-production-bot:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repositorio
@@ -18,23 +18,22 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Ejecutar Bot INJ (Modo ${{ vars.INJ_MODE || 'TEST' }})
+      - name: Ejecutar Bot INJ (Modo ${{ vars.INJ_MODE || 'LIVE' }})
         env:
-          INJ_MODE: ${{ vars.INJ_MODE || 'TEST' }}
+          INJ_MODE: ${{ vars.INJ_MODE || 'LIVE' }}
           OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
           OKX_API_SECRET: ${{ secrets.OKX_API_SECRET }}
           OKX_API_PASSPHRASE: ${{ secrets.OKX_API_PASSPHRASE }}
-          INJ_SIZE_CT: '1'
           INJ_LEV: '1'
         run: |
           python3 main-1inj.py
 
-      - name: Commit y Push de Estado (si hubo cambios)
+      - name: Commit y Push de Estado (Libro y Decisiones)
         if: always()
         run: |
           git config --global user.name "El Aprendiz Bot"
           git config --global user.email "aprendiz@gscsi.trade"
           git status
           git add estado_inj/ || true
-          git commit -m "auto: actualización de libro de partes y decisiones [skip ci]" || echo "Sin cambios que commitear"
-          git push || echo "Push omitido o sin permisos"
+          git commit -m "auto: registro de ejecución y libro de partes [skip ci]" || echo "Sin cambios que commitear"
+          git push || echo "Push omitido o sin cambios"
