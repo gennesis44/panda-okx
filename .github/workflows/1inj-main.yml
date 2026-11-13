@@ -1,4 +1,4 @@
-name: El Aprendiz - INJ Producción LIVE (<10 USD)
+name: El Aprendiz - INJ EMA 4/21 (20m LIVE)
 
 on:
   schedule:
@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  run-production-bot:
+  run-inj-bot:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repositorio
@@ -18,22 +18,29 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Ejecutar Bot INJ (Modo LIVE)
+      - name: Instalar dependencias
+        run: |
+          python -m pip install --upgrade pip
+          pip install ccxt pandas
+
+      - name: Ejecutar Bot INJ (LIVE)
         env:
-          INJ_MODE: 'LIVE'
           OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
-          OKX_API_SECRET: ${{ secrets.OKX_API_SECRET }}
-          OKX_API_PASSPHRASE: ${{ secrets.OKX_API_PASSPHRASE }}
-          INJ_LEV: '1'
+          OKX_SECRET_KEY: ${{ secrets.OKX_SECRET_KEY }}
+          OKX_PASSWORD: ${{ secrets.OKX_PASSWORD }}
+          OKX_API_SECRET: ${{ secrets.OKX_SECRET_KEY }}
+          OKX_API_PASSPHRASE: ${{ secrets.OKX_PASSWORD }}
+          TEST_MODE: '0'
+          SINGLE_CYCLE: '1'
         run: |
           python3 main-1inj.py
 
-      - name: Commit y Push de Estado (Libro y Decisiones)
+      - name: Commit y Push de Estado
         if: always()
         run: |
           git config --global user.name "El Aprendiz Bot"
           git config --global user.email "aprendiz@gscsi.trade"
           git status
           git add estado_inj/ || true
-          git commit -m "auto: registro de ejecución y libro de partes [skip ci]" || echo "Sin cambios que commitear"
-          git push || echo "Push omitido o sin cambios"
+          git commit -m "auto: registro INJ EMA 4/21 [skip ci]" || echo "Sin cambios"
+          git push || echo "Push omitido"
