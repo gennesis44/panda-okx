@@ -17,11 +17,11 @@ def mostrar_resumen_global():
         print("No hay operaciones registradas todavía.")
         return
 
-    # Diccionario para agrupar por moneda
+    # Diccionario dinámico para cualquier moneda que aparezca en el registro
     resumen_por_par = {}
 
     for op in registros:
-        par = op.get("par", "DESCONOCIDO")
+        par = op.get("par", "DESCONOCIDO").upper()
         estado = op.get("estado", "").upper()
 
         if par not in resumen_por_par:
@@ -33,13 +33,13 @@ def mostrar_resumen_global():
             resumen_por_par[par]["perdidas"] += 1
 
     print("=========================================")
-    print("   RESUMEN GLOBAL DE OPERACIONES (G/P)   ")
+    print(" RESUMEN GLOBAL DE TODAS LAS MONEDAS (G/P)")
     print("=========================================")
 
     total_global_g = 0
     total_global_p = 0
 
-    for par, stats in resumen_por_par.items():
+    for par, stats in sorted(resumen_por_par.items()):
         g = stats["ganadas"]
         p = stats["perdidas"]
         total_ops = g + p
@@ -58,7 +58,7 @@ def mostrar_resumen_global():
     win_rate_general = (total_global_g / total_general * 100) if total_general > 0 else 0.0
 
     print("\n-----------------------------------------")
-    print(f"TOTAL GENERAL ACUMULADO:")
+    print(f"TOTAL GENERAL ACUMULADO (Todas las monedas):")
     print(f"  * Ganadas  : {total_global_g}")
     print(f"  * Perdidas : {total_global_p}")
     print(f"  * Efectividad Global: {win_rate_general:.1f}%")
