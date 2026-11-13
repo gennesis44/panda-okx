@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-EL APRENDIZ — main-1inj.py — v2.2-PROD
+EL APRENDIZ — main-1inj.py — v2.3-PROD
 =======================================
 Flota GSCSI-TRADE | nave: EL APRENDIZ
 Instrumento: INJ-USD_UM_XPERP (OKX my.okx.com, universo EEE/XPERP, margen USD)
@@ -37,7 +37,7 @@ import urllib.request
 from datetime import datetime, timezone
 from decimal import Decimal, ROUND_HALF_UP
 
-VERSION = "2.2-PROD"
+VERSION = "2.3-PROD"
 
 # ---------------- CONFIGURACIÓN ----------------
 BASE = os.environ.get("INJ_BASE", "https://my.okx.com")
@@ -146,8 +146,12 @@ def servidor() -> int:
 
 
 def instrumento() -> dict:
-    r = http_get(f"{BASE}/api/v5/public/instruments?instType=FUTURES&instId={INST}")
-    assert r.get("code") == "0" and r.get("data"), "Instrumento no respondió"
+    # Intentar primero con instType=SWAP (perpetuos), y si no, con FUTURES
+    r = http_get(f"{BASE}/api/v5/public/instruments?instType=SWAP&instId={INST}")
+    if r.get("code") != "0" or not r.get("data"):
+        r = http_get(f"{BASE}/api/v5/public/instruments?instType=FUTURES&instId={INST}")
+    
+    assert r.get("code") == "0" and r.get("data"), f"Instrumento no respondió. Respuesta OKX: {r}"
     d = r["data"][0]
     assert "USDT" not in d["instId"], "L1 VIOLADA: instId contiene USDT"
     assert d["settleCcy"] == "USD", "L1 VIOLADA: settleCcy no es USD"
@@ -173,9 +177,8 @@ def analizar_mercado() -> tuple[str | None, Decimal, dict]:
     r = http_get(f"{BASE}/api/v5/market/candles?instId={INST}&bar={BAR}&limit={LIMIT_FETCH}")
     rows = r.get("data") or []
     cerradas = [x for x in rows if x[8] == "1"]
-    # Ordenar cronológicamente de más antiguo a más reciente
     cerradas = sorted(cerradas, key=lambda x: int(x[0]))
-    assert len(cerradas) >= 21, "L2: se necesitan al menos 21 velas cerradas para EMA 21"
+    assert len(cerradas) >= 21, f"L2: se necesitan al menos 21 velas cerradas (recibidas: {len(cerradas)})"
     
     precios_cierre = [Decimal(x[4]) for x in cerradas]
     ema4_list = calcular_ema(precios_cierre, 4)
@@ -353,7 +356,7 @@ def enviar_orden(payload: dict) -> str:
 
 
 def fill_de_entrada(ord_id: str):
-    r = http_private("GET", f"/api/v5/trade/fills-history?instType=FUTURES&instId={INST}&limit=20")
+    r = http_private("GET", f"/api/v5/trade/fills-history?instType=SWAP&instId={INST}&limit=20")
     for f in r.get("data") or []:
         if f.get("ordId") == ord_id:
             return {"avgPx": f["fillPx"], "sz": f["fillSz"], "fee": f.get("fee"), "ts": int(f["ts"])}
@@ -391,7 +394,7 @@ def reconciliar_live(partes: list, specs: dict) -> list:
             p["sltp_confirmado"] = verificar_algo_sltp(p["ordId"])
         if pos == 0:
             if fills is None:
-                r = http_private("GET", f"/api/v5/trade/fills-history?instType=FUTURES&instId={INST}&limit=50")
+                r = http_private("GET", f"/api/v5/trade/fills-history?instType=SWAP&instId={INST}&limit=50")
                 fills = r.get("data") or []
             lado_salida = "buy" if p["lado"] == "SHORT" else "sell"
             salida, fees = [], Decimal(0)
@@ -453,7 +456,7 @@ def main() -> int:
 
     if MODE == "TEST":
         decision, parte_id = "SIN_SENAL", None
-        if lado is not None and not any(p["estado"] == "ABIERTO" and p.get("modo") == "TEST" for p in partes):
+        if lado is not None and not any(p["estado"] == "ABIERTO" and p.get("modo", "TEST") == "TEST" for p in partes):
             entrada = book["ask"] if lado == "LONG" else book["bid"]
             sl, tp, riesgo = niveles(lado, entrada, velas_info)
             p = construir_parte("TEST", lado, entrada, sl, tp, riesgo, velas_info, sep, specs)
