@@ -5,8 +5,11 @@ HISTORIAL_FILE = "historial_operaciones.json"
 
 def cargar_historial():
     if os.path.exists(HISTORIAL_FILE):
-        with open(HISTORIAL_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
+        try:
+            with open(HISTORIAL_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {"registro": []}
     return {"registro": []}
 
 def mostrar_resumen_global():
@@ -17,12 +20,12 @@ def mostrar_resumen_global():
         print("No hay operaciones registradas todavía.")
         return
 
-    # Diccionario dinámico para cualquier moneda que aparezca en el registro
+    # Diccionario dinámico para agrupar todas las monedas
     resumen_por_par = {}
 
     for op in registros:
-        par = op.get("par", "DESCONOCIDO").upper()
-        estado = op.get("estado", "").upper()
+        par = str(op.get("par", "DESCONOCIDO")).upper()
+        estado = str(op.get("estado", "")).upper()
 
         if par not in resumen_por_par:
             resumen_por_par[par] = {"ganadas": 0, "perdidas": 0}
