@@ -4,7 +4,7 @@
 #   - Instrumento: INJ X-Perp (Universo EEE/XPERP, OKX my.okx.com, margen USD)
 #   - VETO ABSOLUTO a USDT (Lista blanca settle == 'USD')
 #   - Estrategia: EMA 4 / EMA 21 en velas 1H CERRADAS (cada 20 min)
-#   - Nocional estricto: < 10 USD por orden (contratos calculados dinámicamente)
+#   - Nocional estricto: ≤ 6 USD por orden (contratos calculados dinámicamente)
 #   - SL/TP asimétricos o estándar de flota, con attachAlgoOrds adjuntos en exchange.
 
 import os
@@ -37,7 +37,7 @@ LEVERAGE = 1
 COOLDOWN_MIN = 60
 TEST_MODE = os.getenv('TEST_MODE') == '1'
 SINGLE_CYCLE = os.getenv('SINGLE_CYCLE') == '1'
-MAX_NOTIONAL_USD = _f(os.getenv('OKX_INJ_MAX_NOTIONAL', '9.50')) or 9.50
+MAX_NOTIONAL_USD = _f(os.getenv('OKX_INJ_MAX_NOTIONAL', '6.00')) or 6.00
 SIGNAL_WINDOW = (-2, -3, -4)
 WARMUP = 40
 TF_MS = {'5m': 300000, '15m': 900000, '30m': 1800000, '1h': 3600000, '6h': 21600000}
@@ -154,7 +154,7 @@ def calculate_amount(symbol, ref_price):
     ctval, ccy, _settle, _p, usd = _contract_meta(symbol, ref_price)
     if usd <= 0:
         return 1
-    # Cuántos contratos caben en el nocional máximo estricto (< 9.50 USD)
+    # Cuántos contratos caben en el nocional máximo estricto (≤ 6 USD)
     amount = int(MAX_NOTIONAL_USD // usd)
     return max(1, amount)
 
