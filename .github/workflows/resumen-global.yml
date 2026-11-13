@@ -1,0 +1,24 @@
+name: Resumen Global de Operaciones
+
+on:
+  schedule:
+    # Se ejecuta automáticamente cada hora (puedes ajustar el cron)
+    - cron: '0 * * * *'
+  workflow_dispatch: # Te permite ejecutarlo manualmente cuando quieras desde GitHub
+
+jobs:
+  ver-resumen:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repositorio
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: python-version: '3.11' # o la versión que uses
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Mostrar reporte global
+        run: python contador_global.py
