@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-EL APRENDIZ — main-1inj.py — v2.4-PROD
-=======================================
+EL APRENDIZ — main-1inj.py — v2.5-PROD-LIVE
+===========================================
 Flota GSCSI-TRADE | nave: EL APRENDIZ
 Instrumento: INJ X-Perp (Universo EEE/XPERP, OKX my.okx.com, margen USD)
 Ejecución: Cada 20 minutos | Lógica: EMA 4 / EMA 21 sobre velas de 1H
@@ -17,7 +17,7 @@ LEYES A BORDO (guardas duras, fallan cerrado):
  L2. EMA 4 / EMA 21: Cálculo sobre los cierres de las últimas velas cerradas de 1H.
  L3. CADENCIA 20M: Se ejecuta cada 20 min para vigilar y reaccionar con agilidad.
  L4. VIGENCIA: Reloj vs /public/time (30 s); libro con ts < 10 min.
- L5. TAMAÑO: Contratos enteros (~10 EUR nocionales equivalentes).
+ L5. TAMAÑO: Nocional máximo estricto de < 10 USD (calculado dinámicamente en contratos enteros).
  L6. APALANCAMIENTO <= 20x (cap del contrato); default 1x.
  L7. UN SOLO PARTE ABIERTO por modo.
  L8. POSICIÓN EXTERNA: Si la cuenta tiene INJ que no es del bot, no se abre nada.
@@ -35,26 +35,25 @@ import traceback
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal, ROUND_HALF_UP, ROUND_DOWN
 
-VERSION = "2.4-PROD"
+VERSION = "2.5-PROD-LIVE"
 
 # ---------------- CONFIGURACIÓN ----------------
 BASE = os.environ.get("INJ_BASE", "https://my.okx.com")
-# Se admite base o prefijo para autodetectar el X-Perp exacto del universo EEE
 INST_QUERY_PREFIX = "INJ-USD_UM_XPERP"
 BAR = "1H"
 HORA_MS = 3_600_000
-MAX_CERRADAS = 25                               # Necesitamos al menos 21 velas para EMA 21
+MAX_CERRADAS = 25
 LIMIT_FETCH = MAX_CERRADAS + 2
 LIMIT_LIQ = 48
-SEP_MIN = Decimal("0.0015")                     # Peaje mínimo de separación EMA
-RR = Decimal("1.8")                             # Ratio Riesgo / Beneficio
+SEP_MIN = Decimal("0.0015")
+RR = Decimal("1.8")
 TICKS_BUFFER = 2
-TICK = Decimal("0.001")                         # Tick size para INJ perpetuo USD
-LEV_CAP = 20                                    # L6
+TICK = Decimal("0.001")
+LEV_CAP = 20
 LEV = max(1, int(os.environ.get("INJ_LEV", "1")))
-SIZE_CT = min(max(int(os.environ.get("INJ_SIZE_CT", "1")), 1), 5)
+MAX_NOCIONAL_USD = Decimal("9.50")  # L5: Estrictamente menor a 10 USD de nocional total
 TD_MODE = os.environ.get("INJ_TD_MODE", "isolated")
 MODE = os.environ.get("INJ_MODE", "TEST").upper()
 ESTADO_DIR = os.environ.get("INJ_ESTADO_DIR", "estado_inj")
@@ -64,7 +63,6 @@ STOP_PATH = os.path.join(ESTADO_DIR, "STOP")
 TOLERANCIA_RELOJ_S = 30
 MAX_VIGENCIA_PRECIO_MS = 600_000
 
-# Variable global dinámica para el instId oficial resuelto
 INST = None
 
 # ---------------- UTILIDADES ----------------
@@ -144,6 +142,17 @@ def guardar_partes(partes: list) -> None:
         json.dump(partes, f, ensure_ascii=False, indent=2)
 
 
+def calcular_tamano_contratos(precio: Decimal, ct_val: Decimal) -> int:
+    """Calcula el número entero de contratos asegurando que el nocional total sea < 10 USD."""
+    # Nocional por contrato = precio * ctVal
+    nocional_un_contrato = precio * ct_val
+    if nocional_un_contrato <= 0:
+        return 1
+    # Cuántos contratos caben en < 9.50 USD
+    sz = int((MAX_NOCIONAL_USD / nocional_un_contrato).quantize(Decimal("1"), rounding=ROUND_DOWN))
+    return max(1, sz)
+
+
 # ---------------- FUENTES PÚBLICAS Y GUARDIAS ----------------
 def servidor() -> int:
     return int(http_get(f"{BASE}/api/v5/public/time")["data"][0]["ts"])
@@ -153,8 +162,6 @@ def resolver_instrumento() -> dict:
     global INST
     r = http_get(f"{BASE}/api/v5/public/instruments?instType=FUTURES")
     data = r.get("data") or []
-    
-    # Buscar coincidencia que empiece por el prefijo X-Perp de INJ y cumpla ley L1 (sin USDT, settle USD)
     candidato = None
     for item in data:
         iid = item.get("instId", "")
@@ -163,7 +170,6 @@ def resolver_instrumento() -> dict:
                 candidato = item
                 break
                 
-    # Si no aparece en FUTURES, probar en SWAP por si acaso
     if not candidato:
         r_swap = http_get(f"{BASE}/api/v5/public/instruments?instType=SWAP")
         for item in (r_swap.get("data") or []):
@@ -173,8 +179,7 @@ def resolver_instrumento() -> dict:
                     candidato = item
                     break
 
-    assert candidato, f"L1/L5 VIOLADA: No se encontró instrumento activo para {INST_QUERY_PREFIX} sin USDT en universo EEE"
-    
+    assert candidato, f"L1/L5 VIOLADA: No se encontró instrumento activo para {INST_QUERY_PREFIX} sin USDT"
     INST = candidato["instId"]
     bitacora(f"[AUTODETECT] Instrumento oficial OKX asignado: {INST}")
     
@@ -255,9 +260,9 @@ def niveles(lado: str, entrada: Decimal, velas_info: dict):
 
 
 def construir_parte(modo: str, lado: str, entrada_ref: Decimal, sl: Decimal, tp: Decimal,
-                    riesgo: Decimal, velas_info: dict, sep: Decimal, specs: dict) -> dict:
+                    riesgo: Decimal, velas_info: dict, sep: Decimal, specs: dict, size_ct: int) -> dict:
     ct_val = Decimal(specs["ctVal"])
-    margen = (entrada_ref * ct_val * Decimal(SIZE_CT) / Decimal(LEV)).quantize(Decimal("0.0001"))
+    margen = (entrada_ref * ct_val * Decimal(size_ct) / Decimal(LEV)).quantize(Decimal("0.0001"))
     return {
         "id": f"{velas_info['c2']['ts']}-{lado}-{modo}",
         "abierto_ts": ahora_iso(),
@@ -271,7 +276,7 @@ def construir_parte(modo: str, lado: str, entrada_ref: Decimal, sl: Decimal, tp:
         "sl": str(sl),
         "tp": str(tp),
         "riesgo": str(riesgo.quantize(Decimal("0.0001"))),
-        "size_ct": SIZE_CT,
+        "size_ct": size_ct,
         "lev": LEV,
         "td_mode": TD_MODE if modo == "LIVE" else None,
         "margen_usd": str(margen),
@@ -354,7 +359,7 @@ def set_apalancamiento():
                  {"instId": INST, "lever": str(LEV), "mgnMode": TD_MODE})
 
 
-def payload_orden(lado: str, sl: Decimal, tp: Decimal, config: dict) -> dict:
+def payload_orden(lado: str, sl: Decimal, tp: Decimal, size_ct: int, config: dict) -> dict:
     return {
         "instId": INST,
         "tdMode": TD_MODE,
@@ -362,7 +367,7 @@ def payload_orden(lado: str, sl: Decimal, tp: Decimal, config: dict) -> dict:
                    if config["posMode"] == "long_short_mode" else "net",
         "side": "buy" if lado == "LONG" else "sell",
         "ordType": "market",
-        "sz": str(SIZE_CT),
+        "sz": str(size_ct),
         "attachAlgoOrds": [{
             "tpTriggerPx": str(tp), "tpOrdPx": "-1",
             "slTriggerPx": str(sl), "slOrdPx": "-1",
@@ -452,7 +457,7 @@ def reconciliar_live(partes: list, specs: dict) -> list:
 def main() -> int:
     bitacora("=" * 66)
     bitacora(f"EL APRENDIZ — main-1inj.py v{VERSION} — MODO {MODE}")
-    bitacora(f"Estrategia: EMA 4 / EMA 21 (1H) | Cadencia: 20 min")
+    bitacora(f"Estrategia: EMA 4 / EMA 21 (1H) | Límite Nocional: < {MAX_NOCIONAL_USD} USD")
     bitacora("=" * 66)
 
     if os.path.exists(STOP_PATH):
@@ -479,15 +484,21 @@ def main() -> int:
     sensor = lado or "NEUTRO"
     bitacora(f"Sensor EMA 4/21: {sensor} | Separación: {(sep * 100).quantize(Decimal('0.0001'))}%")
 
+    # Cálculo dinámico de tamaño para que < 10 USD
+    entrada_precio = book["ask"] if lado == "LONG" else book["bid"]
+    ct_val = Decimal(specs["ctVal"])
+    size_ct = calcular_tamano_contratos(entrada_precio, ct_val)
+    nocional_estimado = entrada_precio * ct_val * Decimal(size_ct)
+    bitacora(f"Gestión de capital: Precio {entrada_precio} | Contratos calculados: {size_ct} | Nocional est.: {nocional_estimado:.2f} USD")
+
     if MODE == "TEST":
         decision, parte_id = "SIN_SENAL", None
         if lado is not None and not any(p["estado"] == "ABIERTO" and p.get("modo", "TEST") == "TEST" for p in partes):
-            entrada = book["ask"] if lado == "LONG" else book["bid"]
-            sl, tp, riesgo = niveles(lado, entrada, velas_info)
-            p = construir_parte("TEST", lado, entrada, sl, tp, riesgo, velas_info, sep, specs)
+            sl, tp, riesgo = niveles(lado, entrada_precio, velas_info)
+            p = construir_parte("TEST", lado, entrada_precio, sl, tp, riesgo, velas_info, sep, specs, size_ct)
             partes.append(p)
             parte_id, decision = p["id"], "PARTE_ABIERTO"
-            bitacora(f"[TEST PARTE] {p['id']}: {lado} SL {sl} TP {tp}")
+            bitacora(f"[TEST PARTE] {p['id']}: {lado} Sz {size_ct}ct | SL {sl} TP {tp}")
         guardar_partes(partes)
         registrar_decision({"ts_run": ahora_iso(), "modo": "TEST", "sensor": sensor, "decision": decision})
         return 0
@@ -511,22 +522,21 @@ def main() -> int:
     elif pos > 0:
         bitacora("[SKIP] Posición externa detectada en la cuenta.")
     else:
-        entrada = book["ask"] if lado == "LONG" else book["bid"]
-        sl, tp, riesgo = niveles(lado, entrada, velas_info)
+        sl, tp, riesgo = niveles(lado, entrada_precio, velas_info)
         if MODE == "PREVUELA":
-            payload = payload_orden(lado, sl, tp, config)
+            payload = payload_orden(lado, sl, tp, size_ct, config)
             bitacora("[PREVUELA] Orden armada:\n" + json.dumps(payload, indent=2))
         else:
             try:
                 set_apalancamiento()
-                payload = payload_orden(lado, sl, tp, config)
+                payload = payload_orden(lado, sl, tp, size_ct, config)
                 ord_id = enviar_orden(payload)
-                p = construir_parte("LIVE", lado, entrada, sl, tp, riesgo, velas_info, sep, specs)
+                p = construir_parte("LIVE", lado, entrada_precio, sl, tp, riesgo, velas_info, sep, specs, size_ct)
                 p["ordId"] = ord_id
                 partes.append(p)
-                bitacora(f"[LIVE] Orden enviada: {ord_id}")
+                bitacora(f"[PRODUCCIÓN LIVE] ORDEN ENVIADA: {ord_id} | Sz: {size_ct}ct")
             except Exception as e:
-                bitacora(f"[ERROR ORDEN] {e}")
+                bitacora(f"[ERROR ORDEN LIVE] {e}")
 
     guardar_partes(partes)
     return 0
