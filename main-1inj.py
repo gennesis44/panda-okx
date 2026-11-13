@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-EL APRENDIZ — main-1inj.py — v2.3-PROD
+EL APRENDIZ — main-1inj.py — v2.4-PROD
 =======================================
 Flota GSCSI-TRADE | nave: EL APRENDIZ
-Instrumento: INJ-USD_UM_XPERP (OKX my.okx.com, universo EEE/XPERP, margen USD)
+Instrumento: INJ X-Perp (Universo EEE/XPERP, OKX my.okx.com, margen USD)
 Ejecución: Cada 20 minutos | Lógica: EMA 4 / EMA 21 sobre velas de 1H
 
 MODOS (env INJ_MODE):
@@ -37,11 +37,12 @@ import urllib.request
 from datetime import datetime, timezone
 from decimal import Decimal, ROUND_HALF_UP
 
-VERSION = "2.3-PROD"
+VERSION = "2.4-PROD"
 
 # ---------------- CONFIGURACIÓN ----------------
 BASE = os.environ.get("INJ_BASE", "https://my.okx.com")
-INST = "INJ-USD_UM_XPERP"                      # L1: Whitelist INJ sin USDT
+# Se admite base o prefijo para autodetectar el X-Perp exacto del universo EEE
+INST_QUERY_PREFIX = "INJ-USD_UM_XPERP"
 BAR = "1H"
 HORA_MS = 3_600_000
 MAX_CERRADAS = 25                               # Necesitamos al menos 21 velas para EMA 21
@@ -62,6 +63,9 @@ DECISIONES_PATH = os.path.join(ESTADO_DIR, "decisiones.jsonl")
 STOP_PATH = os.path.join(ESTADO_DIR, "STOP")
 TOLERANCIA_RELOJ_S = 30
 MAX_VIGENCIA_PRECIO_MS = 600_000
+
+# Variable global dinámica para el instId oficial resuelto
+INST = None
 
 # ---------------- UTILIDADES ----------------
 def http_get(url, reintentos=3):
@@ -145,23 +149,44 @@ def servidor() -> int:
     return int(http_get(f"{BASE}/api/v5/public/time")["data"][0]["ts"])
 
 
-def instrumento() -> dict:
-    # Intentar primero con instType=SWAP (perpetuos), y si no, con FUTURES
-    r = http_get(f"{BASE}/api/v5/public/instruments?instType=SWAP&instId={INST}")
-    if r.get("code") != "0" or not r.get("data"):
-        r = http_get(f"{BASE}/api/v5/public/instruments?instType=FUTURES&instId={INST}")
+def resolver_instrumento() -> dict:
+    global INST
+    r = http_get(f"{BASE}/api/v5/public/instruments?instType=FUTURES")
+    data = r.get("data") or []
     
-    assert r.get("code") == "0" and r.get("data"), f"Instrumento no respondió. Respuesta OKX: {r}"
-    d = r["data"][0]
-    assert "USDT" not in d["instId"], "L1 VIOLADA: instId contiene USDT"
-    assert d["settleCcy"] == "USD", "L1 VIOLADA: settleCcy no es USD"
-    assert d["state"] == "live", "Instrumento no live"
-    assert d["ctType"] == "linear", "Se esperaba contrato lineal"
-    assert Decimal(d["minSz"]) == 1 and Decimal(d["lotSz"]) == 1, "L5: granularidad inesperada"
-    assert Decimal(d["tickSz"]) == TICK, "L5: tick inesperado"
-    assert int(d["lever"]) >= LEV, "L6: apalancamiento pedido supera el contrato"
+    # Buscar coincidencia que empiece por el prefijo X-Perp de INJ y cumpla ley L1 (sin USDT, settle USD)
+    candidato = None
+    for item in data:
+        iid = item.get("instId", "")
+        if iid.startswith(INST_QUERY_PREFIX):
+            if "USDT" not in iid and item.get("settleCcy") == "USD" and item.get("state") == "live":
+                candidato = item
+                break
+                
+    # Si no aparece en FUTURES, probar en SWAP por si acaso
+    if not candidato:
+        r_swap = http_get(f"{BASE}/api/v5/public/instruments?instType=SWAP")
+        for item in (r_swap.get("data") or []):
+            iid = item.get("instId", "")
+            if iid.startswith(INST_QUERY_PREFIX):
+                if "USDT" not in iid and item.get("settleCcy") == "USD" and item.get("state") == "live":
+                    candidato = item
+                    break
+
+    assert candidato, f"L1/L5 VIOLADA: No se encontró instrumento activo para {INST_QUERY_PREFIX} sin USDT en universo EEE"
+    
+    INST = candidato["instId"]
+    bitacora(f"[AUTODETECT] Instrumento oficial OKX asignado: {INST}")
+    
+    assert "USDT" not in INST, "L1 VIOLADA: instId contiene USDT"
+    assert candidato["settleCcy"] == "USD", "L1 VIOLADA: settleCcy no es USD"
+    assert candidato["state"] == "live", "Instrumento no live"
+    assert candidato["ctType"] == "linear", "Se esperaba contrato lineal"
+    assert Decimal(candidato["minSz"]) == 1 and Decimal(candidato["lotSz"]) == 1, "L5: granularidad inesperada"
+    assert Decimal(candidato["tickSz"]) == TICK, "L5: tick inesperado"
+    assert int(candidato["lever"]) >= LEV, "L6: apalancamiento pedido supera el contrato"
     assert LEV <= LEV_CAP, "L6 VIOLADA: apalancamiento por encima del cap"
-    return d
+    return candidato
 
 
 def calcular_ema(precios: list[Decimal], periodo: int) -> list[Decimal]:
@@ -356,7 +381,7 @@ def enviar_orden(payload: dict) -> str:
 
 
 def fill_de_entrada(ord_id: str):
-    r = http_private("GET", f"/api/v5/trade/fills-history?instType=SWAP&instId={INST}&limit=20")
+    r = http_private("GET", f"/api/v5/trade/fills-history?instType=FUTURES&instId={INST}&limit=20")
     for f in r.get("data") or []:
         if f.get("ordId") == ord_id:
             return {"avgPx": f["fillPx"], "sz": f["fillSz"], "fee": f.get("fee"), "ts": int(f["ts"])}
@@ -394,7 +419,7 @@ def reconciliar_live(partes: list, specs: dict) -> list:
             p["sltp_confirmado"] = verificar_algo_sltp(p["ordId"])
         if pos == 0:
             if fills is None:
-                r = http_private("GET", f"/api/v5/trade/fills-history?instType=SWAP&instId={INST}&limit=50")
+                r = http_private("GET", f"/api/v5/trade/fills-history?instType=FUTURES&instId={INST}&limit=50")
                 fills = r.get("data") or []
             lado_salida = "buy" if p["lado"] == "SHORT" else "sell"
             salida, fees = [], Decimal(0)
@@ -427,7 +452,7 @@ def reconciliar_live(partes: list, specs: dict) -> list:
 def main() -> int:
     bitacora("=" * 66)
     bitacora(f"EL APRENDIZ — main-1inj.py v{VERSION} — MODO {MODE}")
-    bitacora(f"Estrategia: EMA 4 / EMA 21 (1H) | Cadencia: 20 min | {INST}")
+    bitacora(f"Estrategia: EMA 4 / EMA 21 (1H) | Cadencia: 20 min")
     bitacora("=" * 66)
 
     if os.path.exists(STOP_PATH):
@@ -436,7 +461,7 @@ def main() -> int:
 
     try:
         server_ms = servidor()
-        specs = instrumento()
+        specs = resolver_instrumento()
         lado, sep, velas_info = analizar_mercado()
         book = libro(server_ms)
     except AssertionError as e:
