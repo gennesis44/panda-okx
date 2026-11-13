@@ -18,9 +18,9 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Ejecutar Bot INJ (Modo ${{ vars.INJ_MODE || 'LIVE' }})
+      - name: Ejecutar Bot INJ (Modo LIVE)
         env:
-          INJ_MODE: ${{ vars.INJ_MODE || 'LIVE' }}
+          INJ_MODE: 'LIVE'
           OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
           OKX_API_SECRET: ${{ secrets.OKX_API_SECRET }}
           OKX_API_PASSPHRASE: ${{ secrets.OKX_API_PASSPHRASE }}
