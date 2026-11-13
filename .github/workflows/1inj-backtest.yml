@@ -1,0 +1,40 @@
+name: El Aprendiz - INJ EMA 4/21 (20m)
+
+on:
+  schedule:
+    # Se dispara exactamente cada 20 minutos
+    - cron: '*/20 * * * *'
+  workflow_dispatch:
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repositorio
+        uses: actions/checkout@v4
+
+      - name: Configurar Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Ejecutar Bot INJ (Modo ${{ vars.INJ_MODE || 'TEST' }})
+        env:
+          INJ_MODE: ${{ vars.INJ_MODE || 'TEST' }}
+          OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
+          OKX_API_SECRET: ${{ secrets.OKX_API_SECRET }}
+          OKX_API_PASSPHRASE: ${{ secrets.OKX_API_PASSPHRASE }}
+          INJ_SIZE_CT: '1'
+          INJ_LEV: '1'
+        run: |
+          python3 main-1inj.py
+
+      - name: Commit y Push de Estado (si hubo cambios)
+        if: always()
+        run: |
+          git config --global user.name "El Aprendiz Bot"
+          git config --global user.email "aprendiz@gscsi.trade"
+          git status
+          git add estado_inj/ || true
+          git commit -m "auto: actualización de libro de partes y decisiones [skip ci]" || echo "Sin cambios que commitear"
+          git push || echo "Push omitido o sin permisos"
