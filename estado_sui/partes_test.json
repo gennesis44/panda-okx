@@ -1,0 +1,39 @@
+[
+  {
+    "id": "1794682800000-SHORT-TEST",
+    "abierto_ts": "2026-11-14T20:33:30Z",
+    "modo": "TEST",
+    "inst": "SUI-USD_UM_XPERP-310404",
+    "lado": "SHORT",
+    "velas": {
+      "c1": {
+        "ts": 1794679200000,
+        "o": "0.7296",
+        "h": "0.7332",
+        "l": "0.7237",
+        "c": "0.7264"
+      },
+      "c2": {
+        "ts": 1794682800000,
+        "o": "0.7265",
+        "h": "0.7294",
+        "l": "0.7203",
+        "c": "0.7243"
+      }
+    },
+    "sep_pct": "-0.2891",
+    "entrada_ref": "0.7108",
+    "entrada_fill": null,
+    "sl": "0.7334",
+    "tp": "0.6769",
+    "riesgo": "0.0226",
+    "size_ct": 1,
+    "lev": 1,
+    "td_mode": null,
+    "margen_usd": "0.7108",
+    "ordId": null,
+    "sltp_confirmado": null,
+    "estado": "ABIERTO",
+    "resultado": null
+  }
+]
