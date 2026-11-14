@@ -1,0 +1,1 @@
+{"ts_run": "2026-11-14T07:10:25Z", "modo": "PREVUELA", "sensor": "SHORT", "sep_pct": "-0.6151", "decision": "SKIP_POSICION_EXTERNA", "parte_id": null, "pos_cuenta": "7", "guardias": {"reloj": "OK", "leyes_L1_L5_L6": "OK", "velas_L2_L3": "OK", "libro_L4": "OK", "auth": "OK (posMode=net_mode, acctLv=3)"}, "notas": []}
