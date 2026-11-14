@@ -1,0 +1,74 @@
+# =====================================================================
+# faro-flota.yml — BUQUE: EL FARO (radar_flota.py v1.2-marina) · flota87
+#
+# QUE HACE en cada ronda (cada 15 min) — tablero de toda la marina:
+#   · MARINA COMPLETA -> una linea por nave: apodo, nave, vela, candado,
+#     estado y W/L 24h (todo en un click)
+#   · CAPTURANDO -> posicion: lado, ct, entrada, px, uPnL, perro (SL) y
+#     cañonera (TP) con distancias
+#   · BUSCANDO -> naves declaradas sin posicion: stance EMA3/21, sep vs
+#     candado, cruces en las ultimas 4 velas (radar PUBLICO, sin llaves)
+#   · LOS DEMAS -> capturas de instrumentos no declarados en el registro
+#   · BOTIN 24h -> PnL realizado por nave + calmas del perro Ax
+#
+# VOTO DE PAZ EN EL YML MISMO: el faro no lleva municion — solo alumbra.
+#   permissions: contents: read (minimo), SIN paso de commit, sin ordenes.
+#   Sin credenciales validas NO muere: pasa a MODO PUBLICO (solo radar).
+#
+# BOVEDA: canonica de la flota SIN traduccion — el casco lee directamente
+#   OKX_API_KEY / OKX_SECRET_KEY / OKX_PASSWORD (igual que el fanal).
+#
+# REGISTRO DE NAVES (Variable de repo RADAR_SHIPS, formato INST:vela:candado):
+#   Defecto de fabrica = ADA,INJ,XPL,XLM,ICP en swaps USDT (solo lectura de
+#   velas publicas — el faro no opera, la ley del veto USDT no se toca).
+#   Para alinear el radar a los instrumentos VIVOS de la flota (XPERP USD):
+#     Variable RADAR_SHIPS =
+#       INJ-USD_UM_XPERP-310711:1h:0.17,SUI-USD_UM_XPERP-310404:1h:0.17
+#   Para sumar naves: anade chunk "INST:vela:candado" a esa misma Variable.
+#   Peor caso por nave: una linea SIN DATOS — el faro nunca explota.
+#
+# CASCO: radar_flota.py en la RAIZ del repo (nombre EXACTO).
+#   Si hay un yml viejo que ya tira radar_flota.py, retirarlo: una sola ronda.
+# =====================================================================
+name: faro-flota
+on:
+  workflow_dispatch:
+  schedule:
+    # cada 15 min en MINUTOS 4/19/34/49: hueco propio del faro —
+    # perro/vigia :00/:15/:30/:45 · aprendiz sui :05 · fanal :09/:24/:39/:54
+    - cron: '4,19,34,49 * * * *'
+concurrency:
+  group: faro-flota
+  cancel-in-progress: false
+permissions:
+  contents: read          # voto de paz: el faro solo alumbra, jamas escribe
+jobs:
+  faro:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Aparejo (ccxt — unico pip del faro)
+        run: pip install --no-cache-dir ccxt
+
+      - name: EL FARO — ronda de la marina completa (SOLO LECTURA)
+        run: python3 radar_flota.py
+        env:
+          # --- BOVEDA CANONICA (sin traduccion; sin credenciales validas el
+          #     faro sigue vivo en MODO PUBLICO) ---
+          OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
+          OKX_SECRET_KEY: ${{ secrets.OKX_SECRET_KEY }}
+          OKX_PASSWORD: ${{ secrets.OKX_PASSWORD }}
+
+          # --- REGISTRO DE NAVES: INST:vela:candado, coma separada ---
+          RADAR_SHIPS: "${{ vars.RADAR_SHIPS || 'ADA-USDT-SWAP:15m:0.15,INJ-USDT-SWAP:1h:0.17,XPL-USDT-SWAP:30m:0.15,XLM-USDT-SWAP:1h:0.15,ICP-USDT-SWAP:1h:0.15' }}"
+
+          # --- Tunables con defecto de fabrica ---
+          RADAR_FILLS_H: ${{ vars.RADAR_FILLS_H || '24' }}
+          COOLDOWN_MIN: ${{ vars.COOLDOWN_MIN || '60' }}
+          RADAR_N_CANDLES: ${{ vars.RADAR_N_CANDLES || '40' }}
