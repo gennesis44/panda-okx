@@ -1,0 +1,55 @@
+name: Bot SUI (El Aprendiz)
+
+on:
+  schedule:
+    - cron: '*/30 * * * *' # Se ejecuta cada 30 minutos
+  workflow_dispatch:       # Permite lanzarlo manualmente desde la pestaña Actions
+
+permissions:
+  contents: write
+
+jobs:
+  ejecutar-sui:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Descargar código del repositorio
+        uses: actions/checkout@v4
+
+      - name: Configurar Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Instalar dependencias
+        run: |
+          python -m pip install --upgrade pip
+
+      - name: Ejecutar script de SUI
+        env:
+          OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
+          OKX_API_SECRET: ${{ secrets.OKX_API_SECRET }}
+          OKX_API_PASSPHRASE: ${{ secrets.OKX_API_PASSPHRASE }}
+          SUI_MODE: "LIVE"         # Cambia a "TEST" o "PREVUELA" si prefieres probar en sombra
+          SUI_LEV: "1"
+          SUI_SIZE_CT: "1"
+          TZ: "Europe/Madrid"
+        run: python sui_bot.py
+
+      - name: Guardar estado o cambios en el repositorio
+        run: |
+          git config user.name "el-aprendiz-bot"
+          git config user.email "el-aprendiz-bot@users.noreply.github.com"
+
+          # Añade la carpeta de estado de SUI que genera el bot
+          if [ -d "estado_sui" ]; then
+            git add estado_sui
+          fi
+          
+          if ! git diff --cached --quiet; then
+            git commit -m "estado SUI $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            git pull --rebase --autostash || true
+            git push
+          else
+            echo "Sin cambios nuevos en archivos de estado de SUI."
+          fi
