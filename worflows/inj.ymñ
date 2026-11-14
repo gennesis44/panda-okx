@@ -1,0 +1,54 @@
+name: Bot INJ
+
+on:
+  schedule:
+    - cron: '*/30 * * * *' # Se ejecuta cada 30 minutos
+  workflow_dispatch:       # Permite lanzarlo manualmente desde la pestaña Actions
+
+permissions:
+  contents: write
+
+jobs:
+  ejecutar-inj:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Descargar código del repositorio
+        uses: actions/checkout@v4
+
+      - name: Configurar Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Instalar dependencias (si existe requirements.txt)
+        run: |
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          fi
+
+      - name: Ejecutar script de INJ
+        env:
+          # Si usas claves API o secrets de GitHub, añádelos aquí así:
+          # API_KEY: ${{ secrets.API_KEY }}
+          TZ: Europe/Madrid
+        run: python inj.py
+
+      - name: Guardar estado_inj en el repositorio
+        run: |
+          git config user.name "el-aprendiz-bot"
+          git config user.email "el-aprendiz-bot@users.noreply.github.com"
+
+          if [ -e "estado_inj" ]; then
+            git add estado_inj
+            if ! git diff --cached --quiet; then
+              git commit -m "estado INJ $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+              git pull --rebase --autostash || true
+              git push
+            else
+              echo "Sin cambios nuevos en estado_inj."
+            fi
+          else
+            echo "Aviso: estado_inj no existe o no fue generado en esta ejecución."
+          fi
