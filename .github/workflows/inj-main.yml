@@ -1,4 +1,4 @@
-name: INJ - 0
+name: inj-main
 
 # Repo: guardar como .github/workflows/inj-main.yml  (y main-inj.py en la raiz)
 # Ignicion LIVE: Settings > Secrets and variables > Actions
