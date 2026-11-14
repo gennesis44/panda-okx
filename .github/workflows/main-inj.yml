@@ -1,4 +1,4 @@
-name: main-inj
+name: inj-main
 
 on:
   schedule:
