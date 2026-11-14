@@ -1,0 +1,82 @@
+# sui-aprendiz.yml — EL APRENDIZ · sui_bot.py v2.0-PROD (SUI X-Perp USD)
+#   Nave ESCUELA: certificacion EN VUELO a escala de centavos (acta del
+#   capitan). Casco en la RAIZ del repo con nombre EXACTO: sui_bot.py.
+#   Solo libreria estandar de Python: NO necesita pip install.
+#
+#   LLAVES: usa LA MISMA BOVEDA CANONICA de la flota (los 3 secrets ya
+#   curados en la guerra del 50105). El aprendiz habla otros nombres y
+#   este yml TRADUCE (no se montan secrets nuevos):
+#     casco OKX_API_KEY          <- bóveda OKX_API_KEY
+#     casco OKX_API_SECRET       <- bóveda OKX_SECRET_KEY
+#     casco OKX_API_PASSPHRASE   <- bóveda OKX_PASSWORD
+#
+#   IGNICION (escalerita, sin tocar codigo):
+#     1. TEST (default, papel): solo velas publicas y libro de partes
+#        en estado_sui/. Nada de secretos.
+#     2. PREVUELA: autentica contra el arca (GET inocuo), arma la orden
+#        y la IMPRIME sin enviarla -> estetoscopio del aprendiz.
+#     3. LIVE: orden market real con SL/TP adjuntos en el exchange.
+#     Cambiar de escalon = crear/editar la variable de repo SUI_MODE
+#     (Settings -> Secrets and variables -> Actions -> pestaña Variables:
+#     Name SUI_MODE | Value TEST | PREVUELA | LIVE).
+#
+#   RELOJ: una decision por vela 1H CERRADA (leyes L2/L3 del casco):
+#     cron a y:05 de cada hora. GitHub puede retrasar el run unos min:
+#     da igual — c2 sigue siendo la ultima hora completa y el libro
+#     idempotente por vela evita dobles.
+#
+#   LIBRO (L7): la memoria del barco vive en estado_sui/ (partes_test.json
+#     + decisiones.jsonl). Los runners son efimeros -> cada latido ANOTA
+#     el libro en el repo (commit) para que el acta de 20-30 partes
+#     cerrados acumule historia real.
+#
+#   KILL-SWITCH (L10): poner el archivo estado_sui/STOP en el repo (Add
+#     file -> estado_sui/STOP, vacio) = ninguna entrada en ningun modo.
+#   CONVIVENCIA: si la flota (doge/atalaya -> main-sui.py) ya tiene SUI
+#     en la mar, el aprendiz lo ve por L9 (posicion externa) y NO encima
+#     nada. Los dos barcos se respetan.
+name: sui-aprendiz
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '5 * * * *'   # una decision por vela 1H cerrada (ley L2/L3)
+concurrency:
+  group: sui-aprendiz
+  cancel-in-progress: false
+permissions:
+  contents: write          # para anotar el libro (estado_sui/) en el repo
+jobs:
+  aprendiz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      # El casco usa SOLO libreria estandar: sin pip install.
+      - name: EL APRENDIZ — un ciclo por vela 1H cerrada
+        run: python3 sui_bot.py
+        env:
+          # --- BOVEDA CANONICA traducida a los nombres del casco ---
+          OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
+          OKX_API_SECRET: ${{ secrets.OKX_SECRET_KEY }}
+          OKX_API_PASSPHRASE: ${{ secrets.OKX_PASSWORD }}
+          # --- IGNICION: variable de repo SUI_MODE (TEST | PREVUELA | LIVE) ---
+          SUI_MODE: ${{ vars.SUI_MODE || 'TEST' }}
+          # SUI_SIZE_CT: ${{ vars.SUI_SIZE_CT || '1' }}   # cap duro 5 en el casco
+          # SUI_LEV: ${{ vars.SUI_LEV || '1' }}           # cap 20 en el casco
+          # SUI_TD_MODE: isolated
+      - name: Anotar el libro del aprendiz en el repo (estado_sui/)
+        if: always()
+        run: |
+          git config user.name "aprendiz-flota"
+          git config user.email "aprendiz-flota@users.noreply.github.com"
+          git add estado_sui/ || true
+          if git diff --cached --quiet; then
+            echo "[libro] sin cambios que anotar"
+          else
+            git commit -m "libro aprendiz SUI: run ${{ github.run_id }} (${{ github.event_name }})"
+            git pull --rebase --autostash origin "${GITHUB_REF_NAME}" || true
+            git push origin HEAD:"${GITHUB_REF_NAME}" || echo "[libro] push pendiente (lo reintenta el proximo latido)"
+          fi
