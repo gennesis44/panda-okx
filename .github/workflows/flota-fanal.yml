@@ -1,0 +1,85 @@
+# =====================================================================
+# flota-fanal.yml — BUQUE: EL FANAL (flota_bot.py) — FAROL DE LA FLOTA
+# (flota86 · Task 86 · buque SOLO LECTURA)
+#
+# QUE HACE en cada pasada (cada 15 min):
+#   1. RADAR     -> precio, EMA3/21, stance y sep vs candado 0.17% (publico)
+#   2. NAVE      -> posicion abierta (lado, ct, uPnL) + SL/TP vivos (lectura)
+#   3. WIN RATE  -> bitacora REAL OKX por nave: WR neto con el peaje DENTRO
+#                   (fee+funding+liq), neto, expectancia, WR equilibrio por R:R
+#   4. RESUMEN   -> totales de flota: bruto -> neto a la vista
+#
+# VOTO DE PAZ EN EL YML MISMO: este workflow NUNCA opera. Por eso
+#   permissions: contents: read  (minimo, sin write), SIN paso de commit,
+#   sin ordenes, sin canon. El buque solo consulta y reporta.
+#   Si un dia este yml escribe o dispara algo, es un impostor.
+#
+# BOVEDA: canonica de la flota SIN traduccion — el casco lee directamente
+#   OKX_API_KEY / OKX_SECRET_KEY / OKX_PASSWORD (delta vs aprendiz sui).
+#
+# CRECER LA FLOTA SIN TOCAR ESTE YML (Variables de repo):
+#   Settings -> Secrets and variables -> Actions -> pestana Variables ->
+#   New repository variable:  Name FLOTA_SHIPS | Value AVAX,INJ,SUI,...
+#   Nave con contrato CLAVADO (ej.: el aprendiz SUI va a 310404):
+#     Name FANAL_SUI_INST_ID | Value SUI-USD_UM_XPERP-310404
+#   R:R teorico de una nave (defecto 1.5 -> WR equilibrio 40.0%):
+#     Name FANAL_SUI_RR | Value 1.5
+#
+# CASCO: flota_bot.py en la RAIZ del repo (nombre EXACTO, leccion sui).
+#
+# ROJO INTENCIONAL: si ninguna nave es legible con credenciales a bordo,
+#   el run pinta rojo a proposito (así lo manda el casco). Verde con
+#   avisos = fallo parcial tolerado (nave ilegible no ensucia el resto).
+# =====================================================================
+name: flota-fanal
+on:
+  workflow_dispatch:
+  schedule:
+    # cada 15 min en MINUTOS 9/24/39/54: desfasado a proposito del perro y
+    # el vigia (que corren a :00/:15/:30/:45) y del aprendiz sui (:05),
+    # para no amontonar tres latidos sobre OKX en el mismo minuto.
+    - cron: '9,24,39,54 * * * *'
+concurrency:
+  group: flota-fanal
+  cancel-in-progress: false
+permissions:
+  contents: read          # voto de paz: el fanal jamas escribe en el repo
+jobs:
+  fanal:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Aparejo (ccxt — unico pip del buque)
+        run: pip install --no-cache-dir ccxt
+
+      - name: EL FANAL — radar + naves + win rate de la flota (SOLO LECTURA)
+        run: python3 flota_bot.py
+        env:
+          # --- BOVEDA CANONICA (sin traduccion: el casco habla estos nombres) ---
+          OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
+          OKX_SECRET_KEY: ${{ secrets.OKX_SECRET_KEY }}
+          OKX_PASSWORD: ${{ secrets.OKX_PASSWORD }}
+
+          # --- ALISTAMIENTO: Variables de repo con defecto de fabrica ---
+          FLOTA_SHIPS: ${{ vars.FLOTA_SHIPS || 'AVAX,INJ' }}
+          FANAL_TF: ${{ vars.FANAL_TF || '1h' }}
+          FANAL_N_CANDLES: ${{ vars.FANAL_N_CANDLES || '200' }}
+          FANAL_SEP_LOCK: ${{ vars.FANAL_SEP_LOCK || '0.17' }}
+          FANAL_DEBUG: ${{ vars.FANAL_DEBUG || '0' }}
+
+          # --- R:R teorico por nave (defecto 1.5 -> WR equilibrio 40.0%) ---
+          FANAL_AVAX_RR: ${{ vars.FANAL_AVAX_RR || '1.5' }}
+          FANAL_INJ_RR: ${{ vars.FANAL_INJ_RR || '1.5' }}
+
+          # --- Contrato clavado por nave (vacio = reanclaje automatico al
+          #     XPERP USD de vencimiento mas lejano). Si la flota crece con
+          #     SUI, crear la Variable FANAL_SUI_INST_ID=SUI-USD_UM_XPERP-310404
+          #     para que el fanal mire EXACTAMENTE el contrato del aprendiz. ---
+          FANAL_AVAX_INST_ID: ${{ vars.FANAL_AVAX_INST_ID || '' }}
+          FANAL_INJ_INST_ID: ${{ vars.FANAL_INJ_INST_ID || '' }}
