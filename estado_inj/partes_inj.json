@@ -1,0 +1,41 @@
+[
+  {
+    "id": "1794610800000-LONG-TEST",
+    "abierto_ts": "2026-11-14T00:27:17Z",
+    "abierto_ms": 1794616037197,
+    "modo": "TEST",
+    "inst": "INJ-USD_UM_XPERP-310711",
+    "lado": "LONG",
+    "velas": {
+      "c1": {
+        "ts": 1794607200000,
+        "o": "8.04",
+        "h": "8.062",
+        "l": "7.894",
+        "c": "8"
+      },
+      "c2": {
+        "ts": 1794610800000,
+        "o": "7.999",
+        "h": "8.107",
+        "l": "7.944",
+        "c": "8.059"
+      }
+    },
+    "sep_pct": "0.7375",
+    "entrada_ref": "8.078",
+    "entrada_fill": null,
+    "sl": "7.876",
+    "tp": "8.401",
+    "riesgo": "0.2020",
+    "size_ct": "8",
+    "lev": 1,
+    "td_mode": null,
+    "nocional_usd": "6.4624",
+    "margen_usd": "6.4624",
+    "ordId": null,
+    "sltp_confirmado": null,
+    "estado": "ABIERTO",
+    "resultado": null
+  }
+]
