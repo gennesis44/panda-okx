@@ -38,7 +38,7 @@ jobs:
         env:
           INJ_MODE: ${{ github.event.inputs.mode || vars.INJ_MODE || 'TEST' }}
           INJ_LEV: ${{ vars.INJ_LEV || '1' }}
-          INJ_TD_MODE: ${{ vars.INJ_TD_MODE || 'isolated' }}
+          INJ_MODE: ${{ github.event.inputs.mode || vars.INJ_MODE || 'TEST' }}
           INJ_INST: ${{ vars.INJ_INST || '' }}
           OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
           OKX_API_SECRET: ${{ secrets.OKX_API_SECRET }}
