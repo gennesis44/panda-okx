@@ -2,8 +2,8 @@ name: Bot AVAX (Navio El Octavo)
 
 on:
   schedule:
-    - cron: '0 * * * *' # Se ejecuta cada hora en punto
-  workflow_dispatch:       # Permite lanzarlo manualmente desde la pestaña Actions
+    - cron: '*/30 * * * *' # Ejecución automática cada 30 minutos
+  workflow_dispatch:       # Permite ejecución manual
 
 permissions:
   contents: write
@@ -20,7 +20,6 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-          # Se elimina la opción cache para evitar el error de requirements.txt ausente
 
       - name: Instalar dependencias
         run: |
@@ -34,7 +33,7 @@ jobs:
           OKX_PASSWORD: ${{ secrets.OKX_PASSWORD }}
           SHADOW: "1"
           DRY_RUN: "0"
-          AVAX_TF: "1h"
+          AVAX_TF: "30m"
           AVAX_NOTIONAL: "10.0"
           AVAX_MAX_NOTIONAL: "15.0"
           TZ: "Europe/Madrid"
