@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-EL APRENDIZ — main-inj.py — v1.0-PROD
+main-inj.py
 =====================================
 Flota GSCSI-TRADE | nave: EL APRENDIZ
 Instrumento: INJ-USD_UM_XPERP-* (OKX my.okx.com, universo EEE/XPERP, margen USD)
@@ -765,4 +765,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main()) 
+    sys.exit(main())
