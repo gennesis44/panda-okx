@@ -1,0 +1,59 @@
+name: INJ - 0
+
+# Repo: guardar como .github/workflows/inj-main.yml  (y main-inj.py en la raiz)
+# Ignicion LIVE: Settings > Secrets and variables > Actions
+#   Variables -> INJ_MODE = TEST | PREVUELA | LIVE   (default TEST)
+#   Secrets   -> OKX_API_KEY, OKX_API_SECRET, OKX_API_PASSPHRASE
+# Kill-switch: crear el archivo estado_inj/STOP en el repo.
+
+on:
+  schedule:
+    - cron: "*/20 * * * *"      # cada 20 minutos
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Modo (vacio = variable INJ_MODE, o TEST)"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+concurrency:
+  group: inj-aprendiz
+  cancel-in-progress: false      # nunca matar un run a medio camino (LIVE)
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Ejecutar EL APRENDIZ (INJ)
+        env:
+          INJ_MODE: ${{ github.event.inputs.mode || vars.INJ_MODE || 'TEST' }}
+          INJ_LEV: ${{ vars.INJ_LEV || '1' }}
+          INJ_TD_MODE: ${{ vars.INJ_TD_MODE || 'isolated' }}
+          INJ_INST: ${{ vars.INJ_INST || '' }}
+          OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
+          OKX_API_SECRET: ${{ secrets.OKX_API_SECRET }}
+          OKX_API_PASSPHRASE: ${{ secrets.OKX_API_PASSPHRASE }}
+        run: python3 main-inj.py
+
+      # always(): el libro de partes se guarda aunque el run falle (clave en LIVE)
+      - name: Guardar estado
+        if: always()
+        run: |
+          git config user.name  "el-aprendiz-bot"
+          git config user.email "el-aprendiz-bot@users.noreply.github.com"
+          git add estado_inj
+          if ! git diff --cached --quiet; then
+            git commit -m "estado INJ $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            git pull --rebase --autostash || true
+            git push
+          fi
