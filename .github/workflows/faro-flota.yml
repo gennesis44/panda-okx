@@ -23,7 +23,7 @@
 #   velas publicas — el faro no opera, la ley del veto USDT no se toca).
 #   Para alinear el radar a los instrumentos VIVOS de la flota (XPERP USD):
 #     Variable RADAR_SHIPS =
-#       INJ-USD_UM_XPERP-310711:1h:0.17,SUI-USD_UM_XPERP-310404:1h:0.17
+#       ADA-USD_UM_XPERP-310404:15m:0.15,INJ-USD_UM_XPERP-310711:1h:0.17,XPL-USD_UM_XPERP-310711:30m:0.15,XLM-USD_UM_XPERP-310704:1h:0.15,ICP-USD_UM_XPERP-310711:1h:0.15
 #   Para sumar naves: anade chunk "INST:vela:candado" a esa misma Variable.
 #   Peor caso por nave: una linea SIN DATOS — el faro nunca explota.
 #
