@@ -1,0 +1,13 @@
+2026-11-15 15:04:35,500 - INFO - Zarpando ciclo de XPL — EL ATUNERO [v5.1-atunero-ctx] | SOMBRA | host https://my.okx.com
+2026-11-15 15:04:37,273 - INFO - Mercados cargados: 5076
+2026-11-15 15:04:37,273 - INFO - DERIVADO XPL: XPL/USD:USD-310711 | id=XPL-USD_UM_XPERP-310711 | tipo=future | settle=USD | active=True | contractSize=10.0 | expiry=2031-07-11T08:00:00.000Z
+2026-11-15 15:04:37,274 - INFO - DERIVADO XPL: XPL/USDT:USDT | id=XPL-USDT-SWAP | tipo=swap | settle=USDT | active=True | contractSize=10.0 | expiry=None
+2026-11-15 15:04:37,426 - INFO - Instrumento: XPL/USD:USD-310711 | id=XPL-USD_UM_XPERP-310711 | 1 contrato = 10.0 XPL | settle=USD | nocional ~$0.43/ct | FUTURES
+2026-11-15 15:04:37,426 - INFO - Carga de pesca: 14.0 contratos = 140 XPL por entrada.
+2026-11-15 15:04:37,639 - INFO - Lastre USD: sin cifra legible en la bodega.
+2026-11-15 15:04:38,171 - INFO - Cubierta limpia: cero posición, cero algos huérfanos.
+2026-11-15 15:04:39,106 - INFO - Margen (14.0 ct): ~$6.08 | colateral: ~$41.96 -> CABE
+2026-11-15 15:04:39,618 - INFO - 1H EMA3/21: 0.04393/0.04439 | EMA3 < EMA21 (estado) | cierre 0.04345
+2026-11-15 15:04:39,618 - INFO - MACRO 4d: marco no ofrecido por OKX/ccxt — omitido (informativo).
+2026-11-15 15:04:39,940 - INFO - APOYO 30m (cerrada) EMA3/21: EMA3 < EMA21 | separacion 0.708% (informativo)
+2026-11-15 15:04:39,940 - INFO - Sin cruce EMA3/21 válido en la ventana. Observando.
