@@ -2,7 +2,6 @@ name: EL ATUNERO - XPL EMA 3/21 1H (SHADOW/LIVE)
 
 on:
   schedule:
-    # Se dispara cada 30 minutos para supervisar el marco de 1H y la vela en formación
     - cron: '*/30 * * * *'
   workflow_dispatch:
 
@@ -35,18 +34,9 @@ jobs:
           OKX_API_KEY:          ${{ secrets.OKX_API_KEY }}
           OKX_SECRET_KEY:       ${{ secrets.OKX_SECRET_KEY }}
           OKX_PASSWORD:         ${{ secrets.OKX_PASSWORD }}
-          OKX_XPL_MAX_NOTIONAL: '300.0'
-          XPL_CONTRACTS:        '25.0'
+          OKX_XPL_MAX_NOTIONAL: '1500.0'   # Ajustado para permitir el nuevo nocional de 125 contratos (~$54 USD)
+          XPL_CONTRACTS:        '125.0'  # Modificado a 125 contratos (1,250 XPL por entrada)
           OKX_LEVERAGE:         '1'
-          SHADOW:               '1'   # Cambiar a '0' solo cuando se ordene combate real
+          SHADOW:               '1'   # Sombra activa (cambiar a '0' cuando se ordene fuego real)
         run: |
-          python3 main-xpl.py 2>&1 | tee logs_xpl/run_$(date -u +%Y%m%d_%H%M).log
-
-      - name: Commit y Push de logs
-        if: always()
-        run: |
-          git config --global user.name  "El Atunero Bot"
-          git config --global user.email "atunero@gscsi.trade"
-          git add logs_xpl/ || true
-          git commit -m "auto: log EL ATUNERO XPL EMA 3/21 1H [skip ci]" || echo "Sin cambios"
-          git push || echo "Push omitido"
+          python3 main-xpl.py 2
