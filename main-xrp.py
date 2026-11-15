@@ -1,12 +1,10 @@
-# main-xrp.py v3.0 — XRP DESTROYER · ARMADO Y A ZARPAR
-#   DECRETO CARBONO (26-oct-2026): "Debe estar combatiendo ya. No hace nada en Puerto. Armado y a zarpar"
-#   Ley original (shadow v2) convertida a combate real:
-#     EMA 3/21 en velas 4H CERRADAS
-#     LONG  SL 6.0% / TP 7.5%
-#     SHORT SL 4.5% / TP 6.0%
-#     4 contratos
+# main-xrp.py v3.1 — XRP DESTROYER · 1H (2 velas + formación) · ARMADO Y A ZARPAR
+#   DECRETO CARBONO: Marco 1H, ejecución cada 30 min.
+#   EMA 3/21 en velas 1H
+#   LONG  SL 6.0% / TP 7.5%
+#   SHORT SL 4.5% / TP 6.0%
+#   4 contratos
 #   Ax3: HOST my.okx.com | USDT PROHIBIDO | fail-closed | clOrdId por vela | cooldown | guardia nocional
-#   Una posición máxima. Sin opinión. El mercado emite el veredicto.
 
 import os
 import time
@@ -27,12 +25,12 @@ def _f(x):
 
 # ==================== CONFIGURACIÓN (decreto Carbono) ====================
 BASE_ASSET = 'XRP'
-AMOUNT = 4              # 4 contratos (geometría original del shadow)
+AMOUNT = 4              # 4 contratos
 SL_LONG = 0.060         # 6.0%
 TP_LONG = 0.075         # 7.5%
 SL_SHORT = 0.045        # 4.5%
 TP_SHORT = 0.060        # 6.0%
-TIMEFRAME = '4h'
+TIMEFRAME = '1h'
 EMA_FAST = 3
 EMA_SLOW = 21
 TD_MODE = 'cross'
@@ -41,9 +39,10 @@ COOLDOWN_MIN = 60
 TEST_MODE = os.getenv('TEST_MODE') == '1'
 SINGLE_CYCLE = os.getenv('SINGLE_CYCLE') == '1'
 MAX_NOTIONAL_USD = _f(os.getenv('OKX_XRP_MAX_NOTIONAL', '25.0')) or 25.0
-SIGNAL_WINDOW = (-2, -3, -4)
-WARMUP = 40
-TF_MS = 14400000        # 4h
+# Ventana: -1 (vela en formación), -2 y -3 (2 velas cerradas recientes)
+SIGNAL_WINDOW = (-1, -2, -3)
+WARMUP = 30
+TF_MS = 3600000         # 1h en milisegundos
 
 HOST = 'https://my.okx.com'
 
@@ -113,7 +112,7 @@ def _log_contract_size(sym):
     try:
         ctval, ccy, settle, _p, usd = _contract_meta(sym)
         log.info("Contrato: 1 = " + str(ctval) + " " + ccy + " | settle=" + settle +
-                 " | nocional \~$" + format(usd, '.2f') + " | " + sym +
+                 " | nocional ~$" + format(usd, '.2f') + " | " + sym +
                  " | " + _inst_type(sym))
     except Exception as e:
         log.warning("No se pudo leer el tamaño del contrato: " + str(e))
@@ -155,12 +154,10 @@ def fetch_data(symbol, timeframe, limit=100):
 
 # ==================== POSICIÓN ====================
 def get_open_position(symbol):
-    """Fail-closed: mar ilegible = posición fantasma = no operar."""
     try:
         for pos in exchange.fetch_positions([symbol]):
             if pos.get('symbol') == symbol and abs(float(pos.get('contracts') or 0)) > 0:
                 return pos
-        # Plan B: SL/TP vivos = posición asumida
         inst = exchange.market(symbol)['id']
         for ord_type in ('oco', 'conditional'):
             resp = exchange.private_get_trade_orders_algo_pending(
@@ -205,7 +202,7 @@ def execute_order(side, symbol, ref_price, amount, candle_ts):
     ctval, ccy, _settle, _p, usd = _contract_meta(symbol, ref_price)
     nocional = amount * usd
     log.info("Nocional: " + str(amount) + " contrato x " + str(ctval) + " " + ccy +
-             " (\~$" + format(nocional, '.2f') + ")")
+             " (~$" + format(nocional, '.2f') + ")")
 
     if nocional > MAX_NOTIONAL_USD:
         raise RuntimeError("GUARDIA: nocional $" + format(nocional, '.2f') +
@@ -281,28 +278,21 @@ def cooldown_active(symbol):
         log.warning("No se pudo verificar cooldown (" + str(e) + "); BLOQUEO fail-closed.")
         return True
 
-# ==================== SEÑAL: CRUCE EMA3/21 4H CERRADA ====================
+# ==================== SEÑAL: CRUCE EMA3/21 (1H) ====================
 def evaluate_signal(symbol):
     try:
         df = fetch_data(symbol, TIMEFRAME, limit=100)
         if len(df) < WARMUP + 10:
-            log.error("4H insuficiente (" + str(len(df)) + " velas). Sin señal.")
+            log.error("1H insuficiente (" + str(len(df)) + " velas). Sin señal.")
             return None, None, None
-
-        now_ms = int(time.time() * 1000)
-        if int(df['timestamp'].iloc[-1]) + TF_MS > now_ms:
-            df = df.iloc[:-1].reset_index(drop=True)
-            if len(df) < WARMUP + 10:
-                log.error("4H insuficiente tras descartar vela en formación.")
-                return None, None, None
 
         e_fast = ema(df['close'], EMA_FAST)
         e_slow = ema(df['close'], EMA_SLOW)
         price = exchange.fetch_ticker(symbol).get('last') or df['close'].iloc[-1]
 
-        log.info("Precio: " + str(price) + " | 4H EMA3/21: " +
-                 format(e_fast.iloc[-2], '.5f') + "/" + format(e_slow.iloc[-2], '.5f') +
-                 " | EMA3 " + (">" if e_fast.iloc[-2] > e_slow.iloc[-2] else "<") + " EMA21")
+        log.info("Precio: " + str(price) + " | 1H EMA3/21: " +
+                 format(e_fast.iloc[-1], '.5f') + "/" + format(e_slow.iloc[-1], '.5f') +
+                 " | EMA3 " + (">" if e_fast.iloc[-1] > e_slow.iloc[-1] else "<") + " EMA21")
 
         for i_curr in SIGNAL_WINDOW:
             i_prev = i_curr - 1
@@ -317,13 +307,13 @@ def evaluate_signal(symbol):
                     and e_fast.iloc[i_curr] < e_slow.iloc[i_curr])
 
             if up:
-                log.info("Cruce ALCISTA EMA3/21 detectado. Señal LONG.")
+                log.info("Cruce ALCISTA EMA3/21 detectado (vela index " + str(i_curr) + "). Señal LONG.")
                 return 'LONG', price, candle_ts
             if down:
-                log.info("Cruce BAJISTA EMA3/21 detectado. Señal SHORT.")
+                log.info("Cruce BAJISTA EMA3/21 detectado (vela index " + str(i_curr) + "). Señal SHORT.")
                 return 'SHORT', price, candle_ts
 
-        log.info("Sin cruce en ventana reciente.")
+        log.info("Sin cruce en la ventana configurada (2 velas + formación).")
         return None, None, None
     except Exception as e:
         log.error("Error evaluando señal: " + str(e))
@@ -331,7 +321,7 @@ def evaluate_signal(symbol):
 
 # ==================== CICLO PRINCIPAL ====================
 def main_loop():
-    log.info("=== XRP DESTROYER v3.0 | EMA3/21 4H | ARMADO ===")
+    log.info("=== XRP DESTROYER v3.1 | EMA3/21 1H (2 velas + formación) | ARMADO ===")
     if TEST_MODE:
         log.info("TEST_MODE activo — solo lectura / sin órdenes reales")
 
@@ -341,7 +331,6 @@ def main_loop():
         log.error("No se pudo resolver instrumento: " + str(e))
         sys.exit(1)
 
-    # Ajuste de apalancamiento (best-effort)
     try:
         exchange.set_leverage(LEVERAGE, symbol, params={'mgnMode': 'cross'})
     except Exception as e:
