@@ -1,0 +1,75 @@
+name: EL TITAN · Navío ADA EMA 3/21 15m (LIVE)
+
+on:
+  schedule:
+    # Ventana de cruce cada 15 min alineada al marco temporal ADA_TF=15m
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+    inputs:
+      shadow_mode:
+        description: 'Modo de Ejecución (0 = COMBATE REAL, 1 = Sombra / Prueba)'
+        required: true
+        default: '0'
+        type: choice
+        options:
+          - '0'
+          - '1'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: titan-ada-ciclo
+  cancel-in-progress: false
+
+jobs:
+  run-ada-bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout repositorio
+        uses: actions/checkout@v4
+
+      - name: Configurar Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instalar dependencias (ccxt)
+        run: |
+          python -m pip install --upgrade pip
+          pip install ccxt
+
+      - name: Crear directorio de logs
+        run: mkdir -p logs_ada
+
+      - name: Ejecutar Navío ADA — EL TITAN (main-ada.py)
+        env:
+          OKX_API_KEY:      ${{ secrets.OKX_API_KEY }}
+          OKX_SECRET_KEY:   ${{ secrets.OKX_SECRET_KEY }}
+          OKX_PASSWORD:     ${{ secrets.OKX_PASSWORD }}
+          # PRODUCCIÓN REAL ('0'). Usar '1' para modo sombra opcional.
+          SHADOW:           ${{ github.event.inputs.shadow_mode || '0' }}
+          DRY_RUN:          '0'
+          # Parámetros de calibración ADA 15m Agresivo (2 ct ~ $4 nocional)
+          ADA_TF:           '15m'
+          ADA_CONTRACTS:    '2'
+          ADA_MAX_NOTIONAL: '6.0'
+          ADA_SEP_LOCK:     '0.15'
+          ADA_SL_MULT:      '1.2'
+          ADA_SL_FLOOR:     '2.0'
+          ADA_SL_CAP:       '2.0'
+          ADA_TP_MULT:      '1.5'
+          COOLDOWN_MIN:     '60'
+        run: |
+          python3 main-ada.py 2>&1 | tee logs_ada/run_$(date -u +%Y%m%d_%H%M).log
+
+      - name: Commit y Push de logs
+        if: always()
+        run: |
+          git config --global user.name  "El Titan Bot"
+          git config --global user.email "titan@gscsi.trade"
+          git add logs_ada/ || true
+          git commit -m "auto: log EL TITAN ADA (2 ct - LIVE) [skip ci]" || echo "Sin cambios"
+          git push || echo "Push omitido"
