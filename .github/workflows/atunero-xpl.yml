@@ -6,7 +6,7 @@ on:
     - cron: '*/30 * * * *'
   workflow_dispatch:
     inputs:
-      shadow_mode:
+      shadow_mode: '0'
         description: 'Modo de Ejecución (0 = PRODUCCIÓN REAL, 1 = Sombra / Prueba)'
         required: true
         default: '0'
