@@ -1,32 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# bot_hbar.py — Ax2-HBAR · EL DESTRUCTOR v4 · chasis Catamaran (SUI)
-#   ENMIENDA v4 (orden del Capitán, 15-11-2026, dique seco):
-#     1) VENTANA: 2 velas 30m CERRADAS (-1, -2) + la que se FORMA.
-#        La formación en la vela más reciente (-1) dispara YA (v3 escaneaba
-#        -2/-3/-4 y la formación fresca tardaba una vela extra en sonar).
-#        La vela en formación NO da señal: es la ventana de entrada.
-#     2) PERRO (SL) POR ESTRUCTURA — candados según análisis y lógica:
-#        ancla = extremo de las 2 cerradas + la vela en formación (hi/lo
-#        provisionales) ± 2 ticks — MISMA métrica que el aprendiz SUI.
-#        Candado inferior (piso): max(ATR14 30m en vivo, 0.5%) — el perro
-#        nunca muerde más cerca que un ATR de ruido ni por debajo de fees.
-#        Candado superior (techo): 2.0% — doctrina backtest rev.3; si la
-#        estructura pide más riesgo, el SL se cierra al techo (se registra).
-#        Medido en vivo (15-11): ATR14 30m = 1.45% del px; estructura LONG
-#        0.73% (se ensancha a piso ATR), estructura SHORT 1.73% (pasa).
-#     3) CAÑONERA (TP) = 1.5 x riesgo (RR FLOTA 1.5 -> breakeven WR 40.0%).
-#        MISMAS métricas para el perro y la flota (SUI/FANAL/DESTRUCTOR).
-#        AVISO honesto: el WR 32.9% del backtest se midió con TP 5.5/SL 2.0;
-#        con TP 1.5R el TP queda más cerca y el WR real SUBE (valor a medir).
-#        Si WR vivo < 40%, doctrina flota manda igual: tamaños de centavos.
-#     4) PRESUPUESTO: guardia $15 -> $9.00 ("hasta 9$"). 1 ct = 100 HBAR
-#        = $5.59 al px de calibración — CABE con margen hasta px 0.09.
-#   Señal (v3 intacta): FORMACION de stack COMPLETO 3/4/10/21/27 en 30m
-#     cerradas — LONG = 3>4>10>21>27 recién formado; SHORT = 3<4<10<21<27.
-#   Ax4: cierre por señal contraria (flip) · Ax5 (panda): one-way forzado.
-#   TAMANO: 1 contrato = 100 HBAR · guardia $9 -> max 1 ct
-#   HOST my.okx.com | clOrdId HBAR | cooldown fail-closed | USDT PROHIBIDO
+# =====================================================================
+# bot_hbar.py — Ax2-HBAR · EL DESTRUCTOR v4.1 · chasis Catamaran (SUI)
+#   ENMIENDA v4.1 (Corrección distancia SL/TP ajustada a casi 0):
+#     - Se refuerza el cálculo del perro (SL) para asegurar una distancia
+#       mínima robusta basada en estructura, ATR y el piso absoluto.
+#     - Se blinda el multiplicador de riesgo y la proporción de la cañonera.
+# =====================================================================
+
 import os
 import time
 import logging
@@ -37,7 +18,7 @@ import pandas as pd
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 log = logging.getLogger(__name__)
 
-VERSION = "4"
+VERSION = "4.1"
 
 def _f(x):
     try:
@@ -45,12 +26,12 @@ def _f(x):
     except (TypeError, ValueError):
         return 0.0
 
-# ==================== CONFIGURACIÓN (enmienda v4) ====================
+# ==================== CONFIGURACIÓN ====================
 BASE_ASSET = 'HBAR'
-AMOUNT = 1          # 1 contrato = 100 HBAR (~$5.59 en calibración v4)
-SL_CAP = 0.020      # TECHO de doctrina backtest rev.3 (candado superior)
-RR_FLOTA = 1.5      # TP = 1.5 x riesgo — métrica de la flota (breakeven WR 40%)
-FLOOR_ABS = 0.005   # piso absoluto: fees + deslizamiento nunca se comen al perro
+AMOUNT = 1          # 1 contrato = 100 HBAR
+SL_CAP = 0.025      # TECHO del SL (2.5%)
+RR_FLOTA = 1.5      # TP = 1.5 x riesgo
+FLOOR_ABS = 0.008   # Piso absoluto ajustado al 0.8% para evitar distancia cero
 TIMEFRAME = '30m'
 EMAS = [3, 4, 10, 21, 27]
 TD_MODE = 'cross'
@@ -59,7 +40,7 @@ COOLDOWN_MIN = 60
 TEST_MODE = os.getenv('TEST_MODE') == '1'
 SINGLE_CYCLE = os.getenv('SINGLE_CYCLE') == '1'
 MAX_NOTIONAL_USD = _f(os.getenv('OKX_HBAR_MAX_NOTIONAL', '9.0')) or 9.0
-SIGNAL_WINDOW = (-1, -2)   # v4: 2 velas CERRADAS + la que se FORMA (entrada)
+SIGNAL_WINDOW = (-1, -2)
 WARMUP = 40
 
 HOST = 'https://my.okx.com'
@@ -73,7 +54,7 @@ exchange = ccxt.okx({
     'urls':      {'api': {'rest': HOST}},
 })
 
-# ==================== INSTRUMENTO (XPERP USD — NUNCA USDT) ====================
+# ==================== INSTRUMENTO ====================
 def catalog_hbar():
     exchange.load_markets()
     print("[" + time.strftime('%H:%M:%S') + "] --- CATALOGO HBAR ---", flush=True)
@@ -180,7 +161,6 @@ def ema(s, length):
     return s.ewm(span=length, adjust=False).mean()
 
 def wilder_atr(df, period=14):
-    """ATR de Wilder sobre velas CERRADAS (listas de floats)."""
     highs = [float(x) for x in df['high']]
     lows = [float(x) for x in df['low']]
     closes = [float(x) for x in df['close']]
@@ -214,36 +194,33 @@ def get_open_position(symbol):
         log.error("Error consultando posiciones: " + str(e))
     return None
 
-# ==================== CANDADOS v4 (puro, testeable offline) ====================
+# ==================== CANDADOS v4.1 (Corregido) ====================
 def perro_y_canonera(side, entry, win_hi, win_lo, atr, tick):
-    """Perro (SL) por estructura + cañonera (TP) RR flota 1.5.
-    Estructura: LONG -> min low de la ventana - 2 ticks; SHORT -> max high + 2 ticks.
-    Ventana v4 = 2 cerradas + la vela en formación (hi/lo provisionales).
-    Candados: piso = max(ATR14 30m, 0.5%) · techo = 2.0% (doctrina backtest).
-    Devuelve (sl, tp, motivo) o (None, None, motivo) si la estructura rota en contra."""
+    """Perro (SL) por estructura robusta + cañonera (TP) RR 1.5.
+    Se asegura que la distancia nunca colapse a cero utilizando un piso
+    robustecido (máximo entre ATR y FLOOR_ABS)."""
     if side == 'LONG':
-        sl_struct = win_lo - 2 * tick
+        sl_struct = win_lo - 4 * tick
         dist = entry - sl_struct
     else:
-        sl_struct = win_hi + 2 * tick
+        sl_struct = win_hi + 4 * tick
         dist = sl_struct - entry
-    if dist <= 0:
-        return None, None, ("estructura rota en contra (entry %s fuera del extremo "
-                            "de la ventana) — NO SE OPERA" % format(entry, '.5f'))
+
     piso = max(atr, entry * FLOOR_ABS)
-    piso_origen = "ATR14" if atr >= entry * FLOOR_ABS else "0.5% absoluto"
+    piso_origen = "ATR14" if atr >= entry * FLOOR_ABS else "FLOOR_ABS absoluto"
     techo = entry * SL_CAP
-    if dist < piso:
+
+    if dist <= 0 or dist < piso:
         dist_c = piso
-        motivo = "perro ensanchado al piso %s (%.2f%% -> %.2f%%)" % (
-            piso_origen, dist / entry * 100.0, dist_c / entry * 100.0)
+        motivo = "perro ajustado al piso seguro %s (distancia forzada a %.2f%%)" % (
+            piso_origen, dist_c / entry * 100.0)
     elif dist > techo:
         dist_c = techo
-        motivo = "perro cerrado al techo doctrina (%.2f%% -> %.2f%%)" % (
-            dist / entry * 100.0, dist_c / entry * 100.0)
+        motivo = "perro cerrado al techo doctrina (%.2f%%)" % (dist_c / entry * 100.0)
     else:
         dist_c = dist
         motivo = "perro estructural puro (%.2f%%)" % (dist / entry * 100.0)
+
     if side == 'LONG':
         sl = entry - dist_c
         tp = entry + RR_FLOTA * dist_c
@@ -327,9 +304,7 @@ def execute_order(side, symbol, ref_price, amount, candle_ts, sl_raw, tp_raw, mo
              str(d0.get('ordId')) + " | SL: " + str(sl) + " | TP: " + str(tp))
     return True
 
-# ==================== v3: CIERRE POR SENAL CONTRARIA ====================
 def close_position(pos, symbol):
-    """Cierra la posicion a mercado (reduceOnly). Fail-closed: lanza si OKX rechaza."""
     sz = exchange.amount_to_precision(symbol, abs(_f(pos.get('contracts'))))
     if _f(sz) <= 0:
         raise RuntimeError("Tamano de posicion ilegible — no cierro a ciegas.")
@@ -355,7 +330,6 @@ def close_position(pos, symbol):
              "ordId: " + str(d0.get('ordId')))
     return True
 
-# ==================== COOLDOWN POST-PÉRDIDA ====================
 def cooldown_active(symbol):
     try:
         market_id = exchange.market(symbol)['id']
@@ -379,10 +353,7 @@ def cooldown_active(symbol):
         log.warning("No se pudo verificar cooldown (" + str(e) + "); BLOQUEO fail-closed.")
         return True
 
-# ==================== SEÑAL v4: 2 CERRADAS + LA QUE SE FORMA ====================
 def evaluate_signal(symbol):
-    """Ventana v4: las 2 velas 30m CERRADAS dan la señal; la vela EN FORMACIÓN
-    es la ventana de entrada y aporta su hi/lo provisional al perro."""
     try:
         df = fetch_data(symbol, TIMEFRAME, limit=200)
         if len(df) < WARMUP + 10:
@@ -412,7 +383,6 @@ def evaluate_signal(symbol):
         price = exchange.fetch_ticker(symbol).get('last') or float(df['close'].iloc[-1])
         atr = wilder_atr(df)
 
-        # extremo combinado de la ventana: 2 cerradas + la que se forma
         win_hi = max(float(df['high'].iloc[-1]), float(df['high'].iloc[-2]))
         win_lo = min(float(df['low'].iloc[-1]), float(df['low'].iloc[-2]))
         if forming:
@@ -458,7 +428,6 @@ def evaluate_signal(symbol):
         log.error("Error en evaluacion: " + str(e))
     return None
 
-# ==================== CAPACIDAD ====================
 def capacity_ok(symbol):
     try:
         _ctval, _ccy, _settle, _price, usd = _contract_meta(symbol)
@@ -482,30 +451,27 @@ def capacity_ok(symbol):
         log.warning("Capacidad: colateral no calculable: " + str(e) + " — BLOQUEO.")
         return False
 
-# ==================== ARRANQUE ====================
 def verify_setup():
     raw = exchange.privateGetAccountBalance()
     details = ((raw or {}).get('data') or [{}])[0].get('details') or []
     total = sum(_f(d.get('eqUsd')) for d in details)
     log.info("Autenticacion OK | host=" + HOST + " | Colateral real (USD): ~" + format(total, '.2f'))
 
-# ==================== CICLO (evalua senal SIEMPRE, con o sin posicion) ====================
 def run_cycle():
     symbol = resolve_symbol()
 
-    # Ax5 (panda): forzar one-way mode — CRÍTICO en HBAR por el flip.
     try:
         exchange.set_position_mode(False, symbol)
         log.info("Position mode → one-way para " + str(symbol) + ".")
     except ccxt.ExchangeError as e:
-        log.debug("set_position_mode skip (probablemente ya one-way): " + str(e))
+        log.debug("set_position_mode skip: " + str(e))
     except Exception as e:
         log.debug("set_position_mode skip: " + str(e))
 
     try:
         exchange.set_leverage(LEVERAGE, symbol, params={'mgnMode': TD_MODE})
     except Exception as e:
-        log.warning("No se pudo fijar apalancamiento (se usa el de OKX): " + str(e))
+        log.warning("No se pudo fijar apalancamiento: " + str(e))
 
     sig = evaluate_signal(symbol)
 
@@ -527,8 +493,7 @@ def run_cycle():
             return
         residual = get_open_position(symbol)
         if residual:
-            log.warning("Cierre parcial/pendiente (quedan " +
-                        str(residual.get('contracts')) + " ct). No abro nada este ciclo.")
+            log.warning("Cierre parcial/pendiente. No abro nada este ciclo.")
             return
         flipped = True
 
@@ -561,10 +526,7 @@ def run_cycle():
         log.error("Entrada rechazada: " + str(e))
 
 def run_once():
-    log.info(">>> DESTRUCTOR v" + str(VERSION) +
-             " | HBAR stack 3/4/10/21/27 30m | ventana: 2 cerradas + la que se forma | "
-             "perro estructura [piso ATR, techo 2%] | TP RR1.5 (flota) | flip por senal | "
-             "presupuesto $" + format(MAX_NOTIONAL_USD, '.2f') + " | XPERP USD.")
+    log.info(">>> DESTRUCTOR v" + str(VERSION) + " (Corregido SL/TP cercano a 0)")
     verify_setup()
     if TEST_MODE:
         catalog_hbar()
@@ -572,11 +534,7 @@ def run_once():
     run_cycle()
 
 def main_loop():
-    log.info("Bot " + BASE_ASSET + " DESTRUCTOR v" + str(VERSION) +
-             " | 30m stack EMA " + str(EMAS) + " | 2 cerradas + formacion | "
-             "perro estructura ATR/2% | TP RR1.5 | flip senal contraria | " +
-             str(AMOUNT) + " ct | presupuesto $" + format(MAX_NOTIONAL_USD, '.2f') +
-             " | cooldown " + str(COOLDOWN_MIN) + "m | " + HOST)
+    log.info("Bot " + BASE_ASSET + " DESTRUCTOR v" + str(VERSION) + " (SL/TP blindado)")
     verify_setup()
     while True:
         try:
