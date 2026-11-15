@@ -1,0 +1,6 @@
+2026-11-15 23:54:01,699 - INFO - >>> DESTRUCTOR v4.1 (Corregido SL/TP cercano a 0)
+2026-11-15 23:54:02,070 - INFO - Autenticacion OK | host=https://my.okx.com | Colateral real (USD): ~42.03
+2026-11-15 23:54:04,047 - INFO - Instrumento: HBAR/USD:USD-310815 (XPERP — vencimiento mas lejano)
+2026-11-15 23:54:04,217 - INFO - Contrato: 1 = 100.0 HBAR | settle=USD | nocional ~$5.92 | HBAR/USD:USD-310815 | FUTURES
+2026-11-15 23:54:05,715 - INFO - Precio: 0.05917 | 30m EMAs 0.05899/0.05895/0.05874/0.05849/0.05840 (ult cerrada) | stack ALCISTA completo | ventana v4: h=0.05938 l=0.05863 (+ formacion h=0.05931 l=0.05909) | ATR14 0.00051
+2026-11-15 23:54:05,715 - INFO - Sin formacion de stack completo en las 2 cerradas. Vigilando.
