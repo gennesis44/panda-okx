@@ -1,0 +1,53 @@
+name: XRP DESTROYER - EMA 3/21 1H (LIVE)
+
+on:
+  schedule:
+    # Se dispara cada 30 minutos para supervisar el marco de 1H y la vela en formación
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  run-xrp-bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repositorio
+        uses: actions/checkout@v4
+
+      - name: Configurar Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instalar dependencias
+        run: |
+          python -m pip install --upgrade pip
+          pip install ccxt pandas
+
+      - name: Crear directorio de logs
+        run: mkdir -p logs_xrp
+
+      - name: Ejecutar Bot XRP DESTROYER (1H LIVE)
+        env:
+          OKX_API_KEY:          ${{ secrets.OKX_API_KEY }}
+          OKX_SECRET_KEY:       ${{ secrets.OKX_SECRET_KEY }}
+          OKX_PASSWORD:         ${{ secrets.OKX_PASSWORD }}
+          OKX_API_SECRET:       ${{ secrets.OKX_SECRET_KEY }}
+          OKX_API_PASSPHRASE:   ${{ secrets.OKX_PASSWORD }}
+          OKX_XRP_MAX_NOTIONAL: '25.0'
+          TEST_MODE:            '0'
+          SINGLE_CYCLE:         '1'
+        run: |
+          python3 main-xrp.py 2>&1 | tee logs_xrp/run_$(date -u +%Y%m%d_%H%M).log
+
+      - name: Commit y Push de logs
+        if: always()
+        run: |
+          git config --global user.name  "XRP Destroyer Bot"
+          git config --global user.email "destroyer@gscsi.trade"
+          git add logs_xrp/ || true
+          git commit -m "auto: log XRP DESTROYER EMA 3/21 1H [skip ci]" || echo "Sin cambios"
+          git push || echo "Push omitido"
