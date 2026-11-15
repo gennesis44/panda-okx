@@ -34,9 +34,18 @@ jobs:
           OKX_API_KEY:          ${{ secrets.OKX_API_KEY }}
           OKX_SECRET_KEY:       ${{ secrets.OKX_SECRET_KEY }}
           OKX_PASSWORD:         ${{ secrets.OKX_PASSWORD }}
-          OKX_XPL_MAX_NOTIONAL: '1500.0'   # Ajustado para permitir el nuevo nocional de 125 contratos (~$54 USD)
-          XPL_CONTRACTS:        '125.0'  # Modificado a 125 contratos (1,250 XPL por entrada)
+          OKX_XPL_MAX_NOTIONAL: '50.0'    # Límite ajustado para ~$6-10 de nocional
+          XPL_CONTRACTS:        '14.0'   # Modificado a 14 contratos (~$6 USD de nocional)
           OKX_LEVERAGE:         '1'
-          SHADOW:               '1'   # Sombra activa (cambiar a '0' cuando se ordene fuego real)
+          SHADOW:               '1'   # Sombra activa (cambiar a '0' para combate real)
         run: |
-          python3 main-xpl.py 2
+          python3 main-xpl.py 2>&1 | tee logs_xpl/run_$(date -u +%Y%m%d_%H%M).log
+
+      - name: Commit y Push de logs
+        if: always()
+        run: |
+          git config --global user.name  "El Atunero Bot"
+          git config --global user.email "atunero@gscsi.trade"
+          git add logs_xpl/ || true
+          git commit -m "auto: log EL ATUNERO XPL (14 contratos - ~$6) [skip ci]" || echo "Sin cambios"
+          git push || echo "Push omitido"
