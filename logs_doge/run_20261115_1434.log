@@ -1,0 +1,7 @@
+2026-11-15 14:34:29,753 - INFO - Modo ciclo unico | DOGE EMA3/21 1H v3.4 + CANDADO v2 FAIL-CLOSED (XPERP USD).
+2026-11-15 14:34:30,023 - INFO - Autenticacion OK | host=https://my.okx.com | Colateral real (USD): ~41.99
+2026-11-15 14:34:32,052 - INFO - Instrumento: DOGE/USD:USD-310404 (XPERP — vencimiento mas lejano)
+2026-11-15 14:34:32,203 - INFO - Contrato: 1 = 10.0 DOGE | settle=USD | nocional ~$0.59 | DOGE/USD:USD-310404 | FUTURES
+2026-11-15 14:34:33,856 - INFO - Margen (10 ct): ~$5.87 | colateral: ~$41.99 -> CABE
+2026-11-15 14:34:34,385 - INFO - Precio: 0.05872 | 1H EMA3/21: 0.05903/0.05897 | EMA3 > EMA21 (estado)
+2026-11-15 14:34:34,385 - INFO - Sin cruce EMA3/21 legal en la ventana. Vigilando.
