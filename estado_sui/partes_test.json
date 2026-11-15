@@ -77,6 +77,50 @@
     "margen_usd": "0.6967",
     "ordId": null,
     "sltp_confirmado": null,
+    "estado": "CERRADO_TP",
+    "resultado": {
+      "tipo": "TP",
+      "salida": "0.7309",
+      "pnl_usd_bruto": "0.0342",
+      "comisiones": "0 (papel)",
+      "cerrado_con_vela_ts": 1794733200000,
+      "cerrado_con_vela_iso": "2026-11-15T09:00:00Z"
+    }
+  },
+  {
+    "id": "1794751200000-SHORT-TEST",
+    "abierto_ts": "2026-11-15T15:25:16Z",
+    "modo": "TEST",
+    "inst": "SUI-USD_UM_XPERP-310404",
+    "lado": "SHORT",
+    "velas": {
+      "c1": {
+        "ts": 1794747600000,
+        "o": "0.7333",
+        "h": "0.736",
+        "l": "0.7295",
+        "c": "0.7295"
+      },
+      "c2": {
+        "ts": 1794751200000,
+        "o": "0.7294",
+        "h": "0.7308",
+        "l": "0.7133",
+        "c": "0.7186"
+      }
+    },
+    "sep_pct": "-1.4942",
+    "entrada_ref": "0.7181",
+    "entrada_fill": null,
+    "sl": "0.7362",
+    "tp": "0.6910",
+    "riesgo": "0.0181",
+    "size_ct": 1,
+    "lev": 1,
+    "td_mode": null,
+    "margen_usd": "0.7181",
+    "ordId": null,
+    "sltp_confirmado": null,
     "estado": "ABIERTO",
     "resultado": null
   }
