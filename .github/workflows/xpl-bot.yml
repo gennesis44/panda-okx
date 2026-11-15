@@ -1,4 +1,4 @@
-name: EL ATUNERO - XPL EMA 3/21 1H (SHADOW/LIVE)
+name: EL ATUNERO - XPL EMA 3/21 1H 
 
 on:
   schedule:
@@ -35,9 +35,9 @@ jobs:
           OKX_SECRET_KEY:       ${{ secrets.OKX_SECRET_KEY }}
           OKX_PASSWORD:         ${{ secrets.OKX_PASSWORD }}
           OKX_XPL_MAX_NOTIONAL: '50.0'    # Límite ajustado para ~$6-10 de nocional
-          XPL_CONTRACTS:        '14.0'   # Modificado a 14 contratos (~$6 USD de nocional)
+          XPL_CONTRACTS:        '14.0'    # 14 contratos (~$6 USD de nocional)
           OKX_LEVERAGE:         '1'
-          SHADOW:               '1'   # Sombra activa (cambiar a '0' para combate real)
+          SHADOW:               '0'       # COMBATE REAL ACTIVO
         run: |
           python3 main-xpl.py 2>&1 | tee logs_xpl/run_$(date -u +%Y%m%d_%H%M).log
 
