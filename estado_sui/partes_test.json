@@ -165,7 +165,14 @@
     "margen_usd": "0.7266",
     "ordId": null,
     "sltp_confirmado": null,
-    "estado": "ABIERTO",
-    "resultado": null
+    "estado": "CERRADO_SL_AMBIGUO",
+    "resultado": {
+      "tipo": "SL_AMBIGUO",
+      "salida": "0.7259",
+      "pnl_usd_bruto": "-0.0007",
+      "comisiones": "0 (papel)",
+      "cerrado_con_vela_ts": 1794787200000,
+      "cerrado_con_vela_iso": "2026-11-16T00:00:00Z"
+    }
   }
 ]
