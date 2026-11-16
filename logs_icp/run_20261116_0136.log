@@ -1,0 +1,4 @@
+2026-11-16 01:36:35,528 - INFO - Modo ciclo unico | NAVIO ICP EMA3/21 1h v1.1-fixed + BLINDAJE xpl-v4.2 (XPERP USD) | REAL
+2026-11-16 01:36:36,978 - INFO - Instrumento: ICP-USD_UM_XPERP-310711 (XPERP — vencimiento mas lejano | settle USD | ct=1.0)
+2026-11-16 01:36:37,094 - INFO - Autenticacion OK | host=https://{hostname} | Colateral real (USD): ~41.90
+2026-11-16 01:36:37,721 - INFO - Nave ocupada: 6 ct en posicion | 1 algos vivos — no se abre nada. Vigilando.
