@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# main-1inj.py — Ax2-INJ · EL APRENDIZ · ley v3.4 (adaptado a producción)
+# inj-main.py — Ax2-INJ · EL APRENDIZ · ley v3.4 (adaptado a producción)
 #   - Instrumento: INJ X-Perp (Universo EEE/XPERP, OKX my.okx.com, margen USD)
 #   - VETO ABSOLUTO a USDT (Lista blanca settle == 'USD')
-#   - Estrategia: EMA 4 / EMA 21 en velas 1H CERRADAS (cada 20 min)
-#   - Nocional estricto: ≤ 6 USD por orden (contratos calculados dinámicamente)
-#   - SL/TP asimétricos o estándar de flota, con attachAlgoOrds adjuntos en exchange.
+#   - Estrategia: EMA 4 / EMA 21 en velas 1H CERRADAS
+#   - Nocional estricto: ≤ 6 USD por orden (decreto Capitán — específico de INJ)
+#   - SL/TP asimétricos (LONG 2/4, SHORT 3/4) con attachAlgoOrds adjuntos.
+#   AJUSTE FLOTA: SIGNAL_WINDOW (-1,-2) = 2 velas cerradas + privacidad colateral.
+#   NOTA TÉCNICA: "2 velas + forming" no aplica a INJ porque su SL es porcentual,
+#     no estructural. Por eso no se incorpora la vela en formación al cálculo.
 
 import os
 import time
@@ -29,7 +32,7 @@ SL_LONG = 0.020     # 2.0%
 TP_LONG = 0.040     # 4.0%
 SL_SHORT = 0.030    # 3.0%
 TP_SHORT = 0.040    # 4.0%
-TIMEFRAME = '1h'    
+TIMEFRAME = '1h'
 EMA_FAST = 4        # Solicitado: EMA 4
 EMA_SLOW = 21       # Solicitado: EMA 21
 TD_MODE = 'cross'
@@ -37,8 +40,9 @@ LEVERAGE = 1
 COOLDOWN_MIN = 60
 TEST_MODE = os.getenv('TEST_MODE') == '1'
 SINGLE_CYCLE = os.getenv('SINGLE_CYCLE') == '1'
-MAX_NOTIONAL_USD = _f(os.getenv('OKX_INJ_MAX_NOTIONAL', '6.00')) or 6.00
-SIGNAL_WINDOW = (-2, -3, -4)
+MAX_NOTIONAL_USD = _f(os.getenv('OKX_INJ_MAX_NOTIONAL', '6.00')) or 6.00   # decreto Capitán
+INJ_DEBUG = os.getenv('INJ_DEBUG', '0') == '1'   # 1 = muestra colateral
+SIGNAL_WINDOW = (-1, -2)   # 2 velas cerradas (SL porcentual: forming no aporta)
 WARMUP = 40
 TF_MS = {'5m': 300000, '15m': 900000, '30m': 1800000, '1h': 3600000, '6h': 21600000}
 
@@ -68,25 +72,24 @@ def resolve_symbol():
         for p in exchange.fetch_positions():
             if abs(float(p.get('contracts') or 0)) > 0 and (p.get('symbol') or '').startswith(BASE_ASSET + '/'):
                 if _is_forbidden(p['symbol']):
-                    log.error("VETO: posición en instrumento NO-USD — prohibido.")
-                    raise RuntimeError("Posición abierta en instrumento NO-USD prohibido.")
-                log.info("Instrumento (posición abierta): " + str(p['symbol']))
+                    log.error("VETO: posicion en instrumento NO-USD — prohibido.")
+                    raise RuntimeError("Posicion abierta en instrumento NO-USD prohibido.")
+                log.info("Instrumento (posicion abierta): " + str(p['symbol']))
                 return p['symbol']
     except RuntimeError:
         raise
     except Exception as e:
-        log.warning("Posiciones no leídas al resolver símbolo: " + str(e))
-    
+        log.warning("Posiciones no leidas al resolver simbolo: " + str(e))
+
     # Búsqueda exclusiva de X-Perp / Swap USD sin USDT
     candidatos = []
     for m in exchange.markets.values():
         if m.get('base') == BASE_ASSET and m.get('active') and not _is_forbidden(m['symbol']):
             candidatos.append(m['symbol'])
-            
+
     if not candidatos:
         raise RuntimeError("No hay INJ/USD (XPERP o SWAP-USD) activo. USDT prohibido por ley EEE.")
-    
-    # Retornar el primer candidato válido filtrado
+
     sym = candidatos[0]
     log.info("Instrumento resuelto: " + str(sym))
     return sym
@@ -122,7 +125,7 @@ def get_open_position(symbol):
             resp = exchange.private_get_trade_orders_algo_pending(
                 {'instId': inst, 'ordType': ord_type})
             if (resp or {}).get('data'):
-                log.info("Sin posición visible pero hay SL/TP vivos: asumo posición.")
+                log.info("Sin posicion visible pero hay SL/TP vivos: asumo posicion.")
                 return {'symbol': symbol, 'contracts': 1, 'side': 'desconocido'}
         return None
     except Exception as e:
@@ -167,7 +170,7 @@ def execute_order(side, symbol, ref_price, candle_ts):
 
     if nocional > MAX_NOTIONAL_USD:
         raise RuntimeError("GUARDIA: nocional $" + format(nocional, '.2f') +
-                           " > máximo $" + format(MAX_NOTIONAL_USD, '.2f') + " — STOP.")
+                           " > maximo $" + format(MAX_NOTIONAL_USD, '.2f') + " — STOP.")
 
     if side == 'LONG':
         oside = 'buy'
@@ -209,8 +212,9 @@ def execute_order(side, symbol, ref_price, candle_ts):
         log.info("OKX: clOrdId duplicado (51016) — idempotencia OK.")
         return True
     if s_code != '0':
-        raise ccxt.ExchangeError("OKX rechazó la entrada: " + str(d0.get('sMsg') or resp.get('msg')))
-    log.info("INJ " + side + " ejecutada con SL/TP adjuntos. ordId: " + str(d0.get('ordId')))
+        raise ccxt.ExchangeError("OKX rechazo la entrada: " + str(d0.get('sMsg') or resp.get('msg')))
+    log.info("INJ " + side + " ejecutada con SL/TP adjuntos. ordId: " + str(d0.get('ordId')) +
+             " | SL: " + str(sl) + " | TP: " + str(tp))
     return True
 
 # ==================== COOLDOWN ====================
@@ -239,7 +243,7 @@ def evaluate_signal(symbol):
     try:
         df = fetch_data(symbol, TIMEFRAME, limit=100)
         if len(df) < WARMUP + 10:
-            log.error("1h insuficiente. Sin señal.")
+            log.error("1h insuficiente. Sin senal.")
             return None, None, None
 
         now_ms = int(time.time() * 1000)
@@ -254,7 +258,8 @@ def evaluate_signal(symbol):
         price = exchange.fetch_ticker(symbol).get('last') or df['close'].iloc[-1]
 
         log.info("Precio: " + str(price) + " | 1H EMA4/21: " +
-                 format(e4.iloc[-2], '.5f') + "/" + format(e21.iloc[-2], '.5f'))
+                 format(e4.iloc[-2], '.5f') + "/" + format(e21.iloc[-2], '.5f') +
+                 " | EMA4 " + (">" if e4.iloc[-2] > e21.iloc[-2] else "<") + " EMA21 (estado)")
 
         for i_curr in SIGNAL_WINDOW:
             i_prev = i_curr - 1
@@ -271,16 +276,29 @@ def evaluate_signal(symbol):
             down = (e4.iloc[i_prev] >= e21.iloc[i_prev] and e4.iloc[idx] < e21.iloc[idx])
 
             if up:
-                log.info("Cruce ALCISTA EMA 4/21 detectado. Señal LONG.")
+                log.info("Cruce ALCISTA EMA 4/21 detectado (sep " +
+                         format(sep * 100, '.2f') + "%). Senal LONG.")
                 return 'LONG', price, candle_ts
 
             if down:
-                log.info("Cruce BAJISTA EMA 4/21 detectado. Señal SHORT.")
+                log.info("Cruce BAJISTA EMA 4/21 detectado (sep " +
+                         format(sep * 100, '.2f') + "%). Senal SHORT.")
                 return 'SHORT', price, candle_ts
 
+        log.info("Sin cruce EMA 4/21 legal en la ventana. Vigilando.")
     except Exception as e:
-        log.error("Error en evaluación: " + str(e))
+        log.error("Error en evaluacion: " + str(e))
     return None, None, None
+
+# ==================== ARRANQUE ====================
+def verify_setup():
+    raw = exchange.privateGetAccountBalance()
+    details = ((raw or {}).get('data') or [{}])[0].get('details') or []
+    total = sum(_f(d.get('eqUsd')) for d in details)
+    if INJ_DEBUG:
+        log.info("Autenticacion OK | host=" + HOST + " | Colateral real (USD): ~" + format(total, '.2f'))
+    else:
+        log.info("Autenticacion OK | host=" + HOST + " | Colateral: OK (INJ_DEBUG=1 para verlo)")
 
 # ==================== CICLO ====================
 def run_cycle():
@@ -297,7 +315,7 @@ def run_cycle():
 
     pos = get_open_position(symbol)
     if pos:
-        log.info("Posición abierta. Esperando SL/TP.")
+        log.info("Posicion abierta. Esperando SL/TP.")
         return
 
     if cooldown_active(symbol):
@@ -311,24 +329,35 @@ def run_cycle():
     if candle_already_traded(symbol, candle_ts):
         return
 
-    log.info("Ejecutando señal " + signal + " para INJ...")
+    amount = calculate_amount(symbol, price)
+    log.info("Ejecutando senal " + signal + " para INJ (" + str(amount) + " ct)...")
     try:
         execute_order(signal, symbol, price, candle_ts)
     except Exception as e:
         log.error("Entrada rechazada: " + str(e))
 
+def run_once():
+    log.info("Modo ciclo unico | INJ EMA4/21 1H v3.4 + CANDADO v2 FAIL-CLOSED (XPERP USD) | AMOUNT dinamico | MAX $6")
+    verify_setup()
+    if TEST_MODE:
+        log.info("TEST_MODE activo — solo catalogo.")
+        return
+    run_cycle()
+
 def main_loop():
-    log.info("Bot INJ | 1H EMA 4/21 | LIVE MODE | " + HOST)
+    log.info("Bot INJ | 1H EMA4/21 v3.4 | LONG SL2/TP4 · SHORT SL3/TP4 | " +
+             "AMOUNT dinamico | ventana -1/-2 | cooldown " + str(COOLDOWN_MIN) + "m | " + HOST)
+    verify_setup()
     while True:
         try:
             run_cycle()
         except Exception as e:
             log.error("Error en ciclo principal: " + str(e))
             time.sleep(60)
-        time.sleep(1200)  # Cada 20 minutos exactos
+        time.sleep(1200)  # Cada 20 minutos exactos (modo VPS local)
 
 if __name__ == "__main__":
     if SINGLE_CYCLE:
-        run_cycle()
+        run_once()
     else:
         main_loop()
