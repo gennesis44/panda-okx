@@ -1,0 +1,77 @@
+name: EL DESTRUCTOR · Navío ARB EMA 3/21 4H (LIVE)
+
+on:
+  schedule:
+    # Cron cada 30 min para patrullar el cierre de velas y la ventana de cruce
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+    inputs:
+      shadow_mode:
+        description: 'Modo de Ejecución (0 = COMBATE REAL, 1 = Sombra / Prueba)'
+        required: true
+        default: '0'
+        type: choice
+        options:
+          - '0'
+          - '1'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: destructor-arb-ciclo
+  cancel-in-progress: false
+
+jobs:
+  run-arb-bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout repositorio
+        uses: actions/checkout@v4
+
+      - name: Configurar Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instalar dependencias (ccxt)
+        run: |
+          python -m pip install --upgrade pip
+          pip install ccxt
+
+      - name: Crear directorio de logs
+        run: mkdir -p logs_arb
+
+      - name: Ejecutar Navío ARB — EL DESTRUCTOR (main-arb.py)
+        env:
+          OKX_API_KEY:      ${{ secrets.OKX_API_KEY }}
+          OKX_SECRET_KEY:   ${{ secrets.OKX_SECRET_KEY }}
+          OKX_PASSWORD:     ${{ secrets.OKX_PASSWORD }}
+          # PRODUCCIÓN REAL ('0'). Usar '1' si deseas lanzarlo en modo sombra.
+          SHADOW:           ${{ github.event.inputs.shadow_mode || '0' }}
+          DRY_RUN:          '0'
+          # Parámetros de calibración ARB 4H (Nocional objetivo $5 max)
+          ARB_TF:           '4h'
+          ARB_CONTRACTS:    '0'
+          ARB_NOTIONAL:     '5.0'
+          ARB_MAX_NOTIONAL: '5.0'
+          ARB_SEP_LOCK:     '0.25'
+          ARB_SL_MULT:      '1.2'
+          ARB_SL_FLOOR:     '1.5'
+          ARB_SL_CAP:       '6.2'
+          ARB_TP_MULT:      '2.0'
+          COOLDOWN_MIN:     '60'
+          ARB_N_CANDLES:    '120'
+        run: |
+          python3 main-arb.py 2>&1 | tee logs_arb/run_$(date -u +%Y%m%d_%H%M).log
+
+      - name: Commit y Push de logs
+        if: always()
+        run: |
+          git config --global user.name  "El Destructor Bot"
+          git config --global user.email "destructor@gscsi.trade"
+          git add logs_arb/ || true
+          git commit -m "auto: log EL DESTRUCTOR ARB (Live) [skip ci]" || echo "Sin cambios"
+          git push || echo "Push omitido"
