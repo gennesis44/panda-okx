@@ -1,0 +1,5 @@
+2026-11-16 17:19:43,112 - INFO - Modo ciclo unico | NAVIO ARB EMA3/21 4h v1.0-destructor + BLINDAJE xpl-v4.2 (XPERP USD) | MUNICION REAL
+2026-11-16 17:19:45,029 - INFO - Instrumento: ARB-USD_UM_XPERP-310815 (XPERP — vencimiento mas lejano | settle USD | ct=10.0)
+2026-11-16 17:19:45,212 - INFO - Autenticacion OK | host=https://{hostname} | Colateral real (USD): ~42.41
+2026-11-16 17:19:46,012 - INFO - Precio: 0.13188 | EMA3/21: 0.13266/0.13792 | EMA3 < EMA21 (estado)
+2026-11-16 17:19:46,012 - INFO - Sin cruce EMA3/21 legal en la ventana. Vigilando.
