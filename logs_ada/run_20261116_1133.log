@@ -1,0 +1,5 @@
+2026-11-16 11:33:57,463 - INFO - Modo ciclo unico | NAVIO ADA EL TITAN EMA3/21 15m v1.0-15m-agresivo + BLINDAJE xpl-v4.2 (XPERP USD) | REAL
+2026-11-16 11:33:59,705 - INFO - Instrumento: ADA-USD_UM_XPERP-310404 (XPERP — vencimiento mas lejano | settle USD | ct=10.0)
+2026-11-16 11:33:59,872 - INFO - Autenticacion OK | host=https://my.okx.com | Colateral real (USD): ~42.21
+2026-11-16 11:34:00,605 - INFO - Precio: 0.1523 | EMA3/21: 0.1523/0.1522 | EMA3 > EMA21 (estado)
+2026-11-16 11:34:00,605 - INFO - Cruce con separacion 0.137% < candado 0.15% — descartado. Vigilando.
