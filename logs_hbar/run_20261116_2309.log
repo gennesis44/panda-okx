@@ -1,0 +1,10 @@
+2026-11-16 23:09:35,794 - INFO - >>> DESTRUCTOR v4.1 (Corregido SL/TP cercano a 0 | AMOUNT dinámico | MAX $12)
+2026-11-16 23:09:36,001 - INFO - Autenticacion OK | host=https://my.okx.com | Colateral real (USD): ~42.29
+2026-11-16 23:09:38,369 - INFO - Instrumento: HBAR/USD:USD-310815 (XPERP — vencimiento mas lejano)
+2026-11-16 23:09:38,537 - INFO - Contrato: 1 = 100.0 HBAR | settle=USD | nocional ~$5.73 | HBAR/USD:USD-310815 | FUTURES
+2026-11-16 23:09:40,000 - INFO - Precio: 0.05734 | 30m EMAs 0.05748/0.05750/0.05757/0.05769/0.05775 (ult cerrada) | stack BAJISTA completo | ventana v4: h=0.05782 l=0.05710 (+ formacion h=0.05734 l=0.05710) | ATR14 0.00042
+2026-11-16 23:09:40,000 - INFO - Stack BAJISTA COMPLETO formado en la vela cerrada 1794868200000 (3<4<10<21<27). Senal SHORT.
+2026-11-16 23:09:40,442 - INFO - Margen (2 ct): ~$11.47 | colateral: ~$42.29 -> CABE
+2026-11-16 23:09:40,847 - INFO - Senal SHORT (stack completo 30m, 2 cerradas + forming). Abriendo 2 contrato(s)...
+2026-11-16 23:09:40,847 - INFO - Nocional: 2 contrato x 100.0 HBAR (~$11.47) | candado: perro estructural puro (0.91%)
+2026-11-16 23:09:41,160 - INFO - HBAR SHORT ejecutada con perro/cañonera adjuntos. ordId: 4105994808725811201 | SL: 0.05786 | TP: 0.05656
