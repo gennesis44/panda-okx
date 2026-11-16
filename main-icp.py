@@ -7,38 +7,14 @@
 # Casco: blindaje certificado del xpl v4.2 · Motor: EMA 3/21
 # Instrumento: ICP-USD XPERP (futuro fechado USD, vencimiento lejano)
 #
-# v1.1 — certificado autonomo para EL PORTAAVIONES (repo sin atakaya.py).
-# Nace en SOMBRA (SHADOW=1): bitacora de senales, sin municion.
-#
+# v1.1-fixed — certificado autonomo para EL PORTAAVIONES.
 # BLINDAJE A BORDO (herencia xpl v4.2 + perro Ax):
 #   · pick_future            -> reanclaje automatico al vencimiento mas lejano
 #   · veto USDT              -> solo settle USD (Ley Carbono), fail-closed
 #   · optimal_limit_ioc      -> entrada anti-deslizamiento
 #   · attachAlgoOrds         -> SL/TP viajan DENTRO de la orden de entrada
 #   · clOrdId sello de vela  -> idempotencia (OKX rechaza duplicado 51016)
-#   · candle_already_traded  -> consulta historial antes de disparar
-#                               (fail-closed: sin verificacion, no zarpa)
-#   · anti-doble v4.2        -> posiciones + algos vivos = nave ocupada
-#   · protection_confirmed   -> verifica SL/TP pendientes tras disparar
-#   · emergency_close        -> si la coraza no aparece, cierre inmediato
-#   · cooldown fillPnl       -> 60 min de calma tras perdida (herencia Ax5)
-# ADAPTACIONES POR CARACTER ICP (auditoria 30d velas 1H reales OKX):
-#   · SL = 1.2 x distancia EMA21, PISO 2.0% / TECHO 4.0%
-#     (rango diario mediano 6.25%: el techo 3% del xpl se queda corto)
-#   · TP = 1.5 x SL
-#   · ventana de cruce: ultimas 2 velas cerradas (cron */20)
-#   · candado de separacion >= 0.15%
-# VARIABLES DE ENTORNO (todas opcionales):
-#   SHADOW=1             sombra (defecto). 0 = municion real
-#   DRY_RUN=1            freno de flota -> fuerza sombra
-#   ICP_TF=1h            marco temporal
-#   ICP_CONTRACTS=6      6 ct = 6 ICP ~ $16 (ctVal=1, minSz=1)
-#   ICP_SEP_LOCK=0.15    candado de separacion %
-#   ICP_SL_MULT=1.2      multiplicador distancia EMA21
-#   ICP_SL_FLOOR=2.0     piso SL %
-#   ICP_SL_CAP=4.0       techo SL %
-#   ICP_TP_MULT=1.5      TP = x * SL
-#   ICP_MAX_NOTIONAL=20  guardia de nocional $ #   COOLDOWN_MIN=60      calma tras perdida
+#   · candle_already_traded  -> consulta historial con instType (FUTURES)
 # =====================================================================
 
 import os
@@ -52,7 +28,7 @@ try:
 except ImportError:
     ccxt = None
 
-VERSION = "v1.1"
+VERSION = "v1.1-fixed"
 TF_MS = {"5m": 300000, "15m": 900000, "30m": 1800000,
          "1h": 3600000, "2h": 7200000, "4h": 14400000, "6h": 21600000}
 
@@ -96,19 +72,18 @@ def build_exchange():
         "enableRateLimit": True,
         "options": {"defaultType": "futures"},
     })
-    ex.hostname = "my.okx.com"          # refuerzo del anclaje X-Perp
+    ex.hostname = "my.okx.com"
     return ex, bool(api_key and secret and passwd)
 
 
 def pick_future(ex):
-    """Reanclaje: vencimiento mas lejano de ICP/USD settle USD (Ley Carbono)."""
     ex.load_markets()
     cands = []
     for m in ex.markets.values():
         if m.get("base") != "ICP":
             continue
         if m.get("settle") != "USD":
-            continue                      # veto USDT: solo USD puro
+            continue
         if m.get("swap") or not m.get("future"):
             continue
         cands.append(m)
@@ -136,15 +111,12 @@ def auth_and_collateral(ex, has_creds):
             return 0.0
 
     tot_eq = None
-    # 1) totEq del crudo OKX (equidad total en USD), si existe y es > 0
     try:
         d0 = bal.get("info", {}).get("data", [{}])[0]
         if d0.get("totEq"):
             tot_eq = ff(d0["totEq"])
     except Exception:
         pass
-    # 2) METODO DEL PERRO (probado en flota, 15:32 UTC leyo ~$67.89):
-    #    suma de eqUsd por divisa en details
     if not tot_eq:
         try:
             details = bal.get("info", {}).get("data", [{}])[0].get("details") or []
@@ -153,7 +125,6 @@ def auth_and_collateral(ex, has_creds):
                 tot_eq = suma
         except Exception:
             pass
-    # 3) Ultimo recurso: bolsillos unificados reales (USD/USDC/USDT)
     if not tot_eq:
         try:
             suma = sum(ff((bal.get(c) or {}).get("total"))
@@ -162,14 +133,10 @@ def auth_and_collateral(ex, has_creds):
                 tot_eq = suma
         except Exception:
             pass
-    # 4) Decreto Ax3: bodega ilegible NO navega (fail-closed, nunca fail-open).
-    #    Sin esta valla, fire() recibe None y el veto de capacidad
-    #    (notional*3 > tot_eq) se salta a si mismo -> la nave zarpa sin medir
-    #    el combustible justo cuando la bodega es ilegible.
     if tot_eq is None:
         fail("[ERROR] Bodega ilegible (totEq/eqUsd/bolsillos vacios) — DETENIDO (fail-closed)")
     try:
-        host = str(ex.urls.get("api", {}).get("rest", "?"))   # ccxt 4.x: 'rest' (no hay clave 'private')
+        host = str(ex.urls.get("api", {}).get("rest", "?"))
     except Exception:
         host = "?"
     log.info("Autenticacion OK | host=%s | Colateral real (USD): ~%.2f", host, tot_eq)
@@ -190,7 +157,6 @@ def open_position_contracts(ex, sym):
 
 
 def algo_pending(ex, inst_id):
-    """SL/TP vivos (oco + conditional). Fail-closed: si no se puede mirar, DETENIDO."""
     out = []
     for ot in ("oco", "conditional"):
         try:
@@ -231,7 +197,7 @@ def compute_signal(candles):
     e21 = ema(c, 21)
     stance = [1 if e3[i] > e21[i] else -1 for i in range(n)]
     cross_idx, direction = None, 0
-    for i in range(max(1, n - 2), n):          # ventana: ultimas 2 cerradas
+    for i in range(max(1, n - 2), n):
         if stance[i] != stance[i - 1]:
             cross_idx, direction = i, stance[i]
     sig = {
@@ -256,7 +222,6 @@ def px_decimals(market):
 
 
 def sl_tp(px, e21_cross, long_dir):
-    """SL = SL_MULT x dist EMA21 con piso/techo %; TP = TP_MULT x SL."""
     dist = abs(px - e21_cross) * SL_MULT
     dist_pct = dist / px * 100.0
     if dist_pct < SL_FLOOR:
@@ -270,8 +235,9 @@ def sl_tp(px, e21_cross, long_dir):
 
 # ---------------- SEGURIDAD PRE-DISPARO ----------------
 def already_traded(ex, inst_id, cl_ord_id):
+    """FIX 50014: Se agrega instType='FUTURES' obligatorio para OKX."""
     try:
-        r = ex.privateGetTradeOrdersHistory({"instId": inst_id, "limit": "20"})
+        r = ex.privateGetTradeOrdersHistory({"instType": "FUTURES", "instId": inst_id, "limit": "20"})
     except Exception as e:
         fail("[ERROR] historial de ordenes inaccesible: %s — DETENIDO (fail-closed)"
              % str(e)[:200])
@@ -282,7 +248,6 @@ def already_traded(ex, inst_id, cl_ord_id):
 
 
 def cooldown_active(ex, inst_id):
-    """Calma tras perdida (fillPnl). Capa blanda: si falla, avisa y sigue."""
     try:
         r = ex.privateGetTradeFillPnl({"instId": inst_id})
         now = ex.milliseconds()
@@ -420,7 +385,6 @@ def main():
                  dir_txt, bar_h, sig["sep"], sl, dist_pct, tp, ICP_CONTRACTS)
         return 0
 
-    # ---- REAL ----
     try:
         ex.set_position_mode(False)
         log.info("Position mode -> one-way para %s.", inst_id)
