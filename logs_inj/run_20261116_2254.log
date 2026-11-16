@@ -1,0 +1,6 @@
+2026-11-16 22:54:15,767 - INFO - Instrumento resuelto: INJ/USD:USD-310711
+2026-11-16 22:54:17,617 - INFO - Precio: 6.839 | 1H EMA4/21: 6.85476/6.81603
+2026-11-16 22:54:17,617 - INFO - Cruce ALCISTA EMA 4/21 detectado. Señal LONG.
+2026-11-16 22:54:17,755 - INFO - Ejecutando señal LONG para INJ...
+2026-11-16 22:54:17,755 - INFO - Nocional: 8 contrato x 0.1 INJ (~$5.47)
+2026-11-16 22:54:18,012 - INFO - INJ LONG ejecutada con SL/TP adjuntos. ordId: 4105963833958543363
