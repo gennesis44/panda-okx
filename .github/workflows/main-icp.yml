@@ -1,0 +1,76 @@
+name: EL PORTAAVIONES · Navío ICP EMA 3/21 1H (LIVE)
+
+on:
+  schedule:
+    # Cron cada 20 min alineado al marco temporal ICP_TF=1h
+    - cron: '*/20 * * * *'
+  workflow_dispatch:
+    inputs:
+      shadow_mode:
+        description: 'Modo de Ejecución (0 = COMBATE REAL, 1 = Sombra / Prueba)'
+        required: true
+        default: '0'
+        type: choice
+        options:
+          - '0'
+          - '1'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: portaaviones-icp-ciclo
+  cancel-in-progress: false
+
+jobs:
+  run-icp-bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout repositorio
+        uses: actions/checkout@v4
+
+      - name: Configurar Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instalar dependencias (ccxt)
+        run: |
+          python -m pip install --upgrade pip
+          pip install ccxt
+
+      - name: Crear directorio de logs
+        run: mkdir -p logs_icp
+
+      - name: Ejecutar Navío ICP — EL PORTAAVIONES (main-icp.py)
+        env:
+          OKX_API_KEY:      ${{ secrets.OKX_API_KEY }}
+          OKX_SECRET_KEY:   ${{ secrets.OKX_SECRET_KEY }}
+          OKX_PASSWORD:     ${{ secrets.OKX_PASSWORD }}
+          # PRODUCCIÓN REAL ('0'). Usar '1' si deseas lanzarlo en modo sombra.
+          SHADOW:           ${{ github.event.inputs.shadow_mode || '0' }}
+          DRY_RUN:          '0'
+          # Parámetros de calibración ICP 1H (6 ct ~ $16 nocional)
+          ICP_TF:           '1h'
+          ICP_CONTRACTS:    '6'
+          ICP_MAX_NOTIONAL: '20.0'
+          ICP_SEP_LOCK:     '0.15'
+          ICP_SL_MULT:      '1.2'
+          ICP_SL_FLOOR:     '2.0'
+          ICP_SL_CAP:       '4.0'
+          ICP_TP_MULT:      '1.5'
+          COOLDOWN_MIN:     '60'
+          ICP_N_CANDLES:    '120'
+        run: |
+          python3 main-icp.py 2>&1 | tee logs_icp/run_$(date -u +%Y%m%d_%H%M).log
+
+      - name: Commit y Push de logs
+        if: always()
+        run: |
+          git config --global user.name  "El Portaaviones Bot"
+          git config --global user.email "portaaviones@gscsi.trade"
+          git add logs_icp/ || true
+          git commit -m "auto: log EL PORTAAVIONES ICP (Live) [skip ci]" || echo "Sin cambios"
+          git push || echo "Push omitido"
