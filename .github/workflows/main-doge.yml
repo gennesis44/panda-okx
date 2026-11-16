@@ -39,7 +39,7 @@ jobs:
           OKX_PASSWORD:        ${{ secrets.OKX_PASSWORD }}
           TEST_MODE:           '0'        # v3.4: forma canónica — '0' = REAL
           SINGLE_CYCLE:        '1'        # 1 ciclo y salir (modo GitHub Actions)
-          OKX_DOGE_MAX_NOTIONAL: '15.0'
+          OKX_DOGE_MAX_NOTIONAL: '12.0'
         run: |
           python3 doge-main.py 2>&1 | tee logs_doge/run_$(date -u +%Y%m%d_%H%M).log
 
