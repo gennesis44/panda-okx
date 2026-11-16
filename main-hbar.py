@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # =====================================================================
-# bot_hbar.py — Ax2-HBAR · EL DESTRUCTOR v4.1 · chasis Catamaran (SUI)
+# hbar-main.py — Ax2-HBAR · EL DESTRUCTOR v4.1 · chasis Catamaran (SUI)
 #   ENMIENDA v4.1 (Corrección distancia SL/TP ajustada a casi 0):
 #     - Se refuerza el cálculo del perro (SL) para asegurar una distancia
 #       mínima robusta basada en estructura, ATR y el piso absoluto.
 #     - Se blinda el multiplicador de riesgo y la proporción de la cañonera.
+#   AJUSTE FLOTA (Capitán): nocional máx $12 + AMOUNT dinámico.
 # =====================================================================
 
 import os
@@ -28,7 +29,6 @@ def _f(x):
 
 # ==================== CONFIGURACIÓN ====================
 BASE_ASSET = 'HBAR'
-AMOUNT = 1          # 1 contrato = 100 HBAR
 SL_CAP = 0.025      # TECHO del SL (2.5%)
 RR_FLOTA = 1.5      # TP = 1.5 x riesgo
 FLOOR_ABS = 0.008   # Piso absoluto ajustado al 0.8% para evitar distancia cero
@@ -39,8 +39,8 @@ LEVERAGE = 1
 COOLDOWN_MIN = 60
 TEST_MODE = os.getenv('TEST_MODE') == '1'
 SINGLE_CYCLE = os.getenv('SINGLE_CYCLE') == '1'
-MAX_NOTIONAL_USD = _f(os.getenv('OKX_HBAR_MAX_NOTIONAL', '9.0')) or 9.0
-SIGNAL_WINDOW = (-1, -2)
+MAX_NOTIONAL_USD = _f(os.getenv('OKX_HBAR_MAX_NOTIONAL', '12.0')) or 12.0
+SIGNAL_WINDOW = (-1, -2)   # 2 velas cerradas + vela en formación (forming)
 WARMUP = 40
 
 HOST = 'https://my.okx.com'
@@ -193,6 +193,16 @@ def get_open_position(symbol):
     except Exception as e:
         log.error("Error consultando posiciones: " + str(e))
     return None
+
+# ==================== CÁLCULO DINÁMICO DE CONTRATOS ====================
+def calculate_amount(symbol, ref_price):
+    """Calcula cuántos contratos caben en MAX_NOTIONAL_USD.
+    Mínimo 1 contrato — si no cabe ni uno, la guardia de capacity_ok lo bloquea."""
+    ctval, ccy, _settle, _p, usd = _contract_meta(symbol, ref_price)
+    if usd <= 0:
+        return 1
+    amount = int(MAX_NOTIONAL_USD // usd)
+    return max(1, amount)
 
 # ==================== CANDADOS v4.1 (Corregido) ====================
 def perro_y_canonera(side, entry, win_hi, win_lo, atr, tick):
@@ -428,10 +438,11 @@ def evaluate_signal(symbol):
         log.error("Error en evaluacion: " + str(e))
     return None
 
-def capacity_ok(symbol):
+def capacity_ok(symbol, ref_price=None):
     try:
-        _ctval, _ccy, _settle, _price, usd = _contract_meta(symbol)
-        nocional = usd * AMOUNT
+        _ctval, _ccy, _settle, _price, usd = _contract_meta(symbol, ref_price)
+        amount = calculate_amount(symbol, ref_price or _price)
+        nocional = usd * amount
         if nocional > MAX_NOTIONAL_USD:
             log.error("GUARDIA: nocional $" + format(nocional, '.2f') +
                       " > presupuesto $" + format(MAX_NOTIONAL_USD, '.2f') + ". NO SE OPERA.")
@@ -444,8 +455,9 @@ def capacity_ok(symbol):
         raw = exchange.privateGetAccountBalance()
         details = ((raw or {}).get('data') or [{}])[0].get('details') or []
         total = sum(_f(d.get('eqUsd')) for d in details)
-        log.info("Margen (1 ct): ~$" + format(need, '.2f') + " | colateral: ~$" +
-                 format(total, '.2f') + " -> " + ('CABE' if total >= need else 'NO CABE'))
+        log.info("Margen (" + str(amount) + " ct): ~$" + format(need, '.2f') +
+                 " | colateral: ~$" + format(total, '.2f') +
+                 " -> " + ('CABE' if total >= need else 'NO CABE'))
         return total >= need
     except Exception as e:
         log.warning("Capacidad: colateral no calculable: " + str(e) + " — BLOQUEO.")
@@ -462,7 +474,7 @@ def run_cycle():
 
     try:
         exchange.set_position_mode(False, symbol)
-        log.info("Position mode → one-way para " + str(symbol) + ".")
+        log.info("Position mode -> one-way para " + str(symbol) + ".")
     except ccxt.ExchangeError as e:
         log.debug("set_position_mode skip: " + str(e))
     except Exception as e:
@@ -500,7 +512,7 @@ def run_cycle():
     if sig is None:
         return
 
-    if not capacity_ok(symbol):
+    if not capacity_ok(symbol, sig['price']):
         log.info("Sin capacidad. Vigilando.")
         return
 
@@ -511,22 +523,23 @@ def run_cycle():
     if candle_already_traded(symbol, sig['candle_ts']):
         return
 
+    amount = calculate_amount(symbol, sig['price'])
     sl_raw, tp_raw, motivo = perro_y_canonera(
         sig['side'], _f(sig['price']), sig['win_hi'], sig['win_lo'], sig['atr'], tick_size(symbol))
     if sl_raw is None:
         log.info("Candado rechaza la entrada: " + motivo)
         return
 
-    log.info("Senal " + str(sig['side']) + " (stack completo 30m, 2 cerradas). Abriendo " +
-             str(AMOUNT) + " contrato...")
+    log.info("Senal " + str(sig['side']) + " (stack completo 30m, 2 cerradas + forming). Abriendo " +
+             str(amount) + " contrato(s)...")
     try:
-        execute_order(sig['side'], symbol, sig['price'], AMOUNT, sig['candle_ts'],
+        execute_order(sig['side'], symbol, sig['price'], amount, sig['candle_ts'],
                       sl_raw, tp_raw, motivo)
     except Exception as e:
         log.error("Entrada rechazada: " + str(e))
 
 def run_once():
-    log.info(">>> DESTRUCTOR v" + str(VERSION) + " (Corregido SL/TP cercano a 0)")
+    log.info(">>> DESTRUCTOR v" + str(VERSION) + " (Corregido SL/TP cercano a 0 | AMOUNT dinámico | MAX $12)")
     verify_setup()
     if TEST_MODE:
         catalog_hbar()
