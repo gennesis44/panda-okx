@@ -174,5 +174,42 @@
       "cerrado_con_vela_ts": 1794787200000,
       "cerrado_con_vela_iso": "2026-11-16T00:00:00Z"
     }
+  },
+  {
+    "id": "1794844800000-LONG-TEST",
+    "abierto_ts": "2026-11-16T17:59:55Z",
+    "modo": "TEST",
+    "inst": "SUI-USD_UM_XPERP-310404",
+    "lado": "LONG",
+    "velas": {
+      "c1": {
+        "ts": 1794841200000,
+        "o": "0.726",
+        "h": "0.726",
+        "l": "0.7068",
+        "c": "0.716"
+      },
+      "c2": {
+        "ts": 1794844800000,
+        "o": "0.716",
+        "h": "0.7237",
+        "l": "0.7111",
+        "c": "0.7231"
+      }
+    },
+    "sep_pct": "0.9916",
+    "entrada_ref": "0.718",
+    "entrada_fill": null,
+    "sl": "0.7066",
+    "tp": "0.7351",
+    "riesgo": "0.0114",
+    "size_ct": 1,
+    "lev": 1,
+    "td_mode": null,
+    "margen_usd": "0.7180",
+    "ordId": null,
+    "sltp_confirmado": null,
+    "estado": "ABIERTO",
+    "resultado": null
   }
 ]
