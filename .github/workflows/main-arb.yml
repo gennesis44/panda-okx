@@ -1,9 +1,9 @@
-name: EL DESTRUCTOR · Navío ARB EMA 3/21 4H (LIVE)
+name: EL TITAN · Navío ADA EMA 3/21 15m (LIVE)
 
 on:
   schedule:
-    # Cron cada 30 min para patrullar el cierre de velas y la ventana de cruce
-    - cron: '*/30 * * * *'
+    # Ventana de cruce cada 15 min alineada al marco temporal ADA_TF=15m
+    - cron: '*/15 * * * *'
   workflow_dispatch:
     inputs:
       shadow_mode:
@@ -19,11 +19,11 @@ permissions:
   contents: write
 
 concurrency:
-  group: destructor-arb-ciclo
+  group: titan-ada-ciclo
   cancel-in-progress: false
 
 jobs:
-  run-arb-bot:
+  run-ada-bot:
     runs-on: ubuntu-latest
     timeout-minutes: 5
 
@@ -42,36 +42,96 @@ jobs:
           pip install ccxt
 
       - name: Crear directorio de logs
-        run: mkdir -p logs_arb
+        run: mkdir -p logs_ada
 
-      - name: Ejecutar Navío ARB — EL DESTRUCTOR (main-arb.py)
+      - name: Ejecutar Navío ADA — EL TITAN (main-ada.py)
         env:
           OKX_API_KEY:      ${{ secrets.OKX_API_KEY }}
           OKX_SECRET_KEY:   ${{ secrets.OKX_SECRET_KEY }}
           OKX_PASSWORD:     ${{ secrets.OKX_PASSWORD }}
-          # PRODUCCIÓN REAL ('0'). Usar '1' si deseas lanzarlo en modo sombra.
           SHADOW:           ${{ github.event.inputs.shadow_mode || '0' }}
           DRY_RUN:          '0'
-          # Parámetros de calibración ARB 4H (Nocional objetivo $5 max)
-          ARB_TF:           '4h'
-          ARB_CONTRACTS:    '0'
-          ARB_NOTIONAL:     '5.0'
-          ARB_MAX_NOTIONAL: '5.0'
-          ARB_SEP_LOCK:     '0.25'
-          ARB_SL_MULT:      '1.2'
-          ARB_SL_FLOOR:     '1.5'
-          ARB_SL_CAP:       '6.2'
-          ARB_TP_MULT:      '2.0'
+          ADA_TF:           '15m'
+          ADA_CONTRACTS:    '2'
+          ADA_MAX_NOTIONAL: '6.0'
+          ADA_SEP_LOCK:     '0.15'
+          ADA_SL_MULT:      '1.2'
+          ADA_SL_FLOOR:     '2.0'
+          ADA_SL_CAP:       '2.0'
+          ADA_TP_MULT:      '1.5'
           COOLDOWN_MIN:     '60'
-          ARB_N_CANDLES:    '120'
         run: |
-          python3 main-arb.py 2>&1 | tee logs_arb/run_$(date -u +%Y%m%d_%H%M).log
+          python3 main-ada.py 2>&1 | tee logs_ada/run_$(date -u +%Y%m%d_%H%M).log
+
+      - name: Auditar Coraza SL/TP en OKX (Reporte Visual)
+        if: always()
+        env:
+          OKX_API_KEY:    ${{ secrets.OKX_API_KEY }}
+          OKX_SECRET_KEY: ${{ secrets.OKX_SECRET_KEY }}
+          OKX_PASSWORD:   ${{ secrets.OKX_PASSWORD }}
+        run: |
+          python3 - << 'EOF'
+          import os, ccxt
+
+          ex = ccxt.okx({
+              "apiKey": os.environ["OKX_API_KEY"],
+              "secret": os.environ["OKX_SECRET_KEY"],
+              "password": os.environ["OKX_PASSWORD"],
+              "hostname": "my.okx.com",
+              "options": {"defaultType": "futures"},
+          })
+          ex.hostname = "my.okx.com"
+
+          lines = ["### 🛡️ Reporte de Coraza SL/TP — EL TITAN (ADA)", ""]
+          try:
+              # Consultar posiciones abiertas ADA/USD futuros
+              poss = [p for p in ex.fetch_positions() if "ADA-USD" in p.get("info", {}).get("instId", "") and abs(float(p.get("contracts") or 0)) > 0]
+              
+              # Consultar órdenes algorítmicas pendientes (oco, conditional, trigger)
+              algos = []
+              for ot in ("oco", "conditional", "trigger"):
+                  res = ex.privateGetTradeOrdersAlgoPending({"ordType": ot})
+                  algos.extend([a for a in (res.get("data") or []) if "ADA-USD" in a.get("instId", "")])
+
+              if not poss:
+                  lines.append("- **Estado del Casco:** En muelle (sin posiciones abiertas en ADA).")
+              else:
+                  for p in poss:
+                      inst = p["info"]["instId"]
+                      side = p.get("side", "?").upper()
+                      ct = p.get("contracts")
+                      entry = p.get("entryPrice")
+                      upnl = p.get("unrealizedPnl")
+                      lines.append(f"- **Posición Activa:** `{inst}` | **{side}** `{ct} ct` | Entrada: `{entry}` | uPnL: `{upnl} USD`")
+
+              if not algos:
+                  if poss:
+                      lines.append("- ⚠️ **ALERTA ROJA:** SIN PERRO NI CAÑONERA (0 órdenes SL/TP pendientes en OKX).")
+                  else:
+                      lines.append("- **Algos Activos:** 0 órdenes pendientes.")
+              else:
+                  for a in algos:
+                      sl = a.get("slTriggerPx") or a.get("triggerPx") or "N/A"
+                      tp = a.get("tpTriggerPx") or "N/A"
+                      ot = a.get("ordType", "?")
+                      lines.append(f"- 🐕 **SL Trigger:** `{sl}` | ✈️ **TP Trigger:** `{tp}` (Tipo: `{ot}`)")
+
+          except Exception as e:
+              lines.append(f"- ❌ **Error leyendo coraza en OKX:** `{str(e)[:150]}`")
+
+          report = "\n".join(lines)
+          print(report)
+          summary_file = os.environ.get("GITHUB_STEP_SUMMARY")
+          if summary_file:
+              with open(summary_file, "a", encoding="utf-8") as f:
+                  f.write(report + "\n")
+          EOF
 
       - name: Commit y Push de logs
         if: always()
         run: |
-          git config --global user.name  "El Destructor Bot"
-          git config --global user.email "destructor@gscsi.trade"
-          git add logs_arb/ || true
-          git commit -m "auto: log EL DESTRUCTOR ARB (Live) [skip ci]" || echo "Sin cambios"
+          git config --global user.name  "El Titan Bot"
+          git config --global user.email "titan@gscsi.trade"
+          git add logs_ada/ || true
+          git commit -m "auto: log EL TITAN ADA (2 ct - LIVE) [skip ci]" || echo "Sin cambios"
           git push || echo "Push omitido"
