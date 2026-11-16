@@ -1,21 +1,17 @@
-# main-doge.py — Ax2-DOGE · EL PERRO · ley v3.4 (25-oct: SUELTO CON CANDADO)
+# doge-main.py — Ax2-DOGE · EL PERRO · ley v3.4 (25-oct: SUELTO CON CANDADO)
 #   v3.4 (decreto del Capitán 25-oct: "quita inj sui, lo dejas suelto con
 #     candado, cada 10 min, 1H"):
-#     - LEY 5m -> 1H: cruce EMA3/21 en velas 1H CERRADAS (ventana -2/-3/-4).
+#     - LEY 5m -> 1H: cruce EMA3/21 en velas 1H CERRADAS (ventana -1/-2).
 #       El candado v2 (0.15%) NO se toca: sin separación no hay señal.
-#     - C4 VIGÍA INJ/SUI RETIRADA: misión cumplida — INJ y SUI navegan con
-#       timón propio (main-inj.yml / main-sui.yml). El Perro vuelve a caza pura.
-#     - TIMÓN PROPIO: main-doge.yml (cron */10, producción TEST_MODE '0').
-#     - MINA DESACTIVADA: TEST_MODE vuelve a la forma canónica de flota
-#       (== '1'); la versión del repo contaba la PRESENCIA de la variable y
-#       con '0' entraba en modo catálogo (bitácora 17:25 UTC).
-#     - FIX trim: recorte de vela en formación con TF_MS[TIMEFRAME] (3600000
-#       ms en 1h); el viejo 300000 dejaba la vela abierta dentro -> repintado.
-#   Heredado de v3.3 (sin cambios): SL/TP asimétricos (LONG 2/4, SHORT 3/4),
-#     Ley Carbono LISTA BLANCA (solo settle USD navega), abs() en contracts
-#     (C3), guardia de nocional $15, cooldown 60m fail-closed (Ax5 fillPnl),
-#     clOrdId DOGE+vela (51016 idempotencia), one-way (Ax4), get_open_position
-#     fail-closed (Ax6), 10 ct = 100 DOGE (~$7.7).
+#   AJUSTE FLOTA (Capitán): nocional máx $12 + AMOUNT dinámico.
+#   NOTA TÉCNICA: "2 velas + forming" no aplica a DOGE porque su SL es
+#     porcentual (precio × 2%), no estructural (ventana hi/lo + ATR).
+#     Por eso no se incorpora la vela en formación al cálculo del SL.
+#   Heredado de v3.3: SL/TP asimétricos (LONG 2/4, SHORT 3/4),
+#     Ley Carbono LISTA BLANCA (solo settle USD navega), abs() en contracts,
+#     guardia de nocional, cooldown 60m fail-closed (fillPnl),
+#     clOrdId DOGE+vela (51016 idempotencia), one-way, get_open_position
+#     fail-closed.
 #   Ax3: HOST my.okx.com | USDT PROHIBIDO (MiCA/EEE)
 import os
 import time
@@ -35,7 +31,6 @@ def _f(x):
 
 # ==================== CONFIGURACIÓN (decreto Carbono) ====================
 BASE_ASSET = 'DOGE'
-AMOUNT = 10         # 10 ct = 100 DOGE (~$7.7) — collar ratificado
 SL_LONG = 0.020     # 2.0%
 TP_LONG = 0.040     # 4.0%
 SL_SHORT = 0.030    # 3.0%
@@ -46,11 +41,12 @@ EMA_SLOW = 21
 TD_MODE = 'cross'
 LEVERAGE = 1
 COOLDOWN_MIN = 60
-TEST_MODE = os.getenv('TEST_MODE') == '1'   # v3.4: forma canónica (mina de presencia desactivada)
+TEST_MODE = os.getenv('TEST_MODE') == '1'   # v3.4: forma canónica
 SINGLE_CYCLE = os.getenv('SINGLE_CYCLE') == '1'
-MAX_NOTIONAL_USD = _f(os.getenv('OKX_DOGE_MAX_NOTIONAL', '15.0')) or 15.0
-SIGNAL_WINDOW = (-2, -3, -4)   # v3.4: ley 1h — 3 velas bastan con cron */10
-WARMUP = 40                    # v3.4: era WARMUP_5M — 40 velas 1h de siembra
+MAX_NOTIONAL_USD = _f(os.getenv('OKX_DOGE_MAX_NOTIONAL', '12.0')) or 12.0
+DOGE_DEBUG = os.getenv('DOGE_DEBUG', '0') == '1'   # 1 = muestra colateral
+SIGNAL_WINDOW = (-1, -2)   # 2 velas cerradas (SL porcentual: forming no aporta)
+WARMUP = 40
 TF_MS = {'5m': 300000, '15m': 900000, '30m': 1800000, '1h': 3600000, '6h': 21600000}
 
 HOST = 'https://my.okx.com'
@@ -197,6 +193,16 @@ def get_open_position(symbol):
         log.error("Posiciones ilegibles (" + str(e) + ") — BLOQUEO fail-closed.")
         return {'symbol': symbol, 'contracts': 1, 'side': 'ilegible'}
 
+# ==================== CÁLCULO DINÁMICO DE CONTRATOS ====================
+def calculate_amount(symbol, ref_price):
+    """Calcula cuántos contratos caben en MAX_NOTIONAL_USD.
+    Mínimo 1 contrato — si no cabe ni uno, la guardia de capacity_ok lo bloquea."""
+    ctval, ccy, _settle, _p, usd = _contract_meta(symbol, ref_price)
+    if usd <= 0:
+        return 1
+    amount = int(MAX_NOTIONAL_USD // usd)
+    return max(1, amount)
+
 # ==================== ENTRADA CON SL/TP ASIMÉTRICOS ====================
 def _post_trade_order(req):
     method = getattr(exchange, 'privatePostTradeOrder', None) or exchange.private_post_trade_order
@@ -310,8 +316,8 @@ def cooldown_active(symbol):
 def evaluate_signal(symbol):
     """[El Perro — ley v3.4]
     SENAL UNICA: cruce EMA3/EMA21 en velas 1H CERRADAS (decreto 25-oct).
-    Ventana -2/-3/-4. Candado v2: separacion >= 0.15% en la vela del cruce.
-    LONG  (alcista): SL 2% / TP 4%   |   SHORT (bajista): SL 3% / TP 4%"""
+    Ventana -1/-2 (2 velas cerradas). Candado v2: separacion >= 0.15%.
+    LONG (alcista): SL 2% / TP 4%   |   SHORT (bajista): SL 3% / TP 4%"""
     try:
         df = fetch_data(symbol, TIMEFRAME, limit=100)
         if len(df) < WARMUP + 10:
@@ -366,10 +372,11 @@ def evaluate_signal(symbol):
     return None, None, None
 
 # ==================== CAPACIDAD ====================
-def capacity_ok(symbol):
+def capacity_ok(symbol, ref_price=None):
     try:
-        _ctval, _ccy, _settle, _price, usd = _contract_meta(symbol)
-        nocional = usd * AMOUNT
+        _ctval, _ccy, _settle, _price, usd = _contract_meta(symbol, ref_price)
+        amount = calculate_amount(symbol, ref_price or _price)
+        nocional = usd * amount
         if nocional > MAX_NOTIONAL_USD:
             log.error("GUARDIA: nocional $" + format(nocional, '.2f') +
                       " > maximo $" + format(MAX_NOTIONAL_USD, '.2f') + ". NO SE OPERA.")
@@ -382,8 +389,14 @@ def capacity_ok(symbol):
         raw = exchange.privateGetAccountBalance()
         details = ((raw or {}).get('data') or [{}])[0].get('details') or []
         total = sum(_f(d.get('eqUsd')) for d in details)
-        log.info("Margen (10 ct): ~$" + format(need, '.2f') + " | colateral: ~$" +
-                 format(total, '.2f') + " -> " + ('CABE' if total >= need else 'NO CABE'))
+        if DOGE_DEBUG:
+            log.info("Margen (" + str(amount) + " ct): ~$" + format(need, '.2f') +
+                     " | colateral: ~$" + format(total, '.2f') +
+                     " -> " + ('CABE' if total >= need else 'NO CABE'))
+        else:
+            log.info("Margen (" + str(amount) + " ct): ~$" + format(need, '.2f') +
+                     " | colateral: OK (DOGE_DEBUG=1 para verlo) -> " +
+                     ('CABE' if total >= need else 'NO CABE'))
         return total >= need
     except Exception as e:
         log.warning("Capacidad: colateral no calculable: " + str(e) + " — BLOQUEO.")
@@ -394,7 +407,10 @@ def verify_setup():
     raw = exchange.privateGetAccountBalance()
     details = ((raw or {}).get('data') or [{}])[0].get('details') or []
     total = sum(_f(d.get('eqUsd')) for d in details)
-    log.info("Autenticacion OK | host=" + HOST + " | Colateral real (USD): ~" + format(total, '.2f'))
+    if DOGE_DEBUG:
+        log.info("Autenticacion OK | host=" + HOST + " | Colateral real (USD): ~" + format(total, '.2f'))
+    else:
+        log.info("Autenticacion OK | host=" + HOST + " | Colateral: OK (DOGE_DEBUG=1 para verlo)")
 
 # ==================== CICLO ====================
 def run_cycle():
@@ -403,7 +419,7 @@ def run_cycle():
     # Ax4 (panda): forzar one-way mode — blindaje defensivo anti-hedge.
     try:
         exchange.set_position_mode(False, symbol)
-        log.info("Position mode → one-way para " + str(symbol) + ".")
+        log.info("Position mode -> one-way para " + str(symbol) + ".")
     except Exception as e:
         log.debug("set_position_mode skip: " + str(e))
 
@@ -419,7 +435,11 @@ def run_cycle():
         log.info("Posicion abierta (" + str(pos['side']) + "). Esperando SL/TP.")
         return
 
-    if not capacity_ok(symbol):
+    signal, price, candle_ts = evaluate_signal(symbol)
+    if not signal:
+        return
+
+    if not capacity_ok(symbol, price):
         log.info("Sin capacidad. Vigilando.")
         return
 
@@ -427,22 +447,19 @@ def run_cycle():
         log.info("Vigilando (cooldown activo).")
         return
 
-    signal, price, candle_ts = evaluate_signal(symbol)
-    if not signal:
-        return
-
     if candle_already_traded(symbol, candle_ts):
         return
 
+    amount = calculate_amount(symbol, price)
     log.info("Senal " + signal + " (cruce EMA3/21 1h). Abriendo " +
-             str(AMOUNT) + " contratos...")
+             str(amount) + " contrato(s)...")
     try:
-        execute_order(signal, symbol, price, AMOUNT, candle_ts)
+        execute_order(signal, symbol, price, amount, candle_ts)
     except Exception as e:
         log.error("Entrada rechazada: " + str(e))
 
 def run_once():
-    log.info("Modo ciclo unico | DOGE EMA3/21 1H v3.4 + CANDADO v2 FAIL-CLOSED (XPERP USD).")
+    log.info("Modo ciclo unico | DOGE EMA3/21 1H v3.4 + CANDADO v2 FAIL-CLOSED (XPERP USD) | AMOUNT dinámico | MAX $12")
     verify_setup()
     if TEST_MODE:
         catalog_doge()
@@ -451,7 +468,7 @@ def run_once():
 
 def main_loop():
     log.info("Bot " + BASE_ASSET + " | 1H EMA3/21 v3.4 | LONG SL2/TP4 · SHORT SL3/TP4 | " +
-             str(AMOUNT) + " ct | ventana -2/-4 | cooldown " + str(COOLDOWN_MIN) + "m | " + HOST)
+             "AMOUNT dinámico | ventana -1/-2 | cooldown " + str(COOLDOWN_MIN) + "m | " + HOST)
     verify_setup()
     while True:
         try:
@@ -462,7 +479,7 @@ def main_loop():
         except Exception as e:
             log.error("Error en el ciclo principal: " + str(e))
             time.sleep(60)
-        time.sleep(600)   # v3.4: cada 10 min (decreto)
+        time.sleep(600)
 
 if __name__ == "__main__":
     if SINGLE_CYCLE:
