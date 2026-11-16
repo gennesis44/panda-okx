@@ -1,0 +1,129 @@
+name: EL INYECTOR · Navío INJ EMA 4/21 1H (LIVE)
+
+on:
+  schedule:
+    # Verificación cada 20 min alineada al ciclo de INJ (1H, eval cada 20 min)
+    - cron: '*/20 * * * *'
+  workflow_dispatch:
+    inputs:
+      shadow_mode:
+        description: 'Modo de Ejecución (0 = COMBATE REAL, 1 = Sombra / Prueba)'
+        required: true
+        default: '0'
+        type: choice
+        options:
+          - '0'
+          - '1'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: titan-inj-ciclo
+  cancel-in-progress: false
+
+jobs:
+  run-inj-bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout repositorio
+        uses: actions/checkout@v4
+
+      - name: Configurar Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instalar dependencias (ccxt pandas)
+        run: |
+          python -m pip install --upgrade pip
+          pip install ccxt pandas
+
+      - name: Crear directorio de logs
+        run: mkdir -p logs_inj
+
+      - name: Ejecutar Navío INJ — EL INYECTOR (main-1inj.py)
+        env:
+          OKX_API_KEY:      ${{ secrets.OKX_API_KEY }}
+          OKX_SECRET_KEY:   ${{ secrets.OKX_SECRET_KEY }}
+          OKX_PASSWORD:     ${{ secrets.OKX_PASSWORD }}
+          TEST_MODE:        ${{ github.event.inputs.shadow_mode || '0' }}
+          SINGLE_CYCLE:     '1'
+          OKX_INJ_MAX_NOTIONAL: '6.00'
+        run: |
+          python3 main-1inj.py 2>&1 | tee logs_inj/run_$(date -u +%Y%m%d_%H%M).log
+
+      - name: Auditar Coraza SL/TP en OKX (Reporte Visual)
+        if: always()
+        env:
+          OKX_API_KEY:    ${{ secrets.OKX_API_KEY }}
+          OKX_SECRET_KEY: ${{ secrets.OKX_SECRET_KEY }}
+          OKX_PASSWORD:   ${{ secrets.OKX_PASSWORD }}
+        run: |
+          python3 - << 'EOF'
+          import os, ccxt
+
+          ex = ccxt.okx({
+              "apiKey": os.environ["OKX_API_KEY"],
+              "secret": os.environ["OKX_SECRET_KEY"],
+              "password": os.environ["OKX_PASSWORD"],
+              "hostname": "my.okx.com",
+              "options": {"defaultType": "swap"},
+          })
+          ex.hostname = "my.okx.com"
+
+          lines = ["### 🛡️ Reporte de Coraza SL/TP — EL INYECTOR (INJ)", ""]
+          try:
+              # Consultar posiciones abiertas INJ/USD futuros
+              poss = [p for p in ex.fetch_positions() if "INJ" in p.get("symbol", "").upper() and abs(float(p.get('contracts') or 0)) > 0]
+              
+              # Consultar órdenes algorítmicas pendientes (oco, conditional, trigger)
+              algos = []
+              for ot in ("oco", "conditional", "trigger"):
+                  res = ex.private_get_trade_orders_algo_pending({"ordType": ot})
+                  algos.extend([a for a in (res.get("data") or []) if "INJ" in str(a.get("instId", "")).upper()])
+
+              if not poss:
+                  lines.append("- **Estado del Casco:** En muelle (sin posiciones abiertas en INJ).")
+              else:
+                  for p in poss:
+                      sym = p.get("symbol", "?")
+                      side = p.get("side", "?").upper()
+                      ct = p.get("contracts")
+                      entry = p.get("entryPrice")
+                      upnl = p.get("unrealizedPnl")
+                      lines.append(f"- **Posición Activa:** `{sym}` | **{side}** `{ct} ct` | Entrada: `{entry}` | uPnL: `{upnl} USD`")
+
+              if not algos:
+                  if poss:
+                      lines.append("- ⚠️ **ALERTA ROJA:** SIN PERRO NI CAÑONERA (0 órdenes SL/TP pendientes en OKX).")
+                  else:
+                      lines.append("- **Algos Activos:** 0 órdenes pendientes.")
+              else:
+                  for a in algos:
+                      sl = a.get("slTriggerPx") or a.get("triggerPx") or "N/A"
+                      tp = a.get("tpTriggerPx") or "N/A"
+                      ot = a.get("ordType", "?")
+                      lines.append(f"- 🐕 **SL Trigger:** `{sl}` | ✈️ **TP Trigger:** `{tp}` (Tipo: `{ot}`)")
+
+          except Exception as e:
+              lines.append(f"- ❌ **Error leyendo coraza en OKX:** `{str(e)[:150]}`")
+
+          report = "\n".join(lines)
+          print(report)
+          summary_file = os.environ.get("GITHUB_STEP_SUMMARY")
+          if summary_file:
+              with open(summary_file, "a", encoding="utf-8") as f:
+                  f.write(report + "\n")
+          EOF
+
+      - name: Commit y Push de logs
+        if: always()
+        run: |
+          git config --global user.name  "El Inyector Bot"
+          git config --global user.email "inyector@gscsi.trade"
+          git add logs_inj/ || true
+          git commit -m "auto: log EL INYECTOR INJ (LIVE) [skip ci]" || echo "Sin cambios"
+          git push || echo "Push omitido"
