@@ -1,0 +1,14 @@
+2026-11-17 00:55:26,994 - INFO - Iniciando NAVIO AVAX en modo SINGLE_CYCLE (GitHub Actions) | TF=1h | SHADOW=False | DRY_RUN=False | MAX $12
+2026-11-17 00:55:26,994 - INFO - NAVIO AVAX EL OCTAVO EMA3/21 1h v2.3-1h-xperp-flota + BLINDAJE xpl-v4.2 (XPERP USD) | REAL | MAX $12
+2026-11-17 00:55:28,385 - INFO - Instrumento: AVAX-USD_UM_XPERP-310530 (XPERP — vencimiento mas lejano | settle USD | ctVal 10.0 AVAX)
+2026-11-17 00:55:28,504 - INFO - Autenticacion OK | host=https://my.okx.com | Colateral: OK (AVAX_DEBUG=1 para verlo)
+2026-11-17 00:55:28,717 - INFO - ==== WIN RATE positions-history — ultimos 5 cierre(s) ====
+2026-11-17 00:55:28,717 - INFO -   14-10 14:39 UTC | WIN 
+2026-11-17 00:55:28,717 - INFO -   28-10 19:57 UTC | LOSS
+2026-11-17 00:55:28,718 - INFO -   04-11 09:33 UTC | LOSS
+2026-11-17 00:55:28,718 - INFO -   05-11 15:11 UTC | LOSS
+2026-11-17 00:55:28,718 - INFO -   11-11 01:29 UTC | LOSS
+2026-11-17 00:55:28,718 - INFO - ---- Resumen: 1 win / 4 loss / 0 flat | WR 20.0% | R:R 1.50 -> WR equilibrio 40.0% (AVAX_DEBUG=1 para ver montos)
+2026-11-17 00:55:29,284 - INFO - Precio: 7.1050 | EMA3/21: 7.1227/7.1524 | EMA3 < EMA21 (estado)
+2026-11-17 00:55:29,284 - INFO - Sin cruce EMA3/21 legal en la ventana [-1, -2]. Vigilando.
+2026-11-17 00:55:29,297 - INFO - Ciclo unico finalizado. Saliendo (lo retomara el cron de GitHub Actions).
