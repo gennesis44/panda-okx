@@ -1,0 +1,62 @@
+name: "EL DESTRUCTOR - Navío ARB EMA 3/21 4H (LIVE)"
+
+on:
+  schedule:
+    # 4H timeframe: cada 30 min cubre la ventana de 2 velas (4H × 2 = 8h)
+    # sin perder señales. Más frecuente es overkill para TF 4H.
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+
+# Necesario para que el git push final funcione con el GITHUB_TOKEN por defecto
+permissions:
+  contents: write
+
+jobs:
+  run-arb-bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repositorio
+        uses: actions/checkout@v4
+
+      - name: Configurar Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instalar dependencias
+        run: |
+          python -m pip install --upgrade pip
+          pip install ccxt pandas
+
+      - name: Crear directorio de logs
+        run: mkdir -p logs_arb
+
+      - name: Ejecutar Bot ARB (LIVE)
+        env:
+          OKX_API_KEY:         ${{ secrets.OKX_API_KEY }}
+          OKX_SECRET_KEY:      ${{ secrets.OKX_SECRET_KEY }}
+          OKX_PASSWORD:        ${{ secrets.OKX_PASSWORD }}
+          SHADOW:              '0'        # 0 = MUNICION REAL (decreto)
+          DRY_RUN:             '0'
+          SINGLE_CYCLE:        '1'        # 1 ciclo y salir (GH Actions)
+          ARB_TF:              '4h'       # peritaje 28-oct
+          ARB_CONTRACTS:       '0'        # 0 = AUTO dinámico
+          ARB_NOTIONAL:       '5.0'      # decreto Capitán
+          ARB_MAX_NOTIONAL:   '5.0'      # decreto Capitán (no subir a $12)
+          ARB_SEP_LOCK:       '0.25'     # auditado 4H
+          ARB_SL_FLOOR:       '1.5'      # peritaje
+          ARB_SL_CAP:         '6.2'      # peritaje
+          ARB_TP_MULT:        '2.0'      # peritaje (PF 1.63 vs 1.47 con 1.5)
+          COOLDOWN_MIN:       '60'
+        run: |
+          python3 arb-main.py 2>&1 | tee logs_arb/run_$(date -u +%Y%m%d_%H%M).log
+
+      - name: Commit y Push de logs
+        if: always()
+        run: |
+          git config --global user.name  "El Destructor Bot"
+          git config --global user.email "aprendiz@gscsi.trade"
+          git add logs_arb/ || true
+          git commit -m "auto: log ARB EL DESTRUCTOR [skip ci]" || echo "Sin cambios"
+          git push || echo "Push omitido"
