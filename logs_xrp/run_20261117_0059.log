@@ -1,0 +1,7 @@
+2026-11-17 00:59:35,473 - INFO - === XRP DESTROYER v3.1 | EMA3/21 1H (2 velas + formación) | ARMADO ===
+2026-11-17 00:59:37,446 - INFO - Instrumento: XRP/USD:USD-310404 (XPERP — vencimiento más lejano)
+2026-11-17 00:59:37,594 - INFO - Contrato: 1 = 1.0 XRP | settle=USD | nocional ~$0.95 | XRP/USD:USD-310404 | FUTURES
+2026-11-17 00:59:38,877 - INFO - Precio: 0.9524 | 1H EMA3/21: 0.95390/0.95558 | EMA3 < EMA21
+2026-11-17 00:59:38,878 - INFO - Cruce BAJISTA EMA3/21 detectado (vela index -2). Señal SHORT.
+2026-11-17 00:59:39,032 - INFO - Nocional: 4 contrato x 1.0 XRP (~$3.81)
+2026-11-17 00:59:39,320 - INFO - XRP SHORT ejecutada con SL/TP adjuntos. ordId: 4106216206740172801 | SL: 0.9953 | TP: 0.8953
