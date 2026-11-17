@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-EL APRENDIZ — sui_bot.py — v2.0-PROD
-====================================
+EL APRENDIZ — sui-main.py — v2.0-PROD (adaptado a flota)
+========================================================
 Flota GSCSI-TRADE | nave: EL APRENDIZ
 Instrumento: SUI-USD_UM_XPERP-310404 (OKX my.okx.com, universo EEE/XPERP, margen USD)
 
@@ -17,8 +17,6 @@ ACTA DE PRODUCCION (orden del capitan, con 0 partes cerrados en papel):
   La certificacion pasa a ser EN VUELO a escala de centavos, con caps duros:
   1 ct (SUI_SIZE_CT<=5), 1x por defecto (SUI_LEV<=20, cap del contrato),
   UN solo parte abierto por canal, SL/TP exchange-side OBLIGATORIOS.
-  Riesgo por parte ~ 0.5% del nocional (1 SUI ~ 0.85 USD) => centavos.
-  La puerta a mayor tamano sigue cerrada: >=20-30 partes cerrados + FANAL.
 
 LEYES A BORDO (guardas duras, fallan cerrado):
  L1. USDT VETADO: whitelist de un solo instId; assert 'USDT' fuera y settleCcy=='USD'.
@@ -31,18 +29,21 @@ LEYES A BORDO (guardas duras, fallan cerrado):
  L6. APALANCAMIENTO <= 20x (cap del contrato); default 1x.
  L7. La memoria del barco es su libro de partes (estado_sui/); prohibida la historia larga.
  L8. UN SOLO PARTE ABIERTO por modo (papel y real son canales independientes).
- L9. POSICION EXTERNA: si la cuenta tiene SUI que NO es del bot, no se abre nada
-     (guarda anti-injerencia: nada de encimar ordenes sobre posiciones manuales).
+ L9. POSICION EXTERNA: si la cuenta tiene SUI que NO es del bot, no se abre nada.
  L10. KILL-SWITCH: si existe estado_sui/STOP, ninguna entrada en ningun modo.
+
+ADAPTACION FLOTA (Capitán): SINGLE_CYCLE explicito + renombrado a sui-main.py.
+NOTA TÉCNICA: "2 velas + forming" YA ESTÁ IMPLEMENTADO (L2 + L3) — SUI es el
+  único bot de la flota que lo hace correctamente desde el origen.
 
 Secretos (SOLO PREVUELA/LIVE; nunca se imprimen):
   OKX_API_KEY, OKX_API_SECRET, OKX_API_PASSPHRASE
 
 Estado: estado_sui/partes_test.json (libro oficial; partes de papel y de LIVE)
         estado_sui/decisiones.jsonl  (bitacora de decisiones)
-Uso:    python3 sui_bot.py   (local default TEST)
-Repo:   raiz + .github/workflows/sui-aprendiz.yml; ignicion LIVE = variable de repo
-        SUI_MODE=LIVE (Settings > Actions > Variables) + los 3 secretos.
+Uso:    python3 sui-main.py   (local default TEST)
+Repo:   raiz + .github/workflows/main-sui.yml; ignicion LIVE = SUI_MODE=LIVE
+        (Settings > Actions > Variables) + los 3 secretos.
 """
 
 import base64
@@ -58,7 +59,7 @@ import urllib.request
 from datetime import datetime, timezone
 from decimal import Decimal, ROUND_HALF_UP
 
-VERSION = "2.0-PROD"
+VERSION = "2.0-PROD-flota"
 
 # ---------------- CONFIG ----------------
 BASE = os.environ.get("SUI_BASE", "https://my.okx.com")
@@ -77,6 +78,7 @@ LEV = max(1, int(os.environ.get("SUI_LEV", "1")))
 SIZE_CT = min(max(int(os.environ.get("SUI_SIZE_CT", "1")), 1), 5)   # cap duro 5 ct
 TD_MODE = os.environ.get("SUI_TD_MODE", "isolated")
 MODE = os.environ.get("SUI_MODE", "TEST").upper()
+SINGLE_CYCLE = os.environ.get("SINGLE_CYCLE", "1") == "1"   # default 1 para GH Actions
 ESTADO_DIR = os.environ.get("SUI_ESTADO_DIR", "estado_sui")
 PARTES_PATH = os.path.join(ESTADO_DIR, "partes_test.json")
 DECISIONES_PATH = os.path.join(ESTADO_DIR, "decisiones.jsonl")
@@ -467,7 +469,7 @@ def reconciliar_live(partes: list, specs: dict) -> list:
 # ---------------- main ----------------
 def main() -> int:
     bitacora("=" * 66)
-    bitacora(f"EL APRENDIZ — sui_bot.py v{VERSION} — MODO {MODE}")
+    bitacora(f"EL APRENDIZ — sui-main.py v{VERSION} — MODO {MODE}")
     bitacora(f"Ley de velas: MAXIMO {MAX_CERRADAS} completas | {INST}")
     bitacora(f"Peaje {SEP_MIN} | RR {RR} | SL extremo+{TICKS_BUFFER}t | size {SIZE_CT} ct | "
              f"lev {LEV}x (cap {LEV_CAP}) | tdMode {TD_MODE}")
