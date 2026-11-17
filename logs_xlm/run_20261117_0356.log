@@ -1,0 +1,5 @@
+2026-11-17 03:56:14,724 - INFO - Modo ciclo unico | NAVIO XLM EMA3/21 1h v1.1 + BLINDAJE xpl-v4.2 (XPERP USD) | REAL
+2026-11-17 03:56:16,137 - INFO - Instrumento: XLM-USD_UM_XPERP-310704 (XPERP — vencimiento mas lejano | settle USD | ct=100.0)
+2026-11-17 03:56:16,249 - INFO - Autenticacion OK | host=https://{hostname} | Colateral real (USD): ~42.34
+2026-11-17 03:56:16,940 - INFO - Precio: 0.13728 | EMA3/21: 0.13724/0.13758 | EMA3 < EMA21 (estado)
+2026-11-17 03:56:16,940 - INFO - Sin cruce EMA3/21 legal en la ventana. Vigilando.
