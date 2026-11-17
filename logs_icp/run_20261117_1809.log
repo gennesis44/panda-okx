@@ -1,0 +1,5 @@
+2026-11-17 18:09:34,243 - INFO - Modo ciclo unico | NAVIO ICP EMA3/21 1h v1.1-fixed + BLINDAJE xpl-v4.2 (XPERP USD) | REAL
+2026-11-17 18:09:35,933 - INFO - Instrumento: ICP-USD_UM_XPERP-310711 (XPERP — vencimiento mas lejano | settle USD | ct=1.0)
+2026-11-17 18:09:36,087 - INFO - Autenticacion OK | host=https://{hostname} | Colateral real (USD): ~17.47
+2026-11-17 18:09:36,775 - INFO - Precio: 2.252 | EMA3/21: 2.263/2.367 | EMA3 < EMA21 (estado)
+2026-11-17 18:09:36,775 - INFO - Sin cruce EMA3/21 legal en la ventana. Vigilando.
