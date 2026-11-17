@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # =====================================================================
-# main-ada.py — NAVIO ADA · LA FLOTA CARBONO · BUQUE: EL TITAN
+# ada-main.py — NAVIO ADA · LA FLOTA CARBONO · BUQUE: EL TITAN
 # 100% AUTONOMO: solo stdlib + ccxt (pip). NO importa atakaya.py ni
 # ningun otro archivo del repo — navega solo en un repo recien creado.
 # Casco: blindaje certificado del xpl v4.2 · Motor: EMA 3/21
@@ -15,12 +15,10 @@
 #   · AGRESIVO elegido: SEP_LOCK 0.15% | SL 2.0% / TP 3.0%
 #     117 trades | WR 48.7% | net +37.14% | PF 1.30 | maxCons 7
 #     (SL 2.0% = 5.2 x ATR14 0.388%; TP 1.5 x SL)
-#   · comparativa de marcos: 30m PF 1.27 (+14.05%, lock 0.20, SL 1.0/TP 2.0)
-#     · 1H: TODO el grid NEGATIVO en 90 dias (163 cruces) — enterrado, la ley
-#       de la Ada se mantiene: la ada no aletea, en 1H menos
-#     · 5m: PF 1.26 (+3.94% en 21 dias, solo 29 trades — muestra chica)
-#   · SL piso = techo = 2.0% (SL fijo auditado; ensanchar el techo degrada:
-#     SL 3.0/TP 4.5 -> PF 1.09, SL 2.0/TP 4.0 -> PF 1.10)
+#
+# AJUSTE FLOTA (Capitán): MAX_NOTIONAL $12 + AMOUNT dinámico + privacidad colateral.
+# NOTA TÉCNICA: "2 velas + forming" no aplica a ADA porque su SL es porcentual
+#   (px × 2% con piso=techo), no estructural. La vela en formación no aporta.
 #
 # BLINDAJE A BORDO (herencia xpl v4.2 + perro Ax, fixes de flota P0 soldados):
 #   · pick_future            -> reanclaje automatico al vencimiento mas lejano
@@ -28,33 +26,30 @@
 #   · optimal_limit_ioc      -> entrada anti-deslizamiento
 #   · attachAlgoOrds         -> SL/TP viajan DENTRO de la orden de entrada
 #   · clOrdId sello de vela  -> idempotencia (OKX rechaza duplicado 51016)
-#   · candle_already_traded  -> consulta historial antes de disparar
-#                               (fail-closed: sin verificacion, no zarpa)
+#   · candle_already_traded  -> consulta historial antes de disparar (fail-closed)
 #   · anti-doble v4.2        -> posiciones + algos vivos = nave ocupada
-#   · protection_confirmed   -> verifica SL/TP pendientes tras disparar
+#   · protection_confirmed    -> verifica SL/TP pendientes tras disparar
 #   · emergency_close        -> si la coraza no aparece, cierre inmediato
-#   · cooldown fillPnl FIX   -> lee fillPnl (el campo pnl NO existe en fills
-#                               OKX) y FAIL-CLOSED: consulta rota = BLOQUEO
+#   · cooldown fillPnl FIX   -> lee fillPnl de fills-history (fail-closed)
 #   · bodega ilegible        -> totEq/eqUsd ilegible = DETENIDO (fail-closed Ax3)
-#   · host resuelto          -> log sin plantilla cosmica {hostname}
 # VARIABLES DE ENTORNO (todas opcionales):
-#   SHADOW=1             sombra (defecto). 0 = municion real
-#   DRY_RUN=1            freno de flota -> fuerza sombra
+#   SHADOW=0             0 = REAL (cambio de default para GH Actions)
 #   ADA_TF=15m           marco temporal (decreto: 15m)
-#   ADA_CONTRACTS=2      2 ct = 20 ADA ~ $4 (ctVal=10) — dentro de la guardia $6
 #   ADA_SEP_LOCK=0.15    candado de separacion % (auditoria)
-#   ADA_SL_MULT=1.2      multiplicador distancia EMA21 (neutralizado por piso=techo)
 #   ADA_SL_FLOOR=2.0     piso SL % (auditoria)
 #   ADA_SL_CAP=2.0       techo SL % (auditoria: piso=techo = SL fijo 2.0%)
 #   ADA_TP_MULT=1.5      TP = x * SL -> 3.0%
-#   ADA_MAX_NOTIONAL=6   guardia de nocional $ (ley del capitan)
+#   ADA_MAX_NOTIONAL=12  guardia de nocional $ (ajuste flota)
 #   COOLDOWN_MIN=60      calma tras perdida
+#   ADA_DEBUG=0           1 = muestra colateral real
+#   SINGLE_CYCLE=1        1 ciclo y salir (modo GitHub Actions)
 # =====================================================================
 
 import os
 import sys
 import time
 import logging
+import math
 from datetime import datetime, timezone
 
 try:
@@ -62,23 +57,25 @@ try:
 except ImportError:
     ccxt = None
 
-VERSION = "v1.0-15m-agresivo"
+VERSION = "v1.0-15m-agresivo-flota"
 TF_MS = {"5m": 300000, "15m": 900000, "30m": 1800000,
          "1h": 3600000, "2h": 7200000, "4h": 14400000, "6h": 21600000}
 
 # ---------------- CONFIG ----------------
-SHADOW = os.environ.get("SHADOW", "1") == "1"
+SHADOW = os.environ.get("SHADOW", "0") == "1"   # default REAL para flota
 DRY_RUN = os.environ.get("DRY_RUN", "0") == "1"
+SINGLE_CYCLE = os.environ.get("SINGLE_CYCLE", "0") == "1"
 ADA_TF = os.environ.get("ADA_TF", "15m")
-ADA_CONTRACTS = int(float(os.environ.get("ADA_CONTRACTS", "2")))
 SEP_LOCK = float(os.environ.get("ADA_SEP_LOCK", "0.15"))
 SL_MULT = float(os.environ.get("ADA_SL_MULT", "1.2"))
 SL_FLOOR = float(os.environ.get("ADA_SL_FLOOR", "2.0"))
 SL_CAP = float(os.environ.get("ADA_SL_CAP", "2.0"))
 TP_MULT = float(os.environ.get("ADA_TP_MULT", "1.5"))
-MAX_NOTIONAL = float(os.environ.get("ADA_MAX_NOTIONAL", "6.0"))
+MAX_NOTIONAL = float(os.environ.get("ADA_MAX_NOTIONAL", "12.0"))
 COOLDOWN_MIN = float(os.environ.get("COOLDOWN_MIN", "60"))
 N_CANDLES = int(os.environ.get("ADA_N_CANDLES", "200"))
+ADA_DEBUG = os.environ.get("ADA_DEBUG", "0") == "1"
+MARGIN_MODE = "cross"
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s - %(levelname)s - %(message)s")
@@ -99,7 +96,6 @@ def fail(msg):
 
 # ---------------- EXCHANGE ----------------
 def build_exchange():
-    """ccxt OKX apuntando a la plataforma X-Perp (my.okx.com, colateral USD)."""
     if ccxt is None:
         fail("[ERROR] Falta ccxt: pip install ccxt")
     api_key = os.environ.get("OKX_API_KEY", "")
@@ -113,24 +109,22 @@ def build_exchange():
         "enableRateLimit": True,
         "options": {"defaultType": "futures"},
     })
-    ex.hostname = "my.okx.com"          # refuerzo del anclaje X-Perp
+    ex.hostname = "my.okx.com"
     return ex, bool(api_key and secret and passwd)
 
 
 def pick_future(ex):
-    """Reanclaje: vencimiento mas lejano de ADA/USD settle USD (Ley Carbono).
-    Veto USDT TRIPLE: quote USD, settle USD y futuro fechado (no perp swap)."""
     ex.load_markets()
     cands = []
     for m in ex.markets.values():
         if m.get("base") != "ADA":
             continue
         if m.get("quote") != "USD":
-            continue                      # veto USDT (1): quote != USD
+            continue
         if m.get("settle") != "USD":
-            continue                      # veto USDT (2): settle != USD
+            continue
         if m.get("swap") or not m.get("future"):
-            continue                      # veto (3): solo futuro fechado
+            continue
         cands.append(m)
     if not cands:
         fail("[ERROR] Sin futuros ADA/USD settle USD en OKX. DETENIDO (Ley Carbono).")
@@ -150,14 +144,12 @@ def auth_and_collateral(ex, has_creds):
         fail("[ERROR] Autenticacion/lectura de cuenta fallo: %s — DETENIDO" % str(e)[:200])
 
     tot_eq = None
-    # 1) totEq del crudo OKX (equidad total en USD), si existe y es > 0
     try:
         d0 = bal.get("info", {}).get("data", [{}])[0]
         if d0.get("totEq"):
             tot_eq = _f(d0["totEq"])
     except Exception:
         pass
-    # 2) METODO DEL PERRO: suma de eqUsd por divisa en details
     if not tot_eq:
         try:
             details = bal.get("info", {}).get("data", [{}])[0].get("details") or []
@@ -166,7 +158,6 @@ def auth_and_collateral(ex, has_creds):
                 tot_eq = suma
         except Exception:
             pass
-    # 3) Ultimo recurso: bolsillos unificados reales (USD/USDC/USDT)
     if not tot_eq:
         try:
             suma = sum(_f((bal.get(c) or {}).get("total"))
@@ -175,19 +166,18 @@ def auth_and_collateral(ex, has_creds):
                 tot_eq = suma
         except Exception:
             pass
-    # 4) Decreto Ax3: bodega ilegible NO navega (fail-closed, nunca fail-open).
-    #    Sin esta valla, fire() recibe None y el veto de capacidad
-    #    (notional*3 > tot_eq) se salta a si mismo -> la nave zarpa sin medir
-    #    el combustible justo cuando la bodega es ilegible.
     if tot_eq is None:
         fail("[ERROR] Bodega ilegible (totEq/eqUsd/bolsillos vacios) — DETENIDO (fail-closed)")
     try:
-        host = str(ex.urls.get("api", {}).get("rest", "?"))   # ccxt 4.x: 'rest'
-        if "{hostname}" in host:                              # fix host cosmico
+        host = str(ex.urls.get("api", {}).get("rest", "?"))
+        if "{hostname}" in host:
             host = host.replace("{hostname}", getattr(ex, "hostname", "my.okx.com"))
     except Exception:
         host = "?"
-    log.info("Autenticacion OK | host=%s | Colateral real (USD): ~%.2f", host, tot_eq)
+    if ADA_DEBUG:
+        log.info("Autenticacion OK | host=%s | Colateral real (USD): ~%.2f", host, tot_eq)
+    else:
+        log.info("Autenticacion OK | host=%s | Colateral: OK (ADA_DEBUG=1 para verlo)", host)
     return tot_eq
 
 
@@ -205,7 +195,6 @@ def open_position_contracts(ex, sym):
 
 
 def algo_pending(ex, inst_id):
-    """SL/TP vivos (oco + conditional). Fail-closed: si no se puede mirar, DETENIDO."""
     out = []
     for ot in ("oco", "conditional"):
         try:
@@ -217,7 +206,7 @@ def algo_pending(ex, inst_id):
     return out
 
 
-# ---------------- SENAL ----------------
+# ---------------- INDICADORES ----------------
 def ema(vals, span):
     k = 2.0 / (span + 1)
     out, e = [], None
@@ -246,7 +235,8 @@ def compute_signal(candles):
     e21 = ema(c, 21)
     stance = [1 if e3[i] > e21[i] else -1 for i in range(n)]
     cross_idx, direction = None, 0
-    for i in range(max(1, n - 2), n):          # ventana: ultimas 2 cerradas (cron */15)
+    # Ventana: ultimas 2 cerradas (cron */30 cubre las 2 dentro del plazo)
+    for i in range(max(1, n - 2), n):
         if stance[i] != stance[i - 1]:
             cross_idx, direction = i, stance[i]
     sig = {
@@ -285,10 +275,33 @@ def sl_tp(px, e21_cross, long_dir):
     return px + dist, px - dist * TP_MULT, dist / px * 100.0
 
 
+# ---------------- CÁLCULO DINÁMICO DE CONTRATOS ----------------
+def calculate_amount(ex, market, px):
+    """Calcula cuántos contratos caben en MAX_NOTIONAL USD.
+    ADA: ctVal=10 ADA. A px=$0.45 -> 1 ct = $4.50, max 2 ct ($9) en $12.
+    A px=$0.30 -> 1 ct = $3, max 4 ct ($12) en $12."""
+    info = market.get("info") or {}
+    csize = _f(market.get("contractSize") or info.get("ctVal") or 1)
+    if csize <= 0:
+        fail("[ERROR] ctVal ilegible — DETENIDO (fail-closed)")
+    lot = _f(info.get("lotSz")) or 1.0
+    min_sz = _f(info.get("minSz")) or lot
+    val_ct = csize * px
+    if val_ct <= 0:
+        fail("[ERROR] valor por contrato ilegible — DETENIDO (fail-closed)")
+    # Cuántos lotes enteros caben en MAX_NOTIONAL
+    steps = int(math.floor((MAX_NOTIONAL / val_ct) / lot + 1e-9))
+    n = steps * lot
+    if n < min_sz:
+        n = min_sz
+    return round(n, 10), val_ct
+
+
 # ---------------- SEGURIDAD PRE-DISPARO ----------------
 def already_traded(ex, inst_id, cl_ord_id):
     try:
-        r = ex.privateGetTradeOrdersHistory({"instId": inst_id, "limit": "20"})
+        r = ex.privateGetTradeOrdersHistory({
+            "instType": "FUTURES", "instId": inst_id, "limit": "20"})
     except Exception as e:
         fail("[ERROR] historial de ordenes inaccesible: %s — DETENIDO (fail-closed)"
              % str(e)[:200])
@@ -299,30 +312,29 @@ def already_traded(ex, inst_id, cl_ord_id):
 
 
 def cooldown_active(ex, inst_id):
-    """Calma tras perdida. FIX A1 (auditado en flota): OKX devuelve fillPnl
-    en fills de PnL — el campo pnl NO existe (cooldowns muertos en icp/ada
-    antiguos). Se lee fillPnl con pnl de reserva. FAIL-CLOSED: si la consulta
-    falla, BLOQUEO — no se dispara con cooldown ilegible."""
+    """FIX A1: lee fillPnl de fills-history (campo pnl NO existe en OKX fills).
+    FAIL-CLOSED: si la consulta falla, BLOQUEO."""
     try:
-        r = ex.privateGetTradeFillPnl({"instId": inst_id})
+        r = ex.privateGetTradeFillsHistory({
+            "instType": "FUTURES", "instId": inst_id, "limit": "40"})
         now = ex.milliseconds()
         for rec in (r.get("data") or []):
-            ft = int(float(rec.get("fillTime") or 0))
+            ts = int(_f(rec.get("ts")) or _f(rec.get("fillTime")))
             pnl = _f(rec.get("fillPnl"))
             if pnl == 0.0:
                 pnl = _f(rec.get("pnl"))
-            if pnl < 0 and ft > 0 and (now - ft) < COOLDOWN_MIN * 60 * 1000:
-                return True, pnl, ft
+            if pnl < 0 and ts > 0 and (now - ts) < COOLDOWN_MIN * 60 * 1000:
+                return True, pnl, ts
+        return False, 0.0, 0
     except Exception as e:
         log.warning("cooldown no verificable (%s) — BLOQUEO fail-closed", str(e)[:120])
         return True, 0.0, ex.milliseconds()
-    return False, 0.0, 0
 
 
 # ---------------- DISPARO ----------------
 def emergency_close(ex, inst_id, entry_side, contracts):
     body = {
-        "instId": inst_id, "tdMode": "cross", "posSide": "net",
+        "instId": inst_id, "tdMode": MARGIN_MODE, "posSide": "net",
         "side": "sell" if entry_side == "buy" else "buy",
         "ordType": "market", "sz": str(int(contracts)),
         "reduceOnly": True, "clOrdId": ("ADAE%d" % ex.milliseconds())[:32],
@@ -355,12 +367,13 @@ def fire(ex, market, inst_id, sig, contracts, tot_eq):
         fail("[ERROR] margen ~$%.2f (1x) vs colateral ~$%.2f -> NO CABE. DETENIDO"
              % (notional, tot_eq))
 
-    log.info("Disparo %s | %d ct | nocional ~$%.2f | SL %s (dist %.2f%%) | TP %s | clOrdId %s",
-             "LONG" if long_dir else "SHORT", contracts, notional, sl_s, dist_pct, tp_s, cl)
+    log.info("Disparo %s | %s ct | nocional ~$%.2f | SL %s (dist %.2f%%) | TP %s | clOrdId %s",
+             "LONG" if long_dir else "SHORT",
+             _fmt_contracts(contracts), notional, sl_s, dist_pct, tp_s, cl)
     body = {
-        "instId": inst_id, "tdMode": "cross", "posSide": "net",
+        "instId": inst_id, "tdMode": MARGIN_MODE, "posSide": "net",
         "side": side, "ordType": "optimal_limit_ioc",
-        "sz": str(int(contracts)), "clOrdId": cl,
+        "sz": _fmt_contracts(contracts), "clOrdId": cl,
         "attachAlgoOrds": [{
             "attachAlgoClOrdId": ("ADAA%d" % bar_ms)[:32],
             "slTriggerPx": sl_s, "slOrdPx": "-1",
@@ -391,13 +404,20 @@ def fire(ex, market, inst_id, sig, contracts, tot_eq):
              a0.get("slTriggerPx"), a0.get("tpTriggerPx"))
 
 
+def _fmt_contracts(c):
+    if abs(c - round(c)) < 1e-9:
+        return str(int(round(c)))
+    s = ("%.4f" % c).rstrip("0").rstrip(".")
+    return s or "0"
+
+
 # ---------------- MAIN ----------------
-def main():
+def run_cycle():
     shadow = SHADOW or DRY_RUN
     if DRY_RUN and not SHADOW:
         log.info("Freno de flota DRY_RUN=1 -> forzando SOMBRA")
-    log.info("Modo ciclo unico | NAVIO ADA EL TITAN EMA3/21 %s %s + BLINDAJE xpl-v4.2 (XPERP USD) | %s",
-             ADA_TF, VERSION, "SOMBRA" if shadow else "REAL")
+    log.info("NAVIO ADA EL TITAN EMA3/21 %s %s + BLINDAJE xpl-v4.2 (XPERP USD) | %s | AMOUNT dinamico | MAX $%.0f",
+             ADA_TF, VERSION, "SOMBRA" if shadow else "REAL", MAX_NOTIONAL)
     if ADA_TF not in TF_MS:
         fail("[ERROR] ADA_TF invalido: %s" % ADA_TF)
 
@@ -439,19 +459,19 @@ def main():
 
     if shadow:
         log.info("[SOMBRA] Senal %s legal | vela %s UTC | sep %.2f%% | SL ~%.4f (dist %.2f%%) | "
-                 "TP ~%.4f | %d ct — sin municion, solo bitacora",
-                 dir_txt, bar_h, sig["sep"], sl, dist_pct, tp, ADA_CONTRACTS)
+                 "TP ~%.4f — sin municion, solo bitacora",
+                 dir_txt, bar_h, sig["sep"], sl, dist_pct, tp)
         return 0
 
     # ---- REAL ----
     try:
-        ex.set_position_mode(False)
+        ex.set_position_mode(False, sym)
         log.info("Position mode -> one-way para %s.", inst_id)
     except Exception as e:
         log.warning("set_position_mode tolerado: %s", str(e)[:120])
     try:
-        ex.set_leverage(1, sym, params={"mgnMode": "cross"})
-        log.info("Apalancamiento: 1x (cross)")
+        ex.set_leverage(1, sym, params={"mgnMode": MARGIN_MODE})
+        log.info("Apalancamiento: 1x (%s)", MARGIN_MODE)
     except Exception as e:
         log.warning("set_leverage tolerado: %s", str(e)[:120])
 
@@ -466,12 +486,39 @@ def main():
         log.info("Vela %s ya navegada (candle_already_traded) — descartado.", bar_h)
         return 0
 
-    min_sz = (((market.get("limits") or {}).get("amount") or {}).get("min")) or 1
-    if ADA_CONTRACTS < float(min_sz):
-        fail("[ERROR] %d ct < minimo del mercado (%s) — DETENIDO" % (ADA_CONTRACTS, min_sz))
+    contracts, val_ct = calculate_amount(ex, market, sig["px"])
+    log.info("Tallado dinamico: %s ct | 1 ct = $%.4f | nocional ~$%.2f",
+             _fmt_contracts(contracts), val_ct, contracts * val_ct)
 
-    fire(ex, market, inst_id, sig, ADA_CONTRACTS, tot_eq)
+    fire(ex, market, inst_id, sig, contracts, tot_eq)
     return 0
+
+
+def main():
+    if SINGLE_CYCLE:
+        try:
+            run_cycle()
+        except SystemExit:
+            raise
+        except Exception as e:
+            log.error("[CRITICAL] %s", str(e))
+            sys.exit(1)
+        log.info("Ciclo unico finalizado. Saliendo (lo retomara el cron).")
+        return
+    # Modo VPS 24/7
+    tf_ms = TF_MS.get(ADA_TF, 900000)
+    while True:
+        try:
+            start_t = time.time()
+            run_cycle()
+        except SystemExit:
+            raise
+        except Exception as e:
+            log.error("[CRITICAL] %s — bucle sobrevive.", str(e))
+        elapsed = (time.time() - start_t) * 1000
+        sleep_ms = max(10000, tf_ms - (elapsed % tf_ms))
+        log.info("Durmiendo %.1f min...", sleep_ms / 60000.0)
+        time.sleep(sleep_ms / 1000.0)
 
 
 if __name__ == "__main__":
