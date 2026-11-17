@@ -1,9 +1,9 @@
-name: El Aprendiz - INJ EMA 4/21 (20m LIVE)
+name: "El Octavo - AVAX EMA 3/21 (1H LIVE)"
 
 on:
   schedule:
-    # Se dispara cada 20 minutos (puede retrasarse 5-15 min por carga de GH Actions)
-    - cron: '*/20 * * * *'
+    # 1H timeframe: 1 run por hora cubre ventana de 2 velas
+    - cron: '0 * * * *'
   workflow_dispatch:
 
 # Necesario para que el git push final funcione con el GITHUB_TOKEN por defecto
@@ -11,9 +11,9 @@ permissions:
   contents: write
 
 jobs:
-  run-inj-bot:
+  run-avax-bot:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 5
     steps:
       - name: Checkout repositorio
         uses: actions/checkout@v4
@@ -29,26 +29,35 @@ jobs:
           pip install ccxt pandas
 
       - name: Crear directorio de logs
-        run: mkdir -p logs_inj
+        run: mkdir -p logs_avax
 
-      - name: Ejecutar Bot INJ (LIVE)
+      - name: Ejecutar Bot AVAX (LIVE)
         env:
           OKX_API_KEY:         ${{ secrets.OKX_API_KEY }}
           OKX_SECRET_KEY:      ${{ secrets.OKX_SECRET_KEY }}
           OKX_PASSWORD:        ${{ secrets.OKX_PASSWORD }}
-          OKX_API_SECRET:      ${{ secrets.OKX_SECRET_KEY }}
-          OKX_API_PASSPHRASE:  ${{ secrets.OKX_PASSWORD }}
-          OKX_INJ_MAX_NOTIONAL: '6.00'
-          TEST_MODE: '0'
-          SINGLE_CYCLE: '1'
+          SHADOW:              '0'        # 0 = REAL (default flota)
+          DRY_RUN:             '0'
+          SINGLE_CYCLE:        '1'        # 1 ciclo y salir (GH Actions)
+          AVAX_TF:             '1h'       # timeframe
+          AVAX_WINDOW:         '-1,-2'    # 2 velas cerradas
+          AVAX_SEP_LOCK:       '0.17'     # candado
+          AVAX_SL_FLOOR:       '2.0'      # SL fijo 2%
+          AVAX_SL_CAP:         '2.0'      # piso=techo = SL fijo
+          AVAX_TP_MULT:        '1.5'      # TP = 3%
+          AVAX_NOTIONAL:       '12.0'     # target nocional (ajuste flota)
+          AVAX_MAX_NOTIONAL:   '12.0'     # guardia (ajuste flota, era $15)
+          AVAX_LEVERAGE:       '1'
+          AVAX_MARGIN_MODE:    'isolated'
+          COOLDOWN_MIN:        '60'
         run: |
-          python3 inj-main.py 2>&1 | tee logs_inj/run_$(date -u +%Y%m%d_%H%M).log
+          python3 avax-main.py 2>&1 | tee logs_avax/run_$(date -u +%Y%m%d_%H%M).log
 
       - name: Commit y Push de logs
         if: always()
         run: |
-          git config --global user.name  "El Aprendiz Bot"
+          git config --global user.name  "El Octavo Bot"
           git config --global user.email "aprendiz@gscsi.trade"
-          git add logs_inj/ || true
-          git commit -m "auto: log INJ EMA 4/21 [skip ci]" || echo "Sin cambios"
+          git add logs_avax/ || true
+          git commit -m "auto: log AVAX EL OCTAVO [skip ci]" || echo "Sin cambios"
           git push || echo "Push omitido"
