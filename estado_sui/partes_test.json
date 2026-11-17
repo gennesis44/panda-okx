@@ -252,6 +252,56 @@
     "margen_usd": "0.7127",
     "ordId": "4106268934006845441",
     "sltp_confirmado": false,
+    "estado": "CERRADO_EXCHANGE",
+    "resultado": {
+      "tipo": "CIERRE_EXCHANGE (SL/TP reconstruidos por fills)",
+      "salida": "0.7225",
+      "pnl_usd_bruto": "-0.0097",
+      "fees_usd": "0.0004",
+      "pnl_usd_neto": "-0.0101",
+      "fills_salida": 1
+    }
+  },
+  {
+    "id": "1794902400000-SHORT-LIVE",
+    "abierto_ts": "2026-11-17T09:52:25Z",
+    "modo": "LIVE",
+    "inst": "SUI-USD_UM_XPERP-310404",
+    "lado": "SHORT",
+    "velas": {
+      "c1": {
+        "ts": 1794898800000,
+        "o": "0.7213",
+        "h": "0.7248",
+        "l": "0.7213",
+        "c": "0.7239"
+      },
+      "c2": {
+        "ts": 1794902400000,
+        "o": "0.7233",
+        "h": "0.7233",
+        "l": "0.7191",
+        "c": "0.7211"
+      }
+    },
+    "sep_pct": "-0.3868",
+    "entrada_ref": "0.7206",
+    "entrada_fill": {
+      "avgPx": "0.7206",
+      "sz": "1",
+      "fee": "-0.0003603",
+      "ts": 1794909145315,
+      "iso": "2026-11-17T09:52:25Z"
+    },
+    "sl": "0.7250",
+    "tp": "0.7140",
+    "riesgo": "0.0044",
+    "size_ct": 1,
+    "lev": 1,
+    "td_mode": "isolated",
+    "margen_usd": "0.7206",
+    "ordId": "4107288812042006529",
+    "sltp_confirmado": false,
     "estado": "ABIERTO",
     "resultado": null
   }

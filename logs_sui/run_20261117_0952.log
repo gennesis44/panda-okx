@@ -1,0 +1,18 @@
+==================================================================
+EL APRENDIZ — sui-main.py v2.0-PROD-flota — MODO LIVE
+Ley de velas: MAXIMO 2 completas | SUI-USD_UM_XPERP-310404
+Peaje 0.0017 | RR 1.5 | SL extremo+2t | size 1 ct | lev 1x (cap 20) | tdMode isolated
+PRODUCCION: ordenes REALES con SL/TP adjuntos en el exchange
+==================================================================
+Velas (2 cerradas): c1=0.7239 (2026-11-17T07:00:00Z) | c2=0.7211 (2026-11-17T08:00:00Z)
+Sensor: SHORT | separacion -0.3868 % | peaje 0.0017
+Libro: bid 0.7206 / ask 0.7208 (spread 0.0002)
+Auth OK: posMode=net_mode acctLv=3
+[CRITICO] 1794873600000-SHORT-LIVE: SL/TP NO confirmado en exchange (se reintenta la proxima pasada)
+Reconciliador LIVE: cerrados -> 1794873600000-SHORT-LIVE
+  1794873600000-SHORT-LIVE: CIERRE_EXCHANGE (SL/TP reconstruidos por fills) salida 0.7225 pnl neto -0.0101 USD (fees 0.0004)
+[PRODUCCION] ORDEN ENVIADA: SHORT 1 ct | ordId 4107288812042006529
+[FILL ENTRADA] avgPx 0.7206 (ref 0.7206) | fee -0.0003603
+[SL/TP] CRITICO: sin confirmacion (reintento la proxima pasada)
+Libro: 7 partes (2 abiertos) -> estado_sui/partes_test.json
+[FIN] modo LIVE
