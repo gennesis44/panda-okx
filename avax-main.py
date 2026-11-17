@@ -1,8 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # =====================================================================
-# avax-go.py — NAVIO AVAX · LA FLOTA CARBONO · BUQUE: EL OCTAVO
+# avax-main.py — NAVIO AVAX · LA FLOTA CARBONO · BUQUE: EL OCTAVO
 # VERSIÓN PRODUCCIÓN (Bucle continuo 24/7 + SINGLE_CYCLE para GitHub Actions)
+#
+# AJUSTE FLOTA (Capitán): MAX_NOTIONAL $12 + AMOUNT dinámico + ventana 2 velas
+#   + privacidad telemetría. SHADOW default REAL (no SOMBRA).
+# NOTA TÉCNICA: "2 velas + forming" no aplica a AVAX porque su SL es porcentual
+#   (px × 2% con piso=techo), no estructural. La vela en formación no aporta.
 # =====================================================================
 
 import math
@@ -18,24 +23,24 @@ try:
 except ImportError:
     ccxt = None
 
-VERSION = "v2.2-1h-xperp-prod-avax"
+VERSION = "v2.3-1h-xperp-flota"
 TF_MS = {"5m": 300000, "15m": 900000, "30m": 1800000,
          "1h": 3600000, "2h": 7200000, "4h": 14400000, "6h": 21600000}
 BASE_ASSET = "AVAX"
 
 # ---------------- CONFIG ----------------
-SHADOW = os.environ.get("SHADOW", "1") == "1"
+SHADOW = os.environ.get("SHADOW", "0") == "1"   # default REAL (cambio flota)
 DRY_RUN = os.environ.get("DRY_RUN", "0") == "1"
-SINGLE_CYCLE = os.environ.get("SINGLE_CYCLE", "0") == "1"  # GitHub Actions: 1 ciclo y salir
+SINGLE_CYCLE = os.environ.get("SINGLE_CYCLE", "0") == "1"
 AVAX_TF = os.environ.get("AVAX_TF", "1h")
-AVAX_WINDOW = tuple(int(x) for x in os.environ.get("AVAX_WINDOW", "-2,-3,-4").split(",") if x.strip())
+AVAX_WINDOW = tuple(int(x) for x in os.environ.get("AVAX_WINDOW", "-1,-2").split(",") if x.strip())
 SEP_LOCK = float(os.environ.get("AVAX_SEP_LOCK", "0.17"))
 SL_MULT = float(os.environ.get("AVAX_SL_MULT", "1.2"))
 SL_FLOOR = float(os.environ.get("AVAX_SL_FLOOR", "2.0"))
 SL_CAP = float(os.environ.get("AVAX_SL_CAP", "2.0"))
 TP_MULT = float(os.environ.get("AVAX_TP_MULT", "1.5"))
-AVAX_NOTIONAL = float(os.environ.get("AVAX_NOTIONAL", "10.0"))
-MAX_NOTIONAL = float(os.environ.get("AVAX_MAX_NOTIONAL", "15.0"))
+AVAX_NOTIONAL = float(os.environ.get("AVAX_NOTIONAL", "12.0"))   # target = max flota
+MAX_NOTIONAL = float(os.environ.get("AVAX_MAX_NOTIONAL", "12.0"))   # ajuste flota
 LEVERAGE = int(float(os.environ.get("AVAX_LEVERAGE", "1")))
 MARGIN_MODE = os.environ.get("AVAX_MARGIN_MODE", "isolated").strip().lower()
 COOLDOWN_MIN = float(os.environ.get("COOLDOWN_MIN", "60"))
@@ -168,7 +173,7 @@ def auth_and_collateral(ex, has_creds):
     if AVAX_DEBUG:
         log.info("Autenticacion OK | host=%s | Colateral real (USD): %.2f", host, tot_eq)
     else:
-        log.info("Autenticacion OK | host=%s | Colateral: OK (monto oculto en repo publica; AVAX_DEBUG=1 para verlo)", host)
+        log.info("Autenticacion OK | host=%s | Colateral: OK (AVAX_DEBUG=1 para verlo)", host)
     return tot_eq
 
 
@@ -343,6 +348,8 @@ def size_contracts(market, px):
 # ---------------- TELEMETRIA WIN RATE ----------------
 @retry_api(retries=2, delay=2)
 def win_rate_report(ex, inst_id):
+    """Telemetría de cierres. PRIVACIDAD: si AVAX_DEBUG=0 oculta los montos $,
+    muestra solo contadores (win/loss) y porcentajes. AVAX_DEBUG=1 muestra todo."""
     rows = []
     src = "positions-history"
     try:
@@ -395,13 +402,22 @@ def win_rate_report(ex, inst_id):
     log.info("==== WIN RATE %s — ultimos %d cierre(s) ====", src, n)
     for ts, net, peaje in rows[-10:]:
         mark = "WIN " if net > 0 else ("LOSS" if net < 0 else "FLAT")
-        log.info("  %s UTC | %s | net %+.4f USD (peaje %+.4f)",
-                 datetime.fromtimestamp(ts / 1000, tz=timezone.utc).strftime("%d-%m %H:%M"),
-                 mark, net, peaje)
-    log.info("---- Resumen: %d win / %d loss / %d flat | WR %.1f%% | net acum %+.4f USD | peaje acum %+.4f USD",
-             len(wins), len(losses), len(flats), wr, net_sum, peaje_sum)
-    log.info("---- avg win %+.4f | avg loss %+.4f | expectancia %+.4f USD/trade | R:R %.2f -> WR equilibrio %.1f%%",
-             avg_w, avg_l, expectancy, TP_MULT, be_wr)
+        if AVAX_DEBUG:
+            log.info("  %s UTC | %s | net %+.4f USD (peaje %+.4f)",
+                     datetime.fromtimestamp(ts / 1000, tz=timezone.utc).strftime("%d-%m %H:%M"),
+                     mark, net, peaje)
+        else:
+            log.info("  %s UTC | %s",
+                     datetime.fromtimestamp(ts / 1000, tz=timezone.utc).strftime("%d-%m %H:%M"),
+                     mark)
+    if AVAX_DEBUG:
+        log.info("---- Resumen: %d win / %d loss / %d flat | WR %.1f%% | net acum %+.4f USD | peaje acum %+.4f USD",
+                 len(wins), len(losses), len(flats), wr, net_sum, peaje_sum)
+        log.info("---- avg win %+.4f | avg loss %+.4f | expectancia %+.4f USD/trade | R:R %.2f -> WR equilibrio %.1f%%",
+                 avg_w, avg_l, expectancy, TP_MULT, be_wr)
+    else:
+        log.info("---- Resumen: %d win / %d loss / %d flat | WR %.1f%% | R:R %.2f -> WR equilibrio %.1f%% (AVAX_DEBUG=1 para ver montos)",
+                 len(wins), len(losses), len(flats), wr, TP_MULT, be_wr)
     return {"n": n, "wins": len(wins), "losses": len(losses), "flats": len(flats),
             "wr": wr, "net": net_sum, "peaje": peaje_sum}
 
@@ -479,12 +495,12 @@ def run_cycle():
     shadow = SHADOW or DRY_RUN
     if DRY_RUN and not SHADOW:
         log.info("Freno de flota DRY_RUN=1 -> forzando SOMBRA (nunca sandbox)")
-    log.info("Ejecutando ciclo | NAVIO AVAX EL OCTAVO EMA3/21 %s %s + BLINDAJE xpl-v4.2 (XPERP USD) | %s",
-             AVAX_TF, VERSION, "SOMBRA" if shadow else "REAL")
+    log.info("NAVIO AVAX EL OCTAVO EMA3/21 %s %s + BLINDAJE xpl-v4.2 (XPERP USD) | %s | MAX $%.0f",
+             AVAX_TF, VERSION, "SOMBRA" if shadow else "REAL", MAX_NOTIONAL)
     if AVAX_TF not in TF_MS:
         fail("[ERROR] AVAX_TF invalido: %s" % AVAX_TF)
     if not AVAX_WINDOW or any(o > -1 for o in AVAX_WINDOW):
-        fail("[ERROR] AVAX_WINDOW invalido: %s (se esperaba p.ej. -2,-3,-4)" % (AVAX_WINDOW,))
+        fail("[ERROR] AVAX_WINDOW invalido: %s (se esperaba p.ej. -1,-2)" % (AVAX_WINDOW,))
     if MARGIN_MODE not in ("isolated", "cross"):
         fail("[ERROR] AVAX_MARGIN_MODE invalido: %s" % MARGIN_MODE)
 
@@ -549,7 +565,7 @@ def run_cycle():
     active, pnl, ft = cooldown_active(ex, inst_id)
     if active:
         mins = int((ex.milliseconds() - ft) / 60000)
-        log.info("Cooldown: perdida %.2f hace %d min — calma a bordo. Vigilando.", pnl, mins)
+        log.info("Cooldown: perdida hace %d min — calma a bordo. Vigilando.", mins)
         return
 
     cl = ("AVAX%d" % sig["bar_ts"])[:32]
@@ -561,26 +577,28 @@ def run_cycle():
 
 
 def main():
-    mode = "SINGLE_CYCLE (GitHub Actions)" if SINGLE_CYCLE else "PRODUCCIÓN CONTINUA (Bucle 24/7)"
-    log.info("Iniciando NAVIO AVAX en modo %s | TF=%s | SHADOW=%s | DRY_RUN=%s",
-             mode, AVAX_TF, SHADOW, DRY_RUN)
+    mode = "SINGLE_CYCLE (GitHub Actions)" if SINGLE_CYCLE else "PRODUCCION CONTINUA (Bucle 24/7)"
+    log.info("Iniciando NAVIO AVAX en modo %s | TF=%s | SHADOW=%s | DRY_RUN=%s | MAX $%.0f",
+             mode, AVAX_TF, SHADOW, DRY_RUN, MAX_NOTIONAL)
 
-    # Modo GitHub Actions: 1 solo ciclo y salir (lo levanta el cron del YAML)
     if SINGLE_CYCLE:
         try:
             run_cycle()
+        except SystemExit:
+            raise
         except Exception as e:
-            log.error("[CRITICAL ERROR EN CICLO ÚNICO] %s", str(e))
+            log.error("[CRITICAL ERROR EN CICLO UNICO] %s", str(e))
             sys.exit(1)
-        log.info("Ciclo único finalizado. Saliendo (lo retomará el cron de GitHub Actions).")
+        log.info("Ciclo unico finalizado. Saliendo (lo retomara el cron de GitHub Actions).")
         return
 
-    # Modo VPS local: bucle 24/7 con sincronización al siguiente compás de vela
     tf_ms = TF_MS.get(AVAX_TF, 3600000)
     while True:
         try:
             start_t = time.time()
             run_cycle()
+        except SystemExit:
+            raise
         except Exception as e:
             log.error("[CRITICAL ERROR EN CICLO] %s — El bucle sobrevive y reintentara en el proximo ciclo.", str(e))
 
