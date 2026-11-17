@@ -211,5 +211,48 @@
     "sltp_confirmado": null,
     "estado": "ABIERTO",
     "resultado": null
+  },
+  {
+    "id": "1794873600000-SHORT-LIVE",
+    "abierto_ts": "2026-11-17T01:25:50Z",
+    "modo": "LIVE",
+    "inst": "SUI-USD_UM_XPERP-310404",
+    "lado": "SHORT",
+    "velas": {
+      "c1": {
+        "ts": 1794870000000,
+        "o": "0.7189",
+        "h": "0.7221",
+        "l": "0.7133",
+        "c": "0.7187"
+      },
+      "c2": {
+        "ts": 1794873600000,
+        "o": "0.7188",
+        "h": "0.7191",
+        "l": "0.7126",
+        "c": "0.7134"
+      }
+    },
+    "sep_pct": "-0.7374",
+    "entrada_ref": "0.7127",
+    "entrada_fill": {
+      "avgPx": "0.7128",
+      "sz": "1",
+      "fee": "-0.0003564",
+      "ts": 1794878750581,
+      "iso": "2026-11-17T01:25:50Z"
+    },
+    "sl": "0.7223",
+    "tp": "0.6983",
+    "riesgo": "0.0096",
+    "size_ct": 1,
+    "lev": 1,
+    "td_mode": "isolated",
+    "margen_usd": "0.7127",
+    "ordId": "4106268934006845441",
+    "sltp_confirmado": false,
+    "estado": "ABIERTO",
+    "resultado": null
   }
 ]
