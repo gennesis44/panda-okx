@@ -1,0 +1,50 @@
+name: "EL APRENDIZ - SUI EMA v2.0 (1H LIVE)"
+
+on:
+  schedule:
+    # 1H timeframe: 1 run por hora cubre la ventana de 2 velas cerradas
+    - cron: '0 * * * *'
+  workflow_dispatch:
+
+# Necesario para que el git push final funcione con el GITHUB_TOKEN por defecto
+permissions:
+  contents: write
+
+jobs:
+  run-sui-bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repositorio
+        uses: actions/checkout@v4
+
+      - name: Configurar Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Crear directorio de estado y logs
+        run: mkdir -p estado_sui logs_sui
+
+      - name: Ejecutar Bot SUI (LIVE)
+        env:
+          OKX_API_KEY:         ${{ secrets.OKX_API_KEY }}
+          OKX_API_SECRET:      ${{ secrets.OKX_SECRET_KEY }}
+          OKX_API_PASSPHRASE:  ${{ secrets.OKX_PASSWORD }}
+          SUI_MODE:            'LIVE'      # TEST | PREVUELA | LIVE (default TEST)
+          SUI_SIZE_CT:         '1'          # 1 contrato (cap duro 5)
+          SUI_LEV:             '1'          # 1x (cap duro 20)
+          SUI_TD_MODE:         'isolated'
+          SINGLE_CYCLE:        '1'
+        run: |
+          python3 sui-main.py 2>&1 | tee logs_sui/run_$(date -u +%Y%m%d_%H%M).log
+
+      - name: Commit y Push de estado + logs
+        if: always()
+        run: |
+          git config --global user.name  "El Aprendiz Bot"
+          git config --global user.email "aprendiz@gscsi.trade"
+          # CRITICO: estado_sui/ es la memoria del bot entre runs (partes + decisiones)
+          git add estado_sui/ logs_sui/ || true
+          git commit -m "auto: SUI estado + log [skip ci]" || echo "Sin cambios"
+          git push || echo "Push omitido"
