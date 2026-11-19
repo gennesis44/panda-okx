@@ -459,7 +459,14 @@
     "margen_usd": "0.7145",
     "ordId": "4111229745016025090",
     "sltp_confirmado": false,
-    "estado": "ABIERTO",
-    "resultado": null
+    "estado": "CERRADO_EXCHANGE",
+    "resultado": {
+      "tipo": "CIERRE_EXCHANGE (SL/TP reconstruidos por fills)",
+      "salida": "0.7218",
+      "pnl_usd_bruto": "0.0073",
+      "fees_usd": "0.0004",
+      "pnl_usd_neto": "0.0069",
+      "fills_salida": 1
+    }
   }
 ]
