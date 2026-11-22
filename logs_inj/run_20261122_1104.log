@@ -1,0 +1,8 @@
+2026-11-22 11:04:19,156 - INFO - Modo ciclo unico | INJ EMA4/21 1H v3.4 + CANDADO v2 FAIL-CLOSED (XPERP USD) | AMOUNT dinamico | MAX $6
+2026-11-22 11:04:19,478 - INFO - Autenticacion OK | host=https://my.okx.com | Colateral: OK (INJ_DEBUG=1 para verlo)
+2026-11-22 11:04:21,250 - INFO - Instrumento resuelto: INJ/USD:USD-310711
+2026-11-22 11:04:23,210 - INFO - Precio: 6.217 | 1H EMA4/21: 6.04169/6.02133 | EMA4 > EMA21 (estado)
+2026-11-22 11:04:23,210 - INFO - Cruce ALCISTA EMA 4/21 detectado (sep 0.34%). Senal LONG.
+2026-11-22 11:04:23,381 - INFO - Ejecutando senal LONG para INJ (9 ct)...
+2026-11-22 11:04:23,381 - INFO - Nocional: 9 contrato x 0.1 INJ (~$5.60)
+2026-11-22 11:04:23,681 - ERROR - Entrada rechazada: okx {"code":"1","data":[{"clOrdId":"INJ1795338000000","ordId":"","sCode":"51008","sMsg":"Order failed. Your available margin (in USD) is too low. ","subCode":"1009","tag":"","ts":"1795345463532"}],"inTime":"1795345463461639","msg":"All operations failed","outTime":"1795345463602713"}
