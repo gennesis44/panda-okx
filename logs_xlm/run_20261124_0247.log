@@ -1,0 +1,8 @@
+2026-11-24 02:47:49,050 - INFO - Modo ciclo unico | NAVIO XLM EMA3/21 1h v1.1 + BLINDAJE xpl-v4.2 (XPERP USD) | REAL
+2026-11-24 02:47:50,807 - INFO - Instrumento: XLM-USD_UM_XPERP-310704 (XPERP — vencimiento mas lejano | settle USD | ct=100.0)
+2026-11-24 02:47:50,996 - INFO - Autenticacion OK | host=https://{hostname} | Colateral real (USD): ~0.31
+2026-11-24 02:47:51,884 - INFO - Precio: 0.13083 | EMA3/21: 0.13062/0.13017 | EMA3 > EMA21 (estado)
+2026-11-24 02:47:52,329 - WARNING - set_position_mode tolerado: okx {"code":"59000","data":[],"msg":"Setting failed. Cancel any open orders, close positions, and stop trading bots firs
+2026-11-24 02:47:52,650 - INFO - Apalancamiento: 1x (cross)
+2026-11-24 02:47:52,650 - WARNING - cooldown no verificable ('okx' object has no attribute 'privateGetTradeFillPnl') — continuo [capa blanda]
+2026-11-24 02:47:52,845 - ERROR - [ERROR] margen ~$13.08 (1x) vs colateral ~$0.31 -> NO CABE. DETENIDO
