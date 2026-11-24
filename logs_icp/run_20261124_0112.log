@@ -1,0 +1,8 @@
+2026-11-24 01:12:31,630 - INFO - Modo ciclo unico | NAVIO ICP EMA3/21 1h v1.1-fixed + BLINDAJE xpl-v4.2 (XPERP USD) | REAL
+2026-11-24 01:12:32,991 - INFO - Instrumento: ICP-USD_UM_XPERP-310711 (XPERP — vencimiento mas lejano | settle USD | ct=1.0)
+2026-11-24 01:12:33,106 - INFO - Autenticacion OK | host=https://{hostname} | Colateral real (USD): ~0.31
+2026-11-24 01:12:33,813 - INFO - Precio: 2.052 | EMA3/21: 2.050/2.041 | EMA3 > EMA21 (estado)
+2026-11-24 01:12:34,246 - WARNING - set_position_mode tolerado: okx {"code":"59000","data":[],"msg":"Setting failed. Cancel any open orders, close positions, and stop trading bots firs
+2026-11-24 01:12:34,500 - INFO - Apalancamiento: 1x (cross)
+2026-11-24 01:12:34,500 - WARNING - cooldown no verificable ('okx' object has no attribute 'privateGetTradeFillPnl') — continuo [capa blanda]
+2026-11-24 01:12:34,622 - ERROR - [ERROR] margen ~$12.31 (1x) vs colateral ~$0.31 -> NO CABE. DETENIDO
