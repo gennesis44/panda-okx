@@ -1,0 +1,5 @@
+2026-11-25 12:32:17,170 - INFO - Modo ciclo unico | INJ EMA4/21 1H v3.4 + CANDADO v2 FAIL-CLOSED (XPERP USD) | AMOUNT dinamico | MAX $6
+2026-11-25 12:32:17,376 - INFO - Autenticacion OK | host=https://my.okx.com | Colateral: OK (INJ_DEBUG=1 para verlo)
+2026-11-25 12:32:19,561 - INFO - Instrumento resuelto: INJ/USD:USD-310711
+2026-11-25 12:32:21,406 - INFO - Precio: 5.684 | 1H EMA4/21: 5.77669/5.85701 | EMA4 < EMA21 (estado)
+2026-11-25 12:32:21,407 - INFO - Sin cruce EMA 4/21 legal en la ventana. Vigilando.
