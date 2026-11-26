@@ -1,0 +1,6 @@
+2026-11-26 06:47:19,303 - INFO - NAVIO ARB EL DESTRUCTOR EMA3/21 4h v1.0-destructor-flota + BLINDAJE xpl-v4.2 (XPERP USD) | MUNICION REAL | MAX $5
+2026-11-26 06:47:21,276 - INFO - Instrumento: ARB-USD_UM_XPERP-310815 (XPERP — vencimiento mas lejano | settle USD | ct=10.0)
+2026-11-26 06:47:21,447 - INFO - Autenticacion OK | host=https://my.okx.com | Colateral: OK (ARB_DEBUG=1 para verlo)
+2026-11-26 06:47:22,343 - INFO - Precio: 0.11381 | EMA3/21: 0.11242/0.11214 | EMA3 > EMA21 (estado)
+2026-11-26 06:47:22,343 - INFO - Cruce con separacion 0.245% < candado 0.25% — descartado. Vigilando.
+2026-11-26 06:47:22,356 - INFO - Ciclo unico finalizado. Saliendo (lo retomara el cron).
