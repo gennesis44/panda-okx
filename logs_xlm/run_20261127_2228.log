@@ -1,0 +1,6 @@
+2026-11-27 22:28:51,925 - INFO - NAVIO XLM LA ESTELAR EMA3/21 1h v1.1-flota + BLINDAJE xpl-v4.2 (XPERP USD) | REAL | MAX $20
+2026-11-27 22:28:53,449 - INFO - Instrumento: XLM-USD_UM_XPERP-310704 (XPERP — vencimiento mas lejano | settle USD | ct=100.0)
+2026-11-27 22:28:53,582 - INFO - Autenticacion OK | host=https://my.okx.com | Colateral: OK (XLM_DEBUG=1 para verlo)
+2026-11-27 22:28:54,349 - INFO - Precio: 0.12611 | EMA3/21: 0.12640/0.12742 | EMA3 < EMA21 (estado)
+2026-11-27 22:28:54,349 - INFO - Sin cruce EMA3/21 legal en la ventana. Vigilando.
+2026-11-27 22:28:54,360 - INFO - Ciclo unico finalizado. Saliendo (lo retomara el cron).
