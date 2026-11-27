@@ -1,0 +1,37 @@
+2026-11-27 14:45:43,031 - INFO - Modo ciclo unico | DOGE EMA3/21 1H v3.4 + CANDADO v2 FAIL-CLOSED (XPERP USD) | AMOUNT dinámico | MAX $12
+Traceback (most recent call last):
+  File "/opt/hostedtoolcache/Python/3.11.18/x64/lib/python3.11/site-packages/ccxt/base/exchange.py", line 645, in fetch
+    response.raise_for_status()
+  File "/opt/hostedtoolcache/Python/3.11.18/x64/lib/python3.11/site-packages/requests/models.py", line 1167, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 503 Server Error: Service Unavailable for url: https://my.okx.com/api/v5/account/balance
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/runner/work/panda-okx/panda-okx/doge-main.py", line 486, in <module>
+    run_once()
+  File "/home/runner/work/panda-okx/panda-okx/doge-main.py", line 463, in run_once
+    verify_setup()
+  File "/home/runner/work/panda-okx/panda-okx/doge-main.py", line 407, in verify_setup
+    raw = exchange.privateGetAccountBalance()
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/hostedtoolcache/Python/3.11.18/x64/lib/python3.11/site-packages/ccxt/base/types.py", line 43, in unbound_method
+    return _self.request(self.path, self.api, self.method, params, config=self.config)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/hostedtoolcache/Python/3.11.18/x64/lib/python3.11/site-packages/ccxt/base/exchange.py", line 6100, in request
+    return self.fetch2(path, api, method, params, config)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/hostedtoolcache/Python/3.11.18/x64/lib/python3.11/site-packages/ccxt/base/exchange.py", line 6094, in fetch2
+    raise e
+  File "/opt/hostedtoolcache/Python/3.11.18/x64/lib/python3.11/site-packages/ccxt/base/exchange.py", line 6077, in fetch2
+    response = self.fetch(request['url'], request['method'], request['headers'], request['body'])
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/hostedtoolcache/Python/3.11.18/x64/lib/python3.11/site-packages/ccxt/base/exchange.py", line 661, in fetch
+    skip_further_error_handling = self.handle_errors(http_status_code, http_status_text, url, method, headers, http_response, json_response, request_headers, request_body)
+                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/hostedtoolcache/Python/3.11.18/x64/lib/python3.11/site-packages/ccxt/okx.py", line 9042, in handle_errors
+    self.throw_exactly_matched_exception(self.exceptions['exact'], codeError, feedback)
+  File "/opt/hostedtoolcache/Python/3.11.18/x64/lib/python3.11/site-packages/ccxt/base/exchange.py", line 6511, in throw_exactly_matched_exception
+    raise exact[string](message)
+ccxt.base.errors.OnMaintenance: okx {"code":"50001","data":[],"msg":"Service temporarily unavailable. Please try again later. "}
