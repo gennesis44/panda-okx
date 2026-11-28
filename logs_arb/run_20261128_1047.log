@@ -1,0 +1,7 @@
+2026-11-28 10:47:21,052 - INFO - NAVIO ARB EL DESTRUCTOR EMA3/21 4h v1.0-destructor-flota + BLINDAJE xpl-v4.2 (XPERP USD) | MUNICION REAL | MAX $5
+2026-11-28 10:47:22,444 - INFO - Instrumento: ARB-USD_UM_XPERP-310815 (XPERP — vencimiento mas lejano | settle USD | ct=10.0)
+2026-11-28 10:47:22,557 - INFO - Autenticacion OK | host=https://my.okx.com | Colateral: OK (ARB_DEBUG=1 para verlo)
+2026-11-28 10:47:23,247 - INFO - Precio: 0.11260 | EMA3/21: 0.11344/0.11384 | EMA3 < EMA21 (estado)
+2026-11-28 10:47:23,706 - WARNING - set_position_mode tolerado: okx {"code":"59000","data":[],"msg":"Setting failed. Cancel any open orders, close positions, and stop trading bots firs
+2026-11-28 10:47:23,957 - INFO - Apalancamiento: 1x (cross)
+2026-11-28 10:47:24,189 - ERROR - [ERROR] margen ~$4.50 (1x) vs colateral ~$0.35 -> NO CABE. DETENIDO
