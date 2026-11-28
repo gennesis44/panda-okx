@@ -1,0 +1,10 @@
+2026-11-28 12:33:29,025 - INFO - Zarpando ciclo de XPL — EL ATUNERO [v5.1-atunero-ctx] | REAL | host https://my.okx.com
+2026-11-28 12:33:30,562 - INFO - Mercados cargados: 4707
+2026-11-28 12:33:30,562 - INFO - DERIVADO XPL: XPL/USD:USD-310711 | id=XPL-USD_UM_XPERP-310711 | tipo=future | settle=USD | active=True | contractSize=10.0 | expiry=2031-07-11T08:00:00.000Z
+2026-11-28 12:33:30,562 - INFO - DERIVADO XPL: XPL/USDT:USDT | id=XPL-USDT-SWAP | tipo=swap | settle=USDT | active=True | contractSize=10.0 | expiry=None
+2026-11-28 12:33:30,691 - INFO - Instrumento: XPL/USD:USD-310711 | id=XPL-USD_UM_XPERP-310711 | 1 contrato = 10.0 XPL | settle=USD | nocional ~$0.46/ct | FUTURES
+2026-11-28 12:33:30,691 - INFO - Carga de pesca: 14.0 contratos = 140 XPL por entrada.
+2026-11-28 12:33:30,927 - INFO - Lastre USD: sin cifra legible en la bodega.
+2026-11-28 12:33:31,437 - INFO - Cubierta limpia: cero posición, cero algos huérfanos.
+2026-11-28 12:33:32,304 - INFO - Margen (14.0 ct): ~$6.40 | colateral: ~$0.35 -> NO CABE
+2026-11-28 12:33:32,304 - INFO - Sin capacidad. Observando.
